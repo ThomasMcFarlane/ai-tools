@@ -9,6 +9,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "dns-checker": "dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -24,7 +27,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-tools/hooks": "*"
+    "@ai-tools/hooks": "*",
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.16.10",
