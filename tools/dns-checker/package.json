@@ -16,6 +16,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "import": "./dist/mcp.js"
     }
   },
   "files": [
@@ -28,7 +32,9 @@
   },
   "dependencies": {
     "@ai-tools/hooks": "*",
-    "commander": "^12.1.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "commander": "^12.1.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.16.10",
