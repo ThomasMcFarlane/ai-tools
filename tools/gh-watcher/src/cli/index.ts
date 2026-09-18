@@ -181,18 +181,6 @@ function buildProgram(): Command {
     .action(async (opts) => {
       await waitAction(opts as WaitFlags);
     });
-  p.command('mcp')
-    .description('Run the MCP server')
-    .action(async () => {
-      try {
-        const specifier: string = '../mcp/server.js';
-        const server = (await import(specifier)) as { startMcp: () => Promise<void> };
-        await server.startMcp();
-      } catch {
-        console.error('MCP server not available in this build');
-        process.exitCode = 1;
-      }
-    });
   registerWatchCommands(p);
   return p;
 }
@@ -226,5 +214,5 @@ export async function main(): Promise<void> {
 }
 
 if (isEntryModule(import.meta.url)) {
-  await main();
+  main();
 }
