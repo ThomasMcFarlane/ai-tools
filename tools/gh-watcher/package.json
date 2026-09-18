@@ -9,6 +9,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "gh-watcher": "dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -20,6 +23,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:bin": "pkg --no-bytecode --out-path bin -t ${PKG_TARGETS:-node22-linux-x64,node22-linux-arm64,node22-macos-x64,node22-macos-arm64,node22-win-x64} .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },

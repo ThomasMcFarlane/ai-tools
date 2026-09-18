@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { isEntryModule, main } from './cli/index.js';
 
-if (isEntryModule(import.meta.url)) {
+if ((process as { pkg?: unknown }).pkg !== undefined || isEntryModule(import.meta.url)) {
   await main();
 }

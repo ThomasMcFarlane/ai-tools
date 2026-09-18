@@ -12,6 +12,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "build:bin": "npm run build:bin --workspaces --if-present && npm run rename:bins",
+    "rename:bins": "node scripts/rename-bins.mjs",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.11.1",
+    "@yao-pkg/pkg": "^6.22.0",
     "eslint": "^9.11.1",
     "globals": "^15.9.0",
     "prettier": "^3.3.3",

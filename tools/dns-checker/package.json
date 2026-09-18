@@ -16,10 +16,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./mcp": {
-      "types": "./dist/mcp.d.ts",
-      "import": "./dist/mcp.js"
     }
   },
   "files": [
@@ -27,14 +23,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:bin": "pkg --no-bytecode --out-path bin -t ${PKG_TARGETS:-node22-linux-x64,node22-linux-arm64,node22-macos-x64,node22-macos-arm64,node22-win-x64} .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
   "dependencies": {
     "@ai-tools/hooks": "*",
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "commander": "^12.1.0",
-    "zod": "^3.25.76"
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.16.10",
