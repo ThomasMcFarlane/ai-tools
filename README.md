@@ -51,7 +51,7 @@ node tools/gh-watcher/dist/cli.js --help
 
 ### Releases
 
-Pushing a `v*` tag (for example `v1.2.0`) builds the binaries on self-hosted runners and publishes them to the Releases page of this repository together with a `checksums.txt` file of sha256 digests. Verify a download against it:
+Pushing a `v*` tag (for example `v1.2.0`) builds the binaries on GitHub-hosted runners and publishes them to the Releases page of this repository together with a `checksums.txt` file of sha256 digests. Verify a download against it:
 
 ```sh
 sha256sum -c checksums.txt
