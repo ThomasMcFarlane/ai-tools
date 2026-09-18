@@ -9,19 +9,22 @@ non-interactive and exit-code driven.
 
 ## Requirements
 
-- Node >= 20.
+- Node >= 20 and npm when building from source; the prebuilt binaries are self-contained and need no Node.
 - GitHub CLI (`gh`) installed and authenticated. Verify with `gh auth status`.
 - A repository, given as `--repo OWNER/NAME` or the `GH_REPO` environment variable.
 
 ## Install and build
 
-From the repository root:
+Quickest path: download a prebuilt binary from the Releases page of this repository. Artifacts follow the pattern `gh-watcher-<os>-<arch>`: `gh-watcher-linux-x64`, `gh-watcher-linux-arm64`, `gh-watcher-macos-x64`, `gh-watcher-macos-arm64` and `gh-watcher-win-x64.exe`. Make the downloaded file executable (`chmod +x`), put it on your `PATH`, and verify with `gh-watcher --help`. The binaries are self-contained and need no Node at runtime. On macOS they are unsigned: remove the quarantine attribute with `xattr -d com.apple.quarantine gh-watcher` or approve the binary in System Settings on first run.
+
+Alternatively, build from source (requires Node >= 20 and npm). From the repository root:
 
 | Step | Command |
 | --- | --- |
 | Install workspace dependencies | `npm install` |
 | Build every workspace (recommended) | `npm run build` |
 | Build only this tool | `npm run build -w @ai-tools/gh-watcher` |
+| Package self-contained native binaries | `npm run build:bin` |
 | Typecheck | `npm run typecheck -w @ai-tools/gh-watcher` |
 | Test | `npm run test -w @ai-tools/gh-watcher` |
 
@@ -164,11 +167,6 @@ gh-watcher watch events [--tail <n>] [--json]
 Show recent watch events, oldest first. `--tail <n>` defaults to `20`. Events come from
 `events.jsonl` (see [State files](#state-files)).
 
-### gh-watcher mcp
-
-Placeholder only. The command currently prints `MCP server not available in this build`
-and exits `1`. See [Roadmap](#roadmap).
-
 ## Targets
 
 Every `status`, `wait` and `watch add` takes exactly one of `--pr N`, `--branch B`,
@@ -307,12 +305,6 @@ Polling intervals to know about:
 | `wait` overall timeout | `30m`, capped at 24h |
 | `watch add` interval | `60s` |
 | Daemon sweep cadence | every 5s (checks each watch when due) |
-
-## Roadmap
-
-- A full MCP server is planned. `gh-watcher mcp` is a stub today.
-- Until then, `gh-watcher wait` and `gh-watcher watch check` / `watch run` work from any
-  agent that can run shell commands and read exit codes.
 
 ## Privacy
 

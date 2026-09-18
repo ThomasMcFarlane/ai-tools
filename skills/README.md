@@ -2,7 +2,7 @@
 
 Copy-paste skills and prompt files that teach AI platforms how to use the CLIs in this repo.
 
-Both tools work from any agent that can run shell commands. The files here add platform-specific entry points on top.
+Both tools work from any agent that can run shell commands. The files here add platform-specific entry points on top. The CLI commands the skills invoke work the same whether the tools are installed as release binaries or run from a source checkout.
 
 ## Install matrix
 
@@ -43,7 +43,7 @@ cp <repo>/skills/opencode/gh-watcher.md ~/.config/opencode/command/gh-watcher.md
 
 Gemini CLI / Cursor / generic: open `generic/AGENTS.md.snippet.md` and paste the whole section into your instructions file.
 
-Replace `<repo>` with the absolute path of your checkout. Build first so the `dist/` binaries exist:
+Replace `<repo>` with the absolute path of your checkout. If running from source rather than an installed release binary, build first so the compiled CLI files exist:
 
 ```sh
 npm install && npm run build -w @ai-tools/dns-checker -w @ai-tools/gh-watcher

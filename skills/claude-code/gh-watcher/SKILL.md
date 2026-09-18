@@ -68,10 +68,6 @@ gh-watcher watch run
 
 When the PR reaches a terminal state, the daemon runs `claude -p "<event prompt>"` with a summary (and, on failure, the failing step names) asking the agent to continue the task that created the watcher. `--hook exec:<command>` gets `EVENT` and `EVENT_SUMMARY` variables plus the event JSON on stdin.
 
-## MCP
-
-`gh-watcher mcp` exists as a command but the server is not in this build yet (it is on the roadmap). Use the CLI `wait` / `status` pattern from any agent today; it needs nothing but `gh`.
-
 ## Exit codes
 
 | Code | Meaning |

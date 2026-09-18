@@ -7,7 +7,7 @@ Guidance for AI coding agents contributing to this repository.
 ```
 ai-tools/
 ├── tools/
-│   ├── dns-checker/   # @ai-tools/dns-checker: DNS lookup/check/wait/watch CLI + MCP server
+│   ├── dns-checker/   # @ai-tools/dns-checker: DNS lookup/check/wait/watch CLI
 │   └── gh-watcher/    # @ai-tools/gh-watcher: GitHub Actions status/wait/watch CLI
 ├── packages/
 │   └── hooks/         # @ai-tools/hooks: shared exec/webhook/file/notify hook library
@@ -15,7 +15,7 @@ ai-tools/
 └── .github/           # CI workflows
 ```
 
-Tool source layout (both tools): `src/core/` (engine and stores), `src/cli/` (commander program), `src/mcp/` (dns-checker only, MCP server). Tests live in `test/` and run offline with injected dependencies.
+Tool source layout (both tools): `src/core/` (engine and stores) and `src/cli/` (commander program). Tests live in `test/` and run offline with injected dependencies.
 
 ## Commands
 
@@ -28,6 +28,8 @@ npm run test                                  # vitest run per workspace
 npm run lint                                  # eslint .
 npm run format                                # prettier --write .
 ```
+
+`npm run build:bin` packages each CLI as a self-contained native binary under `tools/<tool>/bin/` (no Node needed at runtime); release automation lives in `.github/workflows/release.yml`.
 
 ## Conventions
 

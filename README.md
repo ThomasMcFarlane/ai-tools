@@ -6,16 +6,63 @@ Tools that let AI agents check external state, wait for changes, and resume work
 
 | Name | Package | Bin | One line | What it does |
 | --- | --- | --- | --- | --- |
-| dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, persistent watchers with hooks, and an MCP server |
+| dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, and persistent watchers with hooks |
 | gh-watcher | `@ai-tools/gh-watcher` | `gh-watcher` | GitHub Actions watcher for agents | Reads Actions runs and checks through the `gh` CLI, blocks until a target succeeds or fails, and fires hooks when a job step fails or everything succeeds |
 | hooks | `@ai-tools/hooks` | (library) | Shared hook machinery | The shared `exec` / `webhook` / `file` / `notify` hook library both watcher tools use |
+
+## Install
+
+### Option A: prebuilt binaries
+
+Both CLIs are published on the Releases page of this repository as self-contained native binaries: no Node or any other runtime is needed to run them.
+
+Download the artifact for your platform. `dns-checker` ships as `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`; `gh-watcher` uses the same scheme. Make the file executable, put it on your `PATH`, and verify it runs:
+
+```sh
+chmod +x dns-checker-linux-x64
+mv dns-checker-linux-x64 /usr/local/bin/dns-checker  # any directory on your PATH works
+dns-checker --help
+```
+
+macOS: the binaries are unsigned, so Gatekeeper may block the first run. Either remove the quarantine attribute:
+
+```sh
+xattr -d com.apple.quarantine dns-checker
+```
+
+or approve the binary in System Settings when macOS prompts you.
+
+### Option B: build from source
+
+Requires Node >= 20 and npm:
+
+```sh
+npm install
+npm run build        # build every workspace
+npm run build:bin    # package self-contained native binaries into tools/<tool>/bin/
+```
+
+The compiled JS CLIs can also be run directly, without packaging:
+
+```sh
+node tools/dns-checker/dist/cli.js --help
+node tools/gh-watcher/dist/cli.js --help
+```
+
+### Releases
+
+Pushing a `v*` tag (for example `v1.2.0`) builds the binaries on self-hosted runners and publishes them to the Releases page of this repository together with a `checksums.txt` file of sha256 digests. Verify a download against it:
+
+```sh
+sha256sum -c checksums.txt
+```
 
 ## Supported AI platforms
 
 | Platform | What you install | How the tools are reached |
 | --- | --- | --- |
-| Claude Code | Skills + MCP + CLI | Skills under `skills/claude-code/`, MCP server via `claude mcp add`, CLI from any shell |
-| Codex CLI | Custom prompt + MCP + CLI | Prompt files under `skills/codex/`, MCP server via `codex mcp add`, CLI from any shell |
+| Claude Code | Skills + CLI | Skills under `skills/claude-code/`, CLI from any shell |
+| Codex CLI | Custom prompt + CLI | Prompt files under `skills/codex/`, CLI from any shell |
 | opencode | Command file + CLI | Command files under `skills/opencode/`, CLI from any shell |
 | Gemini CLI / Cursor / any agent | Generic AGENTS snippet + CLI | Paste `skills/generic/AGENTS.md.snippet.md` into your instructions file, CLI from any shell |
 
@@ -23,10 +70,12 @@ See [skills/README.md](skills/README.md) for the full install matrix.
 
 ## Requirements
 
-- Node >= 20
+- Node >= 20 and npm, for building from source only (the prebuilt binaries are self-contained)
 - `gh` CLI installed and authenticated (needed by gh-watcher only; dns-checker never calls GitHub)
 
 ## Quick start
+
+Skip the build entirely if you installed the prebuilt binaries; the examples below use the plain tool names. Building from source:
 
 ```sh
 git clone <repository-url> ai-tools
@@ -35,17 +84,17 @@ npm install
 npm run build -w @ai-tools/dns-checker -w @ai-tools/gh-watcher
 ```
 
-Three things you can do straight away:
+Three things you can do straight away. If you built from source instead of installing a binary, run the same commands as `node tools/<tool>/dist/cli.js ...` from the repository root:
 
 ```sh
 # Look up a domain as several public resolvers see it
-node tools/dns-checker/dist/cli.js lookup example.com --resolver cloudflare
+dns-checker lookup example.com --resolver cloudflare
 
 # Block until a TXT record contains a value (e.g. an ACME challenge token)
-node tools/dns-checker/dist/cli.js wait _acme-challenge.example.com -t TXT --contains "token" --timeout 10m
+dns-checker wait _acme-challenge.example.com -t TXT --contains "token" --timeout 10m
 
 # Block until the checks on a pull request finish
-node tools/gh-watcher/dist/cli.js wait --repo octo-org/hello-world --pr 17
+gh-watcher wait --repo octo-org/hello-world --pr 17
 ```
 
 ## The agent resume pattern
@@ -60,10 +109,10 @@ The core loop every tool in this repo is built around:
 For long-running conditions, a persistent watcher plus a hook removes the resume step entirely. When the watch matches, the tool fires the hook you configured with `watch add --hook`:
 
 ```sh
-node tools/dns-checker/dist/cli.js watch add deploy-live \
+dns-checker watch add deploy-live \
   --domain example.com -t A --expect 203.0.113.10 \
   --hook notify:claude
-node tools/dns-checker/dist/cli.js watch run
+dns-checker watch run
 ```
 
 `notify:claude`, `notify:codex` and `notify:opencode` adapters run the matching agent CLI with a prompt describing the event and ask it to continue the task that set up the watcher. Plain `exec:<command>`, `webhook:<url>` and `file:<path>` hooks integrate anything else.
@@ -87,46 +136,6 @@ Hooks are fired through `@ai-tools/hooks`. Every hook process gets:
 `exec` hooks additionally receive the full event JSON on stdin.
 
 > **SECURITY**: `exec` hooks run arbitrary shell commands with these variables in the environment. `webhook` URLs receive the full event JSON in a POST body. Only point hooks at commands and endpoints you control.
-
-## MCP
-
-dns-checker ships an MCP server (`tools/dns-checker/dist/mcp.js`) exposing 8 tools:
-
-- `dns_lookup`
-- `dns_check`
-- `dns_wait`
-- `dns_watch_add`
-- `dns_watch_list`
-- `dns_watch_remove`
-- `dns_watch_check`
-- `dns_events`
-
-Register it with Claude Code:
-
-```sh
-claude mcp add dns-checker -- node <absolute-path>/tools/dns-checker/dist/mcp.js
-```
-
-Register it with Codex CLI:
-
-```sh
-codex mcp add dns-checker -- node <absolute-path>/tools/dns-checker/dist/mcp.js
-```
-
-For any other MCP-compatible client:
-
-```json
-{
-  "mcpServers": {
-    "dns-checker": {
-      "command": "node",
-      "args": ["/absolute/path/to/ai-tools/tools/dns-checker/dist/mcp.js"]
-    }
-  }
-}
-```
-
-gh-watcher's MCP server is on the roadmap. Its CLI `wait` / `check` pattern already works from any agent today: run `gh-watcher wait` in the background, read the JSON outcome, resume.
 
 ## State and configuration
 
@@ -156,7 +165,7 @@ Each directory holds:
 ```
 ai-tools/
 ├── tools/
-│   ├── dns-checker/   # @ai-tools/dns-checker (CLI, core, MCP server)
+│   ├── dns-checker/   # @ai-tools/dns-checker (CLI, core)
 │   └── gh-watcher/    # @ai-tools/gh-watcher (CLI, core)
 ├── packages/
 │   └── hooks/         # @ai-tools/hooks (shared exec/webhook/file/notify hooks)
@@ -182,7 +191,7 @@ Follow the existing conventions:
 
 - Package lives at `tools/<name>` and is named `@ai-tools/<name>`.
 - Bin is named `<name>` and points at `dist/cli.js`.
-- Source is split into `core/` (engine, no I/O assumptions), `cli/` (commander program) and `mcp/` (optional MCP server).
+- Source is split into `core/` (engine, no I/O assumptions) and `cli/` (commander program).
 - Dependencies are injectable so tests run offline (no real DNS or GitHub calls).
 - `--json` is supported everywhere a result is printed.
 - Exit codes are documented: `0` success or match, `1` no match or not found, `2` error, `124` timeout.

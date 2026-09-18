@@ -65,10 +65,6 @@ gh-watcher watch run
 
 When the PR reaches a terminal state, the daemon runs `opencode run "<event prompt>"` with a summary (and, on failure, the failing step names) asking the agent to continue the task that created the watcher. `--hook exec:<command>` gets `EVENT` and `EVENT_SUMMARY` variables plus the event JSON on stdin.
 
-## MCP
-
-The `gh-watcher` MCP server is on the roadmap and not in this build yet. The CLI `wait` / `status` pattern above already works from any agent today; it needs nothing but `gh`.
-
 ## Exit codes
 
 | Code | Meaning |

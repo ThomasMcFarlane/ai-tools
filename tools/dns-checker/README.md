@@ -8,13 +8,16 @@ and exit-code driven, so an agent can treat it as a pure function.
 
 ## Install and build
 
-From the repository root:
+Quickest path: download a prebuilt binary from the Releases page of this repository. Artifacts follow the pattern `dns-checker-<os>-<arch>`: `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`. Make the downloaded file executable (`chmod +x`), put it on your `PATH`, and verify with `dns-checker --help`. The binaries are self-contained and need no Node at runtime. On macOS they are unsigned: remove the quarantine attribute with `xattr -d com.apple.quarantine dns-checker` or approve the binary in System Settings on first run.
+
+Alternatively, build from source (requires Node >= 20 and npm). From the repository root:
 
 | Step | Command |
 | --- | --- |
 | Install workspace dependencies | `npm install` |
 | Build every workspace (recommended) | `npm run build` |
 | Build only this tool | `npm run build -w @ai-tools/dns-checker` |
+| Package self-contained native binaries | `npm run build:bin` |
 | Typecheck | `npm run typecheck -w @ai-tools/dns-checker` |
 | Test | `npm run test -w @ai-tools/dns-checker` |
 
@@ -26,8 +29,7 @@ npx dns-checker --help
 node tools/dns-checker/dist/cli.js --help
 ```
 
-The package also exports a library API (`exports["."]`) and the MCP server entry
-(`exports["./mcp"]`), both pointing into `dist/`.
+The package also exports a library API (`exports["."]`) pointing into `dist/`.
 
 ## Command reference
 
@@ -109,10 +111,6 @@ While polling, a `.` progress dot is written to stderr. Exit codes:
 ### dns-checker resolvers
 
 List the built-in resolver presets. `--json` emits the same data as JSON.
-
-### dns-checker mcp
-
-Run the MCP server over stdio. See [MCP server](#mcp-server).
 
 ### dns-checker watch add
 
@@ -342,57 +340,6 @@ Environment variables exposed to `exec` and `notify` hooks (exact names from sou
 | `DNS_MATCHED` | `true` or `false`. |
 | `DNS_REASON` | Match reason string. |
 | `DNS_VALUES` | JSON array string of the current values. |
-
-## MCP server
-
-`dns-checker mcp` (or `node tools/dns-checker/dist/mcp.js`) starts an MCP server on
-stdio exposing 8 tools:
-
-| Tool | Input (summary) |
-| --- | --- |
-| `dns_lookup` | `domain`, `types` (array, default `["A"]`), `resolver` (default `"system"`), `transport` (default `"auto"`). |
-| `dns_check` | `domain`, `type`, `resolver`, `transport`, `rule`. |
-| `dns_wait` | As `dns_check` plus `intervalSeconds` (default 30) and `timeoutSeconds` (default 600). |
-| `dns_watch_add` | `name`, `domain`, `type` (default `"A"`), `rule`, `intervalSeconds` (default 60), optional `resolver`, `transport`, `hook`. |
-| `dns_watch_list` | No inputs. |
-| `dns_watch_remove` | `name`. |
-| `dns_watch_check` | Optional `name`; runs one manual check (hooks fire on every match). |
-| `dns_events` | `tail` (default 20). |
-
-Rules are JSON objects: `{"kind":"equals","values":[...]}`, `{"kind":"excludes","values":[...]}`,
-`{"kind":"contains","value":"..."}`, `{"kind":"regex","value":"..."}` (the pattern goes in
-`value`), `{"kind":"absent"}`, `{"kind":"any-change"}`.
-
-Hooks are JSON objects shaped like the hook spec: `{"kind":"exec","command":"..."}`,
-`{"kind":"webhook","url":"..."}`, `{"kind":"file","path":"..."}`,
-`{"kind":"notify","tool":"claude"}`, or `{"kind":"none"}`.
-
-`dns_wait` is capped at 900 seconds; requests above the cap are clamped, and the tool
-blocks for the whole wait. Prefer a persistent watch plus `dns_watch_check` for longer
-horizons.
-
-Registration snippets:
-
-```sh
-# Claude Code
-claude mcp add dns-checker -- node <absolute-path>/tools/dns-checker/dist/mcp.js
-
-# Codex
-codex mcp add dns-checker -- node <absolute-path>/tools/dns-checker/dist/mcp.js
-```
-
-Generic JSON config:
-
-```json
-{
-  "mcpServers": {
-    "dns-checker": {
-      "command": "node",
-      "args": ["/absolute/path/to/ai-tools/tools/dns-checker/dist/mcp.js"]
-    }
-  }
-}
-```
 
 ## Agent patterns
 

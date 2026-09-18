@@ -89,14 +89,6 @@ dns-checker watch run
 
 When the record matches, the daemon runs `claude -p "<event prompt>"` asking the agent to continue the task that created the watcher. Use `--hook exec:<command>` for custom automation (the command gets `EVENT`, `EVENT_SUMMARY` and `DNS_*` variables plus the event JSON on stdin), or `--hook file:<path>` to append events to a file.
 
-## MCP tools
-
-`dns-checker mcp` runs an MCP server exposing: `dns_lookup`, `dns_check`, `dns_wait`, `dns_watch_add`, `dns_watch_list`, `dns_watch_remove`, `dns_watch_check`, `dns_events` (wait capped at 900 seconds). Register with:
-
-```sh
-claude mcp add dns-checker -- node <repo>/tools/dns-checker/dist/mcp.js
-```
-
 ## Exit codes
 
 | Code | Meaning |
