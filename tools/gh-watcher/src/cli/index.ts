@@ -3,6 +3,8 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { collectReport } from '../core/engine.js';
+import { resolveEventsUrl } from '../core/events.js';
+import { waitForTerminal, type WaitResult, type WaitSource } from '../core/wait.js';
 import type { CheckReport, CheckState, FailedStep, GhWatchSpec, WatchTarget } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
 import { printJson, printTable } from './output.js';
@@ -19,6 +21,9 @@ interface RepoTargetFlags extends TargetFlags {
 interface WaitFlags extends RepoTargetFlags {
   interval?: string;
   timeout?: string;
+  fallbackInterval?: string;
+  source?: string;
+  eventsUrl?: string;
 }
 
 interface WaitOutcome {
@@ -26,6 +31,7 @@ interface WaitOutcome {
   runsCount: number;
   checkedAt: string;
   failedSteps?: FailedStep[];
+  source?: WaitSource;
 }
 
 function resolveRepo(repo: string | undefined): string {
@@ -102,56 +108,51 @@ async function waitAction(flags: WaitFlags): Promise<void> {
   const target = parseTargetFlagsOrExit(flags);
   const intervalMs = parseDuration(flags.interval ?? '30s');
   const timeoutMs = Math.min(parseDuration(flags.timeout ?? '30m'), MAX_WAIT_TIMEOUT_MS);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    let report: CheckReport;
-    try {
-      report = await collectReport(adhocSpec(repo, target));
-    } catch (error) {
-      console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
-      process.exitCode = 2;
-      return;
-    }
-    if (report.state === 'success') {
-      emitWaitOutcome(
-        { state: report.state, runsCount: report.runs.length, checkedAt: report.checkedAt },
-        flags.json,
-      );
-      process.exitCode = 0;
-      return;
-    }
-    if (report.state === 'failure') {
-      emitWaitOutcome(
-        {
-          state: report.state,
-          runsCount: report.runs.length,
-          checkedAt: report.checkedAt,
-          failedSteps: report.failedSteps,
+  const fallbackMs = parseDuration(flags.fallbackInterval ?? '5m');
+  const source = flags.source ?? 'auto';
+  if (source !== 'auto' && source !== 'events' && source !== 'poll') {
+    process.exitCode = 2;
+    throw new Error(`invalid --source "${source}": use auto, events or poll`);
+  }
+  let result: WaitResult;
+  try {
+    result = await waitForTerminal(
+      { repo, target, intervalMs, timeoutMs, fallbackMs, source, eventsUrl: resolveEventsUrl(flags.eventsUrl) },
+      {
+        onPending: () => {
+          if (!flags.json) {
+            process.stderr.write('.');
+          }
         },
-        flags.json,
-      );
-      process.exitCode = 1;
-      return;
-    }
-    if (!flags.json) {
-      process.stderr.write('.');
-    }
-    if (Date.now() >= deadline) {
-      break;
-    }
-    await sleep(Math.min(intervalMs, deadline - Date.now()));
+      },
+    );
+  } catch (error) {
+    console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 2;
+    return;
   }
-  if (flags.json) {
-    printJson({ state: 'pending', timedOut: true });
-  } else {
-    process.stderr.write('\n');
-    console.error(`timed out after ${formatDuration(timeoutMs)}`);
+  if (result.kind === 'timeout') {
+    if (flags.json) {
+      printJson({ state: 'pending', timedOut: true, source: result.source });
+    } else {
+      process.stderr.write('\n');
+      console.error(`timed out after ${formatDuration(timeoutMs)}`);
+    }
+    process.exitCode = 124;
+    return;
   }
-  process.exitCode = 124;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  const { report } = result;
+  const outcome: WaitOutcome = {
+    state: report.state,
+    runsCount: report.runs.length,
+    checkedAt: report.checkedAt,
+    source: result.source,
+  };
+  if (report.state === 'failure') {
+    outcome.failedSteps = report.failedSteps;
+  }
+  emitWaitOutcome(outcome, flags.json);
+  process.exitCode = report.state === 'success' ? 0 : 1;
 }
 
 function buildProgram(): Command {
@@ -169,7 +170,7 @@ function buildProgram(): Command {
       await statusAction(opts as RepoTargetFlags);
     });
   p.command('wait')
-    .description('Poll until runs for a target succeed or fail')
+    .description('Wait until runs for a target succeed or fail (event mode when a relay is configured, else polling)')
     .option('--repo <owner/name>', 'repository in OWNER/NAME form (defaults to GH_REPO)')
     .option('--pr <number>', 'pull request number', parseNumberOption)
     .option('--branch <name>', 'branch name')
@@ -177,6 +178,9 @@ function buildProgram(): Command {
     .option('--run <id>', 'run id', parseNumberOption)
     .option('--interval <duration>', 'poll interval', '30s')
     .option('--timeout <duration>', 'overall wait limit, capped at 24h', '30m')
+    .option('--source <mode>', 'auto, events or poll (auto uses events when a relay is configured and usable)', 'auto')
+    .option('--events-url <url>', 'event relay base URL (defaults to GH_WATCHER_EVENTS_URL)')
+    .option('--fallback-interval <duration>', 'event mode: safety-net gh re-check interval', '5m')
     .option('--json', 'emit the outcome as JSON', false)
     .action(async (opts) => {
       await waitAction(opts as WaitFlags);
