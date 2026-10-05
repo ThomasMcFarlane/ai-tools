@@ -174,14 +174,20 @@ Every `status`, `wait` and `watch add` takes exactly one of `--pr N`, `--branch 
 Validation: `--pr` and `--run` take positive integers, `--commit` takes 4 to 40
 hexadecimal characters, `--branch` must be non-empty.
 
-How each target resolves to runs (via `gh`):
+How each target resolves to runs (via `gh`). Only runs for a single commit are ever
+considered, so results from superseded commits cannot leak into the aggregate state:
 
 | Target | Resolution |
 | --- | --- |
-| `--pr <number>` | `gh pr view <number> --repo R --json headRefName`, then `gh run list --branch <headRefName> --limit 25`. |
-| `--branch <name>` | `gh run list --branch <name> --limit 25`. |
+| `--pr <number>` | `gh pr view <number> --repo R --json headRefName,headRefOid`, then `gh run list --commit <headRefOid> --limit 25`. Falls back to the branch rule below if `headRefOid` is missing. |
+| `--branch <name>` | Branch tip resolved with `gh api repos/R/branches/<name> --jq .commit.sha`, then `gh run list --commit <tip> --limit 25`. If the tip cannot be resolved, falls back to `gh run list --branch <name> --limit 25` and keeps only the commit of the most recently created run. |
 | `--commit <sha>` | `gh run list --commit <sha> --limit 25`. |
 | `--run <id>` | `gh run view <id> --repo R --json ...` (single run). |
+
+Within that commit, only the newest run of each workflow name is kept (latest
+`createdAt`, then highest run id), so a re-run that succeeds supersedes the failed
+attempt. A branch whose new tip has no runs yet reports `none` rather than the stale
+result of the previous commit.
 
 Fetched run fields: `databaseId`, `workflowName`, `displayTitle`, `status`,
 `conclusion`, `url`, `headSha`, `createdAt`.
@@ -220,8 +226,8 @@ Edge firing:
 - Daemon checks (`watch run`) fire the hook only on the transition into a triggered
   state. Staying in that state does not refire; leaving and re-entering does.
 - Manual checks (`watch check`) always fire when the trigger condition holds.
-- The edge is keyed by the set of run IDs. A new attempt (a new run, e.g. after a
-  re-run, push or sync) produces a different key, which resets the previous state to
+- The edge is keyed by the set of run IDs of the runs considered (head commit, latest
+  run per workflow). A new attempt (a new run, e.g. after a push or sync) produces a different key, which resets the previous state to
   `none`, so the hook can fire again for the new attempt.
 
 ## Hooks

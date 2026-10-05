@@ -9,3 +9,4 @@ coverage/
 .idea/
 .claude/settings.local.json
 .opencode/
+bin/
