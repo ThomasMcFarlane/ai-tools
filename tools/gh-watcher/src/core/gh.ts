@@ -104,6 +104,47 @@ function isFailureish(conclusion: string | null): boolean {
   return conclusion !== null && FAILURE_CONCLUSIONS.includes(conclusion);
 }
 
+function isNewer(candidate: GhRunInfo, current: GhRunInfo): boolean {
+  const left = candidate.createdAt ?? '';
+  const right = current.createdAt ?? '';
+  if (left !== right) {
+    return left > right;
+  }
+  return candidate.databaseId > current.databaseId;
+}
+
+/** Keep only runs for the given commit; a short sha given by the user matches by prefix. */
+function onlySha(runs: GhRunInfo[], sha: string): GhRunInfo[] {
+  const wanted = sha.toLowerCase();
+  return runs.filter((run) => run.headSha.toLowerCase().startsWith(wanted));
+}
+
+/** Keep the newest run of each workflow, so a successful re-run supersedes a failed attempt. */
+export function latestPerWorkflow(runs: GhRunInfo[]): GhRunInfo[] {
+  const latest = new Map<string, GhRunInfo>();
+  for (const run of runs) {
+    const current = latest.get(run.workflowName);
+    if (current === undefined || isNewer(run, current)) {
+      latest.set(run.workflowName, run);
+    }
+  }
+  return runs.filter((run) => latest.get(run.workflowName) === run);
+}
+
+/** Fallback: restrict to the commit of the most recently created run, then newest per workflow. */
+function newestCommitRuns(runs: GhRunInfo[]): GhRunInfo[] {
+  let newest: GhRunInfo | undefined;
+  for (const run of runs) {
+    if (newest === undefined || isNewer(run, newest)) {
+      newest = run;
+    }
+  }
+  if (newest === undefined) {
+    return [];
+  }
+  return latestPerWorkflow(runs.filter((run) => run.headSha === newest.headSha));
+}
+
 export class GhClient {
   private readonly exec: GhExec;
 
@@ -118,15 +159,47 @@ export class GhClient {
       return [normaliseRun(parseJson(result.stdout))];
     }
     if (target.kind === 'pr') {
-      const prResult = await this.exec(['pr', 'view', String(target.number), '--repo', repo, '--json', 'headRefName']);
+      const prResult = await this.exec([
+        'pr',
+        'view',
+        String(target.number),
+        '--repo',
+        repo,
+        '--json',
+        'headRefName,headRefOid',
+      ]);
       assertOk(prResult, `pr view ${target.number}`);
-      const parsed = parseJson<{ headRefName?: string }>(prResult.stdout);
-      return this.listRunsBy(repo, '--branch', parsed.headRefName ?? '');
+      const parsed = parseJson<{ headRefName?: string; headRefOid?: string }>(prResult.stdout);
+      const headSha = parsed.headRefOid ?? '';
+      if (headSha.length > 0) {
+        return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', headSha), headSha));
+      }
+      // Older gh versions may omit headRefOid: fall back to the newest commit on the head branch.
+      return newestCommitRuns(await this.listRunsBy(repo, '--branch', parsed.headRefName ?? ''));
     }
     if (target.kind === 'branch') {
-      return this.listRunsBy(repo, '--branch', target.branch);
+      const headSha = await this.branchHeadSha(repo, target.branch);
+      if (headSha !== undefined) {
+        return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', headSha), headSha));
+      }
+      return newestCommitRuns(await this.listRunsBy(repo, '--branch', target.branch));
     }
-    return this.listRunsBy(repo, '--commit', target.sha);
+    return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', target.sha), target.sha));
+  }
+
+  /** Resolve the branch tip through the API; undefined when it cannot be resolved. */
+  private async branchHeadSha(repo: string, branch: string): Promise<string | undefined> {
+    const encoded = branch.split('/').map(encodeURIComponent).join('/');
+    try {
+      const result = await this.exec(['api', `repos/${repo}/branches/${encoded}`, '--jq', '.commit.sha']);
+      if (result.code !== 0) {
+        return undefined;
+      }
+      const sha = result.stdout.trim();
+      return /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async listRunsBy(repo: string, flag: string, value: string): Promise<GhRunInfo[]> {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GhClient, type GhExec, type GhExecResult } from '../src/core/gh.js';
+import { aggregateState, GhClient, type GhExec, type GhExecResult } from '../src/core/gh.js';
 
 const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
 const REPO = 'octo-org/hello-world';
@@ -33,9 +33,12 @@ const RUN_JSON = JSON.stringify({
   createdAt: '2026-01-01T00:00:00Z',
 });
 
+const SHA1 = 'a'.repeat(40);
+const SHA2 = 'b'.repeat(40);
+
 const RUN_LIST_JSON = JSON.stringify([
-  { databaseId: 2, workflowName: 'CI', displayTitle: 'b2', status: 'completed', conclusion: 'success', url: 'u2', headSha: 'sha2' },
-  { databaseId: 1, workflowName: 'CI', displayTitle: 'b1', status: 'completed', conclusion: 'failure', url: 'u1', headSha: 'sha1' },
+  { databaseId: 2, workflowName: 'CI', displayTitle: 'b2', status: 'completed', conclusion: 'success', url: 'u2', headSha: SHA2, createdAt: '2026-01-02T00:00:00Z' },
+  { databaseId: 1, workflowName: 'CI', displayTitle: 'b1', status: 'completed', conclusion: 'failure', url: 'u1', headSha: SHA1, createdAt: '2026-01-01T00:00:00Z' },
 ]);
 
 const JOBS_JSON = JSON.stringify({
@@ -68,13 +71,14 @@ describe('GhClient.listRuns', () => {
   });
 
   it('lists branch runs', async () => {
-    const { exec, calls } = fakeExec([ok(RUN_LIST_JSON)]);
+    const { exec, calls } = fakeExec([ok(`${SHA2}\n`), ok(RUN_LIST_JSON)]);
     const client = new GhClient({ exec });
     const runs = await client.listRuns(REPO, { kind: 'branch', branch: 'main' });
     expect(calls).toEqual([
-      ['run', 'list', '--repo', REPO, '--branch', 'main', '--limit', '25', '--json', RUN_FIELDS],
+      ['api', 'repos/octo-org/hello-world/branches/main', '--jq', '.commit.sha'],
+      ['run', 'list', '--repo', REPO, '--commit', SHA2, '--limit', '25', '--json', RUN_FIELDS],
     ]);
-    expect(runs.map((run) => run.databaseId)).toEqual([2, 1]);
+    expect(runs.map((run) => run.databaseId)).toEqual([2]);
   });
 
   it('lists commit runs', async () => {
@@ -87,15 +91,73 @@ describe('GhClient.listRuns', () => {
     expect(runs).toEqual([]);
   });
 
-  it('resolves a pr target in two gh calls', async () => {
-    const { exec, calls } = fakeExec([ok(JSON.stringify({ headRefName: 'feature-1' })), ok(RUN_LIST_JSON)]);
+  it('resolves a pr target to runs for its head commit only', async () => {
+    const { exec, calls } = fakeExec([
+      ok(JSON.stringify({ headRefName: 'feature-1', headRefOid: SHA2 })),
+      ok(RUN_LIST_JSON),
+    ]);
     const client = new GhClient({ exec });
     const runs = await client.listRuns(REPO, { kind: 'pr', number: 17 });
     expect(calls).toEqual([
-      ['pr', 'view', '17', '--repo', REPO, '--json', 'headRefName'],
-      ['run', 'list', '--repo', REPO, '--branch', 'feature-1', '--limit', '25', '--json', RUN_FIELDS],
+      ['pr', 'view', '17', '--repo', REPO, '--json', 'headRefName,headRefOid'],
+      ['run', 'list', '--repo', REPO, '--commit', SHA2, '--limit', '25', '--json', RUN_FIELDS],
     ]);
-    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.databaseId)).toEqual([2]);
+  });
+
+  it('reports success for a pr whose older commit failed but newest is green', async () => {
+    const { exec } = fakeExec([
+      ok(JSON.stringify({ headRefName: 'feature-1', headRefOid: SHA2 })),
+      ok(RUN_LIST_JSON),
+    ]);
+    const client = new GhClient({ exec });
+    const runs = await client.listRuns(REPO, { kind: 'pr', number: 17 });
+    expect(aggregateState(runs)).toBe('success');
+  });
+
+  it('lets a successful re-run supersede the failed attempt of the same workflow', async () => {
+    const list = JSON.stringify([
+      { databaseId: 9, workflowName: 'CI', status: 'completed', conclusion: 'success', headSha: SHA2, createdAt: '2026-01-02T02:00:00Z' },
+      { databaseId: 8, workflowName: 'CI', status: 'completed', conclusion: 'failure', headSha: SHA2, createdAt: '2026-01-02T01:00:00Z' },
+      { databaseId: 7, workflowName: 'Lint', status: 'completed', conclusion: 'success', headSha: SHA2, createdAt: '2026-01-02T01:00:00Z' },
+    ]);
+    const { exec } = fakeExec([ok(JSON.stringify({ headRefOid: SHA2 })), ok(list)]);
+    const runs = await new GhClient({ exec }).listRuns(REPO, { kind: 'pr', number: 3 });
+    expect(runs.map((run) => run.databaseId)).toEqual([9, 7]);
+    expect(aggregateState(runs)).toBe('success');
+  });
+
+  it('reports pending while the head commit still has a running workflow', async () => {
+    const list = JSON.stringify([
+      { databaseId: 12, workflowName: 'CI', status: 'in_progress', conclusion: null, headSha: SHA2, createdAt: '2026-01-02T00:00:00Z' },
+      { databaseId: 5, workflowName: 'CI', status: 'completed', conclusion: 'failure', headSha: SHA1, createdAt: '2026-01-01T00:00:00Z' },
+    ]);
+    const { exec } = fakeExec([ok(JSON.stringify({ headRefOid: SHA2 })), ok(list)]);
+    const runs = await new GhClient({ exec }).listRuns(REPO, { kind: 'pr', number: 3 });
+    expect(aggregateState(runs)).toBe('pending');
+  });
+
+  it('reports none for a head commit that has no runs yet', async () => {
+    const { exec } = fakeExec([ok(`${SHA2}\n`), ok('[]')]);
+    const runs = await new GhClient({ exec }).listRuns(REPO, { kind: 'branch', branch: 'feat/x' });
+    expect(aggregateState(runs)).toBe('none');
+  });
+
+  it('url-encodes branch segments when resolving the branch head', async () => {
+    const { exec, calls } = fakeExec([ok(`${SHA2}\n`), ok('[]')]);
+    await new GhClient({ exec }).listRuns(REPO, { kind: 'branch', branch: 'feat/a b' });
+    expect(calls[0]).toEqual(['api', 'repos/octo-org/hello-world/branches/feat/a%20b', '--jq', '.commit.sha']);
+  });
+
+  it('falls back to the newest commit in the run list when the branch head cannot be resolved', async () => {
+    const { exec, calls } = fakeExec([
+      { stdout: '', stderr: 'Not Found', code: 1 },
+      ok(RUN_LIST_JSON),
+    ]);
+    const runs = await new GhClient({ exec }).listRuns(REPO, { kind: 'branch', branch: 'main' });
+    expect(calls[1]).toEqual(['run', 'list', '--repo', REPO, '--branch', 'main', '--limit', '25', '--json', RUN_FIELDS]);
+    expect(runs.map((run) => run.databaseId)).toEqual([2]);
+    expect(aggregateState(runs)).toBe('success');
   });
 
   it('throws with the trimmed stderr when a run view exits non-zero', async () => {
@@ -109,7 +171,7 @@ describe('GhClient.listRuns', () => {
   it('returns an empty list for empty run list output', async () => {
     const { exec } = fakeExec([ok('[]')]);
     const client = new GhClient({ exec });
-    expect(await client.listRuns(REPO, { kind: 'branch', branch: 'main' })).toEqual([]);
+    expect(await client.listRuns(REPO, { kind: 'commit', sha: 'abc123' })).toEqual([]);
   });
 });
 
