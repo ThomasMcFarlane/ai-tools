@@ -15,7 +15,7 @@
     "build:bin": "npm run build:bin --workspaces --if-present && npm run rename:bins",
     "rename:bins": "node scripts/rename-bins.mjs",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build -w @ai-tools/hooks && npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
