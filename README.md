@@ -51,7 +51,14 @@ node tools/gh-watcher/dist/cli.js --help
 
 ### Releases
 
-Pushing a `v*` tag (for example `v1.2.0`) builds the binaries on GitHub-hosted runners and publishes them to the Releases page of this repository together with a `checksums.txt` file of sha256 digests. Verify a download against it:
+Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. Each run lints, typechecks, builds and tests the repository, cross-compiles both CLIs for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (ten binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests. The workflow fails, without overwriting anything, if a release or tag with that name already exists.
+
+To cut a release, either:
+
+- open Actions, pick **Release**, choose **Run workflow** on `main` and enter a version such as `0.1.0`. The workflow creates and pushes tag `v0.1.0` on that commit once the build and tests pass, then publishes the release in the same run; or
+- push a tag yourself: `git tag v0.1.0 && git push origin v0.1.0`.
+
+Versions with a suffix (for example `0.2.0-rc.1`) are published as pre-releases. Verify a download against the checksums, from the directory holding the binaries:
 
 ```sh
 sha256sum -c checksums.txt

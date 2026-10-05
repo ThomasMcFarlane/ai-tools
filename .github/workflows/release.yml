@@ -1,16 +1,111 @@
 name: Release
 
+# Two ways to release:
+#   1. Push a tag matching v* (for example v0.1.0).
+#   2. Run this workflow manually with a `version` input (for example 0.1.0). The tag
+#      v<version> is then created on the dispatched commit once the build and tests
+#      pass. Tags pushed with GITHUB_TOKEN do not trigger other workflows, so the whole
+#      release runs inside this single workflow.
+
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (for example 0.1.0)"
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Quiet npm and keep CI output deterministic.
+  NO_UPDATE_NOTIFIER: "1"
 
 jobs:
-  release:
+  prepare:
+    name: Resolve and validate tag
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION#v}"
+            if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::version must look like 0.1.0 or 0.1.0-rc.1, got '$INPUT_VERSION'"
+              exit 1
+            fi
+            if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "::error::dispatch the release from $DEFAULT_BRANCH, not $REF_NAME"
+              exit 1
+            fi
+            tag="v$version"
+          else
+            tag="$REF_NAME"
+            version="${tag#v}"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::a release for $tag already exists; refusing to overwrite it"
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag already exists; refusing to reuse it"
+            exit 1
+          fi
+          case "$version" in
+            *-*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Lint, typecheck, build and test
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  binaries:
+    name: Build native binaries
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,14 +114,68 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      # Cross-compiles linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 for
+      # every tool, then renames the output to <tool>-<os>-<arch>[.exe].
       - run: npm run build:bin
-      - run: find tools -type f -path '*/bin/*' | sort | xargs sha256sum > checksums.txt
-      - uses: softprops/action-gh-release@v2
+      - name: Collect binaries and checksums
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          cp tools/*/bin/* release-assets/
+          cd release-assets
+          expected=10
+          count=$(ls | wc -l)
+          if [ "$count" -ne "$expected" ]; then
+            echo "::error::expected $expected binaries, found $count"
+            ls -l
+            exit 1
+          fi
+          sha256sum * > checksums.txt
+          ls -l
+          cat checksums.txt
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            tools/*/bin/*
-            checksums.txt
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Tag and publish release
+    needs: [prepare, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          # Re-check straight before publishing: never overwrite an existing release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release for $TAG already exists; refusing to overwrite it"
+            exit 1
+          fi
+          flags=(--verify-tag --generate-notes --title "$TAG")
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}" release-assets/*
