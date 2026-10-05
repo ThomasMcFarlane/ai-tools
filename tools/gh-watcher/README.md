@@ -80,17 +80,21 @@ Takes the same target flags as `status`, plus:
 | --- | --- | --- |
 | `--interval <duration>` | `30s` | Poll interval. |
 | `--timeout <duration>` | `30m` | Overall wait limit, capped at 24h. |
+| `--source <mode>` | `auto` | `auto`, `events` or `poll`, see [Event mode](#event-mode). |
+| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Base URL of the event relay. |
+| `--fallback-interval <duration>` | `5m` | Event mode only: safety-net `gh` re-check interval. |
 | `--json` | off | Emit the outcome as JSON. |
 
 Durations accept a bare number (seconds) or a unit suffix: `250ms`, `30s`, `5m`, `1h`.
 While polling, a `.` progress dot is written to stderr. On failure the outcome includes
-the collected failed steps. Exit codes:
+the collected failed steps. The JSON outcome carries `source` (`"events"` or `"poll"`), the
+mode the wait finished in. Exit codes:
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Aggregate state reached `success` |
 | `1` | Aggregate state reached `failure` |
-| `124` | Timed out while still `pending` (JSON outcome: `{"state":"pending","timedOut":true}`) |
+| `124` | Timed out while still `pending` (JSON outcome: `{"state":"pending","timedOut":true,"source":"poll"}`) |
 | `2` | Error: `gh` failed or bad flags |
 
 ### gh-watcher watch add
@@ -166,6 +170,83 @@ gh-watcher watch events [--tail <n>] [--json]
 
 Show recent watch events, oldest first. `--tail <n>` defaults to `20`. Events come from
 `events.jsonl` (see [State files](#state-files)).
+
+## Event mode
+
+By default `wait` polls GitHub through `gh` every `--interval`. If you run a private webhook
+relay that receives GitHub `workflow_run` webhooks and implements the API below, `wait` can
+block on the relay instead and make almost no GitHub API calls. The relay is not part of this
+repository and no hostname is built in: configure it with `--events-url <url>` or the
+`GH_WATCHER_EVENTS_URL` environment variable.
+
+`--source` selects the mode:
+
+- `auto` (default): use events when a URL is configured and the relay answers with
+  `owner_mode == "app"` and `workflow_run_subscribed == true`; otherwise poll exactly as before.
+- `events`: require a URL (exit `2` without one) and use the relay even if it does not report
+  app mode (a warning is logged and the fallback interval carries the load).
+- `poll`: never contact the relay.
+
+How `wait` behaves in event mode:
+
+1. Resolve the target to a head commit (PR head, branch tip, commit, or the run's commit), then
+   probe the relay for its current `latest_seq`.
+2. Run one `gh` status check. If it is terminal, exit as usual.
+3. Long-poll `/api/runs` (25 seconds at a time) with `after=<last seq>`. Each event for the
+   commit, and every `--fallback-interval`, triggers one `gh` re-check; exit when terminal. The
+   fallback re-check also re-resolves a PR or branch head, so a new push is picked up.
+4. If `latest_seq` goes backwards (the relay restarted), the sequence is reset and `gh` is
+   re-checked immediately.
+5. Any relay failure (network error, HTTP 5xx or 503, malformed response) logs one line to
+   stderr and the rest of the wait continues as normal polling. The relay never fails a wait.
+
+Exit codes, the JSON outcome and `--timeout` are unchanged. A typical successful wait costs
+two to three `gh` calls in total.
+
+`watch run` (the daemon) does not use event mode: it remains poll-only.
+
+### Relay API contract
+
+```
+GET <base>/api/runs?repo=OWNER/NAME&sha=<40-hex>&after=<seq>&wait=<seconds, at most 25>
+```
+
+Returns immediately when events with `seq > after` match the repository and commit; otherwise
+holds the request for up to `wait` seconds and returns an empty `events` list. Responds `400`
+on bad input and `503` when overloaded. The client sends an abort timeout of `wait + 10`
+seconds.
+
+```json
+{
+  "repo": "OWNER/NAME",
+  "owner_mode": "app",
+  "workflow_run_subscribed": true,
+  "latest_seq": 42,
+  "buffer_started_at": "2026-01-01T00:00:00Z",
+  "events": [
+    {
+      "seq": 42,
+      "received_at": "2026-01-01T00:01:00Z",
+      "action": "completed",
+      "repo": "OWNER/NAME",
+      "run_id": 1,
+      "run_attempt": 1,
+      "workflow_name": "CI",
+      "head_sha": "<40-hex>",
+      "head_branch": "main",
+      "status": "completed",
+      "conclusion": "success",
+      "event": "push",
+      "html_url": "https://github.com/OWNER/NAME/actions/runs/1",
+      "updated_at": "2026-01-01T00:01:00Z",
+      "pull_requests": []
+    }
+  ]
+}
+```
+
+`owner_mode` is `"app"`, `"poll"` or `"unknown"`; only `"app"` with
+`workflow_run_subscribed: true` makes `auto` choose events.
 
 ## Targets
 

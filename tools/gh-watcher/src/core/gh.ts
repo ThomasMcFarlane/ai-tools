@@ -187,6 +187,40 @@ export class GhClient {
     return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', target.sha), target.sha));
   }
 
+  /**
+   * Resolve a target to the full head sha without listing runs; undefined when it cannot be
+   * resolved (callers then fall back to polling, which surfaces the underlying error).
+   */
+  async resolveHeadSha(repo: string, target: WatchTarget): Promise<string | undefined> {
+    const isFull = (value: string): boolean => /^[0-9a-f]{40}$/i.test(value);
+    try {
+      if (target.kind === 'commit') {
+        if (isFull(target.sha)) {
+          return target.sha.toLowerCase();
+        }
+        const result = await this.exec(['api', `repos/${repo}/commits/${encodeURIComponent(target.sha)}`, '--jq', '.sha']);
+        const sha = result.stdout.trim();
+        return result.code === 0 && isFull(sha) ? sha.toLowerCase() : undefined;
+      }
+      if (target.kind === 'branch') {
+        return (await this.branchHeadSha(repo, target.branch))?.toLowerCase();
+      }
+      const args =
+        target.kind === 'pr'
+          ? ['pr', 'view', String(target.number), '--repo', repo, '--json', 'headRefOid']
+          : ['run', 'view', String(target.runId), '--repo', repo, '--json', 'headSha'];
+      const result = await this.exec(args);
+      if (result.code !== 0) {
+        return undefined;
+      }
+      const parsed = parseJson<{ headRefOid?: string; headSha?: string }>(result.stdout);
+      const sha = parsed.headRefOid ?? parsed.headSha ?? '';
+      return isFull(sha) ? sha.toLowerCase() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Resolve the branch tip through the API; undefined when it cannot be resolved. */
   private async branchHeadSha(repo: string, branch: string): Promise<string | undefined> {
     const encoded = branch.split('/').map(encodeURIComponent).join('/');

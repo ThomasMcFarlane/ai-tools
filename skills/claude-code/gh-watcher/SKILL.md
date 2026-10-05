@@ -34,6 +34,7 @@ gh-watcher wait --branch main --timeout 20m --json
 
 - `--interval <duration>` (default 30s)
 - `--timeout <duration>` (default 30m, capped at 24h)
+- `--source auto|events|poll` (default auto): with `--events-url <url>` or `GH_WATCHER_EVENTS_URL` set and a compatible private webhook relay, `wait` blocks on events and makes almost no GitHub API calls; otherwise it polls. It falls back to polling if the relay fails. `--fallback-interval <duration>` (default 5m) is the event-mode safety net. The JSON outcome includes `source`. `watch run` stays poll-only. See the tool README, "Event mode".
 - `--json`: emit the outcome as JSON
 
 ### watch: persistent watches with hooks
