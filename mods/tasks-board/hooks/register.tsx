@@ -75,7 +75,7 @@ async function resolvePath($: EngineInterface): Promise<{ path: string; source: 
 
 // Other worktrees of the repo, merged into the base board. Kept in module variables (not $.state):
 // the parsed rows can be large, and a reload simply rescans.
-type ParsedBoard = { mtimeMs: number; size: number; baseSha: string; tasks: TasksBoardTask[] }
+type ParsedBoard = { mtimeMs: number; size: number; baseSha: string; tasks: TasksBoardTask[]; fork?: TasksBoardTask[] }
 const wtParsed = new Map<string, ParsedBoard>()
 // The board as committed at a fork point, by commit sha (the same in every checkout of the repository).
 const forkParsed = new Map<string, TasksBoardTask[]>()
@@ -165,10 +165,10 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
         }
         // Only what the worktree changed since it forked counts; if git cannot say, every row does.
         const fork = await forkBoard($, s.p, baseSha)
-        parsed = { mtimeMs: s.mtimeMs, size: s.size, baseSha, tasks: fork ? changedSinceFork(fork, all) : all }
+        parsed = { mtimeMs: s.mtimeMs, size: s.size, baseSha, tasks: fork ? changedSinceFork(fork, all) : all, fork }
         wtParsed.set(s.p, parsed)
       }
-      found.push({ tag: worktreeTag(s.p, cfg), path: s.p, isOwn: s.isOwn, tasks: parsed.tasks })
+      found.push({ tag: worktreeTag(s.p, cfg), path: s.p, isOwn: s.isOwn, tasks: parsed.tasks, fork: parsed.fork })
       infos.push({ path: s.p, mtimeMs: s.mtimeMs, isOwn: s.isOwn, changed: parsed.tasks.length })
     }
   }
