@@ -43,6 +43,7 @@ for (const [name, text] of BOARDS) {
     const clock = mock.clock(on, { now: 1_760_000_000_000 })
     on('session.start', () => ({ cwd: dir }))
     on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
     on('fs.exists', (_$, e) => ({ value: e.path === path }))
     on('fs.stat', (_$, e) => ({
       value: { kind: 'file', size: (e.path === path ? text : wtText).length, mtimeMs: e.path === path ? 1_759_000_000_000 : Date.now(), isLink: false },
@@ -115,6 +116,7 @@ test('a non-canonical primary board launches the formatting agent once, recorded
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
   on('session.start', () => ({ cwd: dir }))
   on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
   on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
   on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
   on('fs.read', () => ({ value: text }))
@@ -159,6 +161,7 @@ test('worktree variants are what the worktree changed since it forked, not where
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
   on('session.start', () => ({ cwd: dir }))
   on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
   on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
   on('fs.stat', (_$, e) => ({
     value: { kind: 'file', size: (boards[e.path] ?? '').length, mtimeMs: e.path === `${dir}/TASKS.md` ? 1_759_000_000_000 : Date.now(), isLink: false },
@@ -212,6 +215,7 @@ test('every Button has a label or one string child, on an mc3-like board', { opt
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
   on('session.start', () => ({ cwd: dir }))
   on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
   on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
   on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
   on('fs.read', () => ({ value: text }))
@@ -264,6 +268,7 @@ test('an open epic keeps its task rows outside its own Box, so hovering a task d
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
   on('session.start', () => ({ cwd: dir }))
   on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
   on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
   on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
   on('fs.read', () => ({ value: text }))

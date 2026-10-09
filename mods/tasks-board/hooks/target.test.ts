@@ -15,12 +15,13 @@ const boards: Record<string, string> = {
 const NOW = 1_760_000_000_000
 const commonOf = (dir: string) => (dir.startsWith('/work/a') ? '/work/a/.git' : '/work/b/.git')
 
-function setup(on: Parameters<Parameters<typeof test>[1]>[1], opts: { cwd: string; gate?: Promise<void>; bListsA?: boolean }) {
+function setup(on: Parameters<Parameters<typeof test>[1]>[1], opts: { cwd: string; gate?: Promise<void>; bListsA?: boolean; shellCwd?: string }) {
   mock.store(on)
   const clock = mock.clock(on, { now: NOW })
   const opened: string[] = []
   on('session.start', () => ({ cwd: opts.cwd }))
-  on('session.cwd', () => ({ value: opts.cwd }))
+  on('session.cwd', () => ({ value: opts.shellCwd ?? opts.cwd }))
+  on('session.root', () => ({ value: opts.cwd }))
   on('fs.exists', (_$, e) => ({ value: e.path in boards && !e.path.includes('-wt') }))
   on('fs.stat', (_$, e) => {
     if (!(e.path in boards)) throw new Error('ENOENT')
@@ -111,7 +112,7 @@ test('board debug reports the pick', async ($, on) => {
   const text = (await board($, 'debug')).text
   expect(text).toContain('board: /work/a/TASKS.md')
   expect(text).toContain('org/repo: -/a')
-  expect(text).toContain('session cwd: /work/a')
+  expect(text).toContain('session root: /work/a')
 })
 
 test('board repo comes from the board path', () => {
@@ -187,4 +188,13 @@ test('every cell of a row carries the hover style', async ($, on) => {
   expect(leaves.length).toBeGreaterThan(5)
   expect(leaves.filter(l => l.hover?.inverse !== true)).toEqual([])
   await ui.unmount()
+})
+
+test('a shell cd away from the repo does not move the board', async ($, on) => {
+  const { clock } = setup(on, { cwd: '/work/a', shellCwd: '/elsewhere/scripts' })
+  await $.session.start({ cwd: '/work/a', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const text = (await board($, 'debug')).text
+  expect(text).toContain('board: /work/a/TASKS.md')
+  expect(text).toContain('session root: /work/a')
 })
