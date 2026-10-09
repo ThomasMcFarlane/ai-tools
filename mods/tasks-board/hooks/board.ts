@@ -23,8 +23,8 @@ export function ownerGate(names: string[]): RegExp {
   return re
 }
 
-// PZ-001, CF-EMAIL-ROUTING-01, 65, 12a, 3.2.1
-const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|\d+(?:\.\d+)+|\d+[a-z]?)$/
+// PZ-001, CF-EMAIL-ROUTING-01, F10, 65, 12a, 3.2.1
+const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d+[a-z]?)$/
 
 /** Statuses are grouped as in_progress / blocked / todo / done; anything unknown counts as todo. */
 export const normaliseStatus = (s: string): string => {
@@ -218,7 +218,7 @@ export const isBlockedOnYou = (t: TasksBoardTask): boolean =>
 
 /** Task ids (`| 65 |` or `| PZ-001 |` at a line start) in a piece of edited text. */
 export const rowIds = (text: string): string[] =>
-  [...text.matchAll(/^\s*\|\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|\d+(?:\.\d+)+|\d+[a-z]?)\s*\|/gm)].map(m => m[1]!)
+  [...text.matchAll(/^\s*\|\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d+[a-z]?)\s*\|/gm)].map(m => m[1]!)
 
 /** Task ids among command arguments (`65`, `pz-001`), upper-cased; anything else is dropped. */
 export const parseIds = (args: string[]): string[] => args.map(a => (/^[a-z]/i.test(a) ? a.toUpperCase() : a)).filter(a => ID.test(a))

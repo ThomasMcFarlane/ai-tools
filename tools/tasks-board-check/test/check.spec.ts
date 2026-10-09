@@ -29,4 +29,13 @@ describe('check', () => {
     ).toBe(true);
     expect(check('| ID |  Task |\n|---|---|\n', 'lenient').failed).toBe(true);
   });
+
+  it('counts letter+digit IDs in a Status table and ignores them in decision tables', () => {
+    const r = check(
+      H +
+        '| F1 | t | todo | a | | | | |\n| F10 | t | done | a | | | | |\n\n| ID | Decision | Why |\n|---|---|---|\n| D1 | x | y |\n',
+    );
+    expect(r.tasks).toBe(2);
+    expect(r.failed).toBe(false);
+  });
 });
