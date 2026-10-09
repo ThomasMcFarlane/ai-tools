@@ -26,13 +26,14 @@ export function ownerGate(names: string[]): RegExp {
 // PZ-001, CF-EMAIL-ROUTING-01, F10, 65, 12a, 3.2.1
 const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d+[a-z]?)$/
 
-/** Statuses are grouped as in_progress / blocked / todo / done; anything unknown counts as todo. */
+/** Statuses are grouped as in_progress / blocked / todo / parked / done; anything unknown counts as todo. */
 export const normaliseStatus = (s: string): string => {
   // The leading phrase decides: `done (merged #337)`, `done - published as v1`, `merged via PR [#35](…)`, `open, not started`.
   const bare = s.replace(/\*\*|~~|`/g, '').trim().replace(/^[*_]+|[*_]+$/g, '')
   const lead = bare.split(/\s*(?:\(|—|–|,|:|;|\s-\s)/)[0]!
   const k = lead.trim().toLowerCase().replace(/[\s-]+/g, '_')
   if (/^(in_progress|in_review|review|partly|doing|in_pr$|in_pr_|pr_(#?\d+_)?open)/.test(k)) return 'in_progress'
+  if (k === 'parked') return 'parked'
   if (k.startsWith('blocked') || k.startsWith('waiting_on') || k.startsWith('on_hold')) return 'blocked'
   if (DONE_WORDS.includes(k.split('_')[0]!) || DONE_PHRASES.some(p => k === p || k.startsWith(`${p}_`))) return 'done'
   return 'todo'
@@ -455,7 +456,7 @@ export function wrapText(text: string, width: number): string[] {
 /** Epic ETA: the latest canonical ETA among open rows (time zone ignored); else the first ETA in file order (free text). */
 export const epicEta = (rows: TasksBoardTask[]): string => {
   const key = (eta: string) => (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}\b/.test(eta) ? eta.slice(0, 16) : '')
-  const dated = rows.filter(t => t.status !== 'done' && key(t.eta))
+  const dated = rows.filter(t => t.status !== 'done' && t.status !== 'parked' && key(t.eta))
   const latest = dated.reduce((a, t) => (key(t.eta) > key(a.eta) ? t : a), dated[0] ?? { eta: '' })
   return latest.eta || (rows.find(t => t.eta !== '')?.eta ?? '')
 }
@@ -637,7 +638,7 @@ export async function pickBoard(
   return { path: '', source: 'none' }
 }
 
-export const FORMAT_STATUSES = ['todo', 'in_progress', 'in_review', 'blocked', 'blocked_on_owner', 'done']
+export const FORMAT_STATUSES = ['todo', 'in_progress', 'in_review', 'blocked', 'blocked_on_owner', 'parked', 'done']
 export const CANON_HEADER = ['ID', 'Task', 'Status', 'Owner', 'Branch', 'Depends', 'ETA', 'Notes']
 // `YYYY-MM-DD HH:MM` and a timezone: an abbreviation (ICT, UTC), `UTC+07(:00)` or an offset `+07:00`.
 const ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/

@@ -632,6 +632,17 @@ test('rows with an ETA keep equal width', () => {
   }
 })
 
+test('parked is a canonical status, parses as parked, is never owner-blocked and is excluded from epicEta', () => {
+  const CH = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+  const text = `# Tasks\n\n## E\n\n${CH}| A-1 | a | parked | | | | | Parked by owner 2026-10-09: hold; resumes when web is done |\n`
+  expect(lintBoard(text).findings).toEqual([])
+  const rows = parseBoard(text)
+  expect(rows.map(t => t.status)).toEqual(['parked'])
+  expect(rows.map(isBlockedOnYou)).toEqual([false])
+  const r = (eta: string, status: string) => ({ eta, status }) as never
+  expect(epicEta([r('2026-12-01 09:00 ICT', 'parked'), r('2026-10-20 08:00 ICT', 'todo')])).toBe('2026-10-20 08:00 ICT')
+})
+
 test('epicEta is the latest canonical ETA of open rows', () => {
   const r = (eta: string, status = 'todo') => ({ eta, status }) as never
   expect(epicEta([r('2026-10-11 18:00 ICT'), r('2026-12-01 09:00 ICT', 'done'), r('2026-10-20 08:00 ICT'), r('soon')])).toBe('2026-10-20 08:00 ICT')
