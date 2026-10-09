@@ -80,7 +80,7 @@ Check boards in CI with the shared format check, which applies the same rules as
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@v1
+- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1
   with:
     path: TASKS.md
     format: canonical # or lenient while migrating
