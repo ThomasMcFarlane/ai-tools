@@ -6,7 +6,7 @@ import type { WorktreeBoard } from './board'
 import type { BoardConfig } from './config'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
-import { ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
+import { ETA_W, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
 
 const PANE = 'tasks-board'
 const empty = { numW: 3, repo: '', path: '', mtimeMs: 0, size: 0, checkedAt: 0, tasks: [], error: '' }
@@ -508,10 +508,10 @@ export const register: Register = (on, options) => {
     const short = (a: string) => (prefix ? a.replace(prefix, '') : a)
     // owner / unassigned / empty means nobody has picked the row up yet
     const who = (a: string) => (/^(owner|unassigned|)$/i.test(a.trim()) ? '—' : short(a))
-    // One table: # (numW, right) | Task (flex) [| Agent (12)] [| ETA (6)]; sections are full-width sub-header rows.
-    // Columns: chevron (1) | # (numW) | Task (flex) [| Agent (12)] [| ETA (6)], a three-cell ` │ ` between each.
+    // One table: # (numW, right) | Task (flex) [| Agent (12)] [| ETA (10)]; sections are full-width sub-header rows.
+    // Columns: chevron (1) | # (numW) | Task (flex) [| Agent (12)] [| ETA (10)], a three-cell ` │ ` between each.
     const numW = b.numW
-    const taskW = Math.max(6, W - (11 + numW) - (hasAgent ? 15 : 0) - (hasEta ? 9 : 0))
+    const taskW = Math.max(6, W - (11 + numW) - (hasAgent ? 15 : 0) - (hasEta ? ETA_W + 3 : 0))
     const header = tableLine({ num: '#', task: 'Task', agent: 'Agent', eta: 'ETA' }, taskW, hasAgent, hasEta, numW)
     // Hovering anywhere on a row (it is a keyed Box) inverts every cell of it.
     const HV = { inverse: true } as const
@@ -560,7 +560,7 @@ export const register: Register = (on, options) => {
             {bar()}
             <Button key={`t${t.key}`} label={cell} plain hover={HV} onPress={toggle} />
             {hasAgent && bar()}{hasAgent && cellButton(`ca${t.key}`, padR(who(t.agent), 12), toggle)}
-            {hasEta && bar()}{hasEta && cellButton(`ce${t.key}`, padR(t.eta || '—', 6), toggle)}{bar()}<Text hover={HV}> </Text>
+            {hasEta && bar()}{hasEta && cellButton(`ce${t.key}`, padR(shortEta(t.eta || '') || '—', ETA_W), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
           {open.includes(t.key) && (
             <Box flexDirection="column" backgroundColor={bg}>
@@ -608,7 +608,7 @@ export const register: Register = (on, options) => {
             {bar()}
             <Button key={`epic:${id}`} label={cell} plain hover={HV} onPress={toggle} />
             {hasAgent && bar()}{hasAgent && cellButton(`ca${id}`, padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12), toggle)}
-            {hasEta && bar()}{hasEta && cellButton(`ce${id}`, padR(eta, 6), toggle)}{bar()}<Text hover={HV}> </Text>
+            {hasEta && bar()}{hasEta && cellButton(`ce${id}`, padR(shortEta(eta), ETA_W), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
         </Box>,
         ...(isOpen ? rows.map(t => row(t, numColor, 2, accent)) : []),

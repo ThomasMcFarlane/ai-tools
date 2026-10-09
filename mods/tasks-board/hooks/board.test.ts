@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
+import { ETA_W, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
 
@@ -225,7 +225,7 @@ test('the # cell fits the widest number plus spinner', () => {
 test('header, blank row, task row and rules put borders in the same columns', () => {
   for (const numW of [3, 5, 6])
   for (const [w, a, e] of [[44, false, true], [60, true, true], [30, false, false]] as const) {
-    const taskW = Math.max(6, w - (11 + numW) - (a ? 15 : 0) - (e ? 9 : 0))
+    const taskW = Math.max(6, w - (11 + numW) - (a ? 15 : 0) - (e ? ETA_W + 3 : 0))
     const bars = barColumns(taskW, a, e, numW)
     const cols = (s: string) => [...s].flatMap((ch, i) => (ch === '│' ? [i] : []))
     for (const line of [tableLine({ num: '#', task: 'Task', agent: 'Agent', eta: 'ETA' }, taskW, a, e, numW), tableLine({}, taskW, a, e, numW), tableLine({ num: '65', task: 'x'.repeat(99), agent: 'y', eta: '2d' }, taskW, a, e, numW)]) {
@@ -598,4 +598,24 @@ test('Letter+digit ids (F1, F10, AB2a) count in a Status table; decision tables 
 `)
   expect(t.map(x => x.id)).toEqual(['F1', 'F10', 'AB2a'])
   expect(parseIds(['f1', 'x', 'abcde1'])).toEqual(['F1'])
+})
+
+test('shortEta: day, ordinal and time only', () => {
+  const ords = { 1: '1st', 2: '2nd', 3: '3rd', 4: '4th', 11: '11th', 12: '12th', 13: '13th', 21: '21st', 22: '22nd', 23: '23rd', 31: '31st' }
+  for (const [d, o] of Object.entries(ords)) expect(shortEta(`2026-10-${d.padStart(2, '0')} 02:45 ICT`)).toBe(`${o} 02:45`)
+  expect(shortEta('2026-10-11T02:45')).toBe('11th 02:45')
+  expect(shortEta('2026-10-11 02:45')).toBe('11th 02:45')
+  expect(shortEta('2026-10-11')).toBe('11th')
+  expect(shortEta('~2 days')).toBe('~2 days')
+  expect(shortEta('')).toBe('')
+  expect(shortEta('23rd 02:45').length).toBeLessThanOrEqual(ETA_W)
+})
+
+test('rows with an ETA keep equal width', () => {
+  const taskW = 20
+  const bars = barColumns(taskW, true, true, 3)
+  for (const eta of [shortEta('2026-10-23 02:45 ICT'), 'x'.repeat(30)]) {
+    const line = tableLine({ num: '1', task: 't', agent: 'a', eta }, taskW, true, true, 3)
+    expect(line.length).toBe(bars[bars.length - 1]! + 3)
+  }
 })
