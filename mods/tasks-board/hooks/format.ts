@@ -8,7 +8,19 @@ export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
 | PZ-001 | … | in_progress | agent-name | feat/pz-001 | PZ-000 | 2026-10-10 14:00 ICT | … |
 
 - One ## heading per epic; one table per epic, with exactly the header above.
-- Status is exactly one of: todo, in_progress, in_review, blocked, blocked_on_owner, done.
+- Status is exactly one of:
+  - todo: not started; nobody has picked it up (Owner empty or "owner").
+  - in_progress: an agent is working on it now. Owner is that agent; ETA is required.
+  - in_review: a PR is open and waits on CI, review or merge. Link the PR in Notes; ETA is the expected merge.
+  - blocked: cannot proceed because of something other than the owner's input: another row (name its ID in
+    Depends), an agent prerequisite, a failing dependency, CI, an external service or a quota. Notes say what it
+    waits on.
+  - blocked_on_owner: only when the owner (the person running the agents) must give input: a decision, an
+    approval, credentials, or an action only they can take. Notes state exactly what is needed from them. Never
+    use it for anything an agent or another task can resolve; that is blocked.
+  - done: merged or verified; Notes hold the evidence (PR, commit, check).
+  When converting an old or free-text status, only rows that need the owner's input become blocked_on_owner; every
+  other blocked row becomes blocked.
 - Branch is the git branch doing the row's work, when it can be determined (named in the row's notes or owner, or a
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one.
