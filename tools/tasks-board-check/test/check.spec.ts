@@ -21,6 +21,10 @@ describe('check', () => {
     expect(r.problems.map((p) => p.line)).toEqual(expect.arrayContaining([3, 4, 5, 6]));
   });
 
+  it('accepts the parked status', () => {
+    expect(check(H + '| A-1 | t | parked | | | | | Parked by owner |\n').failed).toBe(false);
+  });
+
   it('lenient fails only on duplicate IDs and padded cells', () => {
     expect(check('- [ ] x\n', 'lenient').failed).toBe(false);
     expect(check('| ID | Task |\n|---|---|\n| A | t |\n', 'lenient').failed).toBe(false);

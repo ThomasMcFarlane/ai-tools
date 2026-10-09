@@ -518,6 +518,7 @@ export const register: Register = (on, options) => {
     const working = take(live.filter(t => st(t) === 'in_progress'))
     working.sort((x, y) => x.agent.localeCompare(y.agent) || x.n - y.n)
     const todo = take(live.filter(t => st(t) === 'todo'))
+    const parked = take(live.filter(t => st(t) === 'parked'))
 
     const W = e.props.bodyColumns
     const HEAD_BG = '#262626'
@@ -676,6 +677,7 @@ export const register: Register = (on, options) => {
       f === 'all' && section('IN PROGRESS', working, 'cyan'),
       f !== 'session' && section('BLOCKED', other, 'yellow'),
       f === 'all' && section('TODO', todo, undefined, true),
+      f === 'all' && section('PARKED', parked, undefined, true),
     ]
     hasDrawnActive = seenActive // only rows drawn above count: filter, collapsed epics and dedup have applied
     // counts, repo, rule, filter row, a blank spacer and the three-row column header are always drawn; the notice and error when present.
@@ -685,7 +687,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text>
-          <Text color="green">{count('in_progress')} IP</Text> <Text color="red">{count('blocked')} BLK</Text> {count('todo')} todo <Text dimColor>· {age}</Text>
+          <Text color="green">{count('in_progress')} IP</Text> <Text color="red">{count('blocked')} BLK</Text> {count('todo')} todo {count('parked')} parked <Text dimColor>· {age}</Text>
         </Text>
         <Text dimColor>{clip(b.repo, W)}</Text>
         {fixNote !== '' && <Text dimColor>{clip(fixNote, W)}</Text>}

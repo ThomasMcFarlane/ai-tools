@@ -17,10 +17,15 @@ export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
     waits on.
   - blocked_on_owner: only when the owner (the person running the agents) must give input: a decision, an
     approval, credentials, or an action only they can take. Notes state exactly what is needed from them. Never
-    use it for anything an agent or another task can resolve; that is blocked.
+    use it for anything an agent or another task can resolve; that is blocked. Never use it for work the owner has
+    paused or held; that is parked.
+  - parked: the owner deliberately paused or held this work (for example "native parity on hold until web is
+    done"). Nobody works on it and nothing is needed from the owner until the owner un-parks it. No ETA. Notes say who
+    parked it, when, and the resume condition. Distinct from blocked_on_owner, which is only for when the owner
+    must actively give input.
   - done: merged or verified; Notes hold the evidence (PR, commit, check).
   When converting an old or free-text status, only rows that need the owner's input become blocked_on_owner; every
-  other blocked row becomes blocked.
+  other blocked row becomes blocked, except work the owner paused or held, which becomes parked.
 - Branch is the git branch doing the row's work, when it can be determined (named in the row's notes or owner, or a
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one.

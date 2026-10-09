@@ -28,6 +28,7 @@ var normaliseStatus = (s) => {
   const lead = bare.split(/\s*(?:\(|—|–|,|:|;|\s-\s)/)[0];
   const k = lead.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (/^(in_progress|in_review|review|partly|doing|in_pr$|in_pr_|pr_(#?\d+_)?open)/.test(k)) return "in_progress";
+  if (k === "parked") return "parked";
   if (k.startsWith("blocked") || k.startsWith("waiting_on") || k.startsWith("on_hold")) return "blocked";
   if (DONE_WORDS.includes(k.split("_")[0]) || DONE_PHRASES.some((p) => k === p || k.startsWith(`${p}_`))) return "done";
   return "todo";
@@ -188,7 +189,7 @@ function latestUpdate(notes) {
   return notes.slice(ds[best].index, ds[best + 1]?.index);
 }
 var ACTIVE_MS = 30 * 60 * 1e3;
-var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "done"];
+var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "parked", "done"];
 var CANON_HEADER = ["ID", "Task", "Status", "Owner", "Branch", "Depends", "ETA", "Notes"];
 var ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/;
 function lintBoard(text2) {
