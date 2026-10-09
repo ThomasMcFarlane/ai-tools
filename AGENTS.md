@@ -8,7 +8,13 @@ Guidance for AI coding agents contributing to this repository.
 ai-tools/
 ├── tools/
 │   ├── dns-checker/   # @ai-tools/dns-checker: DNS lookup/check/wait/watch CLI
-│   └── gh-watcher/    # @ai-tools/gh-watcher: GitHub Actions status/wait/watch CLI
+│   ├── gh-watcher/    # @ai-tools/gh-watcher: GitHub Actions status/wait/watch CLI
+│   └── tasks-board-check/  # @ai-tools/tasks-board-check: TASKS.md format check CLI
+├── mods/
+│   └── tasks-board/   # Claude Code plugin (docked TASKS.md pane); checked with `claude plugin validate`, excluded from eslint/tsc/vitest
+├── actions/
+│   └── tasks-board-check/  # composite GitHub Action with a committed bundled dist/
+├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
 ├── packages/
 │   └── hooks/         # @ai-tools/hooks: shared exec/webhook/file/notify hook library
 ├── skills/            # installable skills/prompts for AI platforms (see skills/README.md)

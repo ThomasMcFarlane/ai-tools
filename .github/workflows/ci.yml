@@ -20,3 +20,25 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+      - name: Committed action bundle is current
+        run: git diff --exit-code -- actions
+
+  action:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./actions/tasks-board-check
+        with:
+          path: actions/tasks-board-check/fixture/TASKS.md
+      - name: A broken board must fail
+        run: |
+          printf '| ID | Task |\n|---|---|\n| A |  x |\n' > bad.md
+          if node actions/tasks-board-check/dist/index.js bad.md; then exit 1; fi
+
+  ci:
+    if: always()
+    needs: [build, action]
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.build.result }}" = success && test "${{ needs.action.result }}" = success

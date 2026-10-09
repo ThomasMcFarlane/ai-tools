@@ -4,11 +4,11 @@ Tools that let AI agents check external state, wait for changes, and resume work
 
 ## Tools
 
-| Name | Package | Bin | One line | What it does |
-| --- | --- | --- | --- | --- |
-| dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, and persistent watchers with hooks |
-| gh-watcher | `@ai-tools/gh-watcher` | `gh-watcher` | GitHub Actions watcher for agents | Reads Actions runs and checks through the `gh` CLI, blocks until a target succeeds or fails, and fires hooks when a job step fails or everything succeeds |
-| hooks | `@ai-tools/hooks` | (library) | Shared hook machinery | The shared `exec` / `webhook` / `file` / `notify` hook library both watcher tools use |
+| Name        | Package                 | Bin           | One line                              | What it does                                                                                                                                              |
+| ----------- | ----------------------- | ------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, and persistent watchers with hooks                      |
+| gh-watcher  | `@ai-tools/gh-watcher`  | `gh-watcher`  | GitHub Actions watcher for agents     | Reads Actions runs and checks through the `gh` CLI, blocks until a target succeeds or fails, and fires hooks when a job step fails or everything succeeds |
+| hooks       | `@ai-tools/hooks`       | (library)     | Shared hook machinery                 | The shared `exec` / `webhook` / `file` / `notify` hook library both watcher tools use                                                                     |
 
 ## Install
 
@@ -66,11 +66,11 @@ sha256sum -c checksums.txt
 
 ## Supported AI platforms
 
-| Platform | What you install | How the tools are reached |
-| --- | --- | --- |
-| Claude Code | Skills + CLI | Skills under `skills/claude-code/`, CLI from any shell |
-| Codex CLI | Custom prompt + CLI | Prompt files under `skills/codex/`, CLI from any shell |
-| opencode | Command file + CLI | Command files under `skills/opencode/`, CLI from any shell |
+| Platform                        | What you install             | How the tools are reached                                                                   |
+| ------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
+| Claude Code                     | Skills + CLI                 | Skills under `skills/claude-code/`, CLI from any shell                                      |
+| Codex CLI                       | Custom prompt + CLI          | Prompt files under `skills/codex/`, CLI from any shell                                      |
+| opencode                        | Command file + CLI           | Command files under `skills/opencode/`, CLI from any shell                                  |
 | Gemini CLI / Cursor / any agent | Generic AGENTS snippet + CLI | Paste `skills/generic/AGENTS.md.snippet.md` into your instructions file, CLI from any shell |
 
 See [skills/README.md](skills/README.md) for the full install matrix.
@@ -128,17 +128,17 @@ dns-checker watch run
 
 Hooks are fired through `@ai-tools/hooks`. Every hook process gets:
 
-| Variable | Set by | Contents |
-| --- | --- | --- |
-| `EVENT` | both tools | The full event as a JSON string |
-| `EVENT_SUMMARY` | both tools | A short human readable summary of the event |
-| `DNS_EVENT` | dns-checker | The full event as JSON (same payload as `EVENT`) |
-| `DNS_WATCH_NAME` | dns-checker | Name of the watch that matched |
-| `DNS_DOMAIN` | dns-checker | Domain the watch polls |
-| `DNS_TYPE` | dns-checker | Record type the watch polls |
-| `DNS_MATCHED` | dns-checker | `true` or `false` |
-| `DNS_REASON` | dns-checker | Why the check matched or did not |
-| `DNS_VALUES` | dns-checker | The current record values as a JSON array |
+| Variable         | Set by      | Contents                                         |
+| ---------------- | ----------- | ------------------------------------------------ |
+| `EVENT`          | both tools  | The full event as a JSON string                  |
+| `EVENT_SUMMARY`  | both tools  | A short human readable summary of the event      |
+| `DNS_EVENT`      | dns-checker | The full event as JSON (same payload as `EVENT`) |
+| `DNS_WATCH_NAME` | dns-checker | Name of the watch that matched                   |
+| `DNS_DOMAIN`     | dns-checker | Domain the watch polls                           |
+| `DNS_TYPE`       | dns-checker | Record type the watch polls                      |
+| `DNS_MATCHED`    | dns-checker | `true` or `false`                                |
+| `DNS_REASON`     | dns-checker | Why the check matched or did not                 |
+| `DNS_VALUES`     | dns-checker | The current record values as a JSON array        |
 
 `exec` hooks additionally receive the full event JSON on stdin.
 
@@ -148,10 +148,10 @@ Hooks are fired through `@ai-tools/hooks`. Every hook process gets:
 
 Both watcher tools keep state under the XDG state directory:
 
-| Tool | Default state dir | Override |
-| --- | --- | --- |
-| dns-checker | `~/.local/state/ai-tools/dns-checker` | `AI_TOOLS_DNS_STATE_DIR` |
-| gh-watcher | `~/.local/state/ai-tools/gh-watcher` | `AI_TOOLS_GH_WATCHER_STATE_DIR` |
+| Tool        | Default state dir                     | Override                        |
+| ----------- | ------------------------------------- | ------------------------------- |
+| dns-checker | `~/.local/state/ai-tools/dns-checker` | `AI_TOOLS_DNS_STATE_DIR`        |
+| gh-watcher  | `~/.local/state/ai-tools/gh-watcher`  | `AI_TOOLS_GH_WATCHER_STATE_DIR` |
 
 Each directory holds:
 
@@ -173,7 +173,13 @@ Each directory holds:
 ai-tools/
 ├── tools/
 │   ├── dns-checker/   # @ai-tools/dns-checker (CLI, core)
-│   └── gh-watcher/    # @ai-tools/gh-watcher (CLI, core)
+│   ├── gh-watcher/    # @ai-tools/gh-watcher (CLI, core)
+│   └── tasks-board-check/  # @ai-tools/tasks-board-check (TASKS.md format check)
+├── mods/
+│   └── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
+├── actions/
+│   └── tasks-board-check/  # GitHub Action: `uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@v1`
+├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
 ├── packages/
 │   └── hooks/         # @ai-tools/hooks (shared exec/webhook/file/notify hooks)
 ├── skills/            # copy-paste skills and prompts for AI platforms

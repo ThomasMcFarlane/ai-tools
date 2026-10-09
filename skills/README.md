@@ -6,14 +6,14 @@ Both tools work from any agent that can run shell commands. The files here add p
 
 ## Install matrix
 
-| Platform | File(s) below | Install path | How invoked |
-| --- | --- | --- | --- |
-| Claude Code | `claude-code/dns-checker/SKILL.md`, `claude-code/gh-watcher/SKILL.md` | `~/.claude/skills/<name>/SKILL.md` (or `<project>/.claude/skills/<name>/SKILL.md`) | Automatically when relevant, or `/dns-checker`, `/gh-watcher` |
-| Codex CLI | `codex/dns-checker.md`, `codex/gh-watcher.md` | `~/.codex/prompts/<name>.md` | `/dns-checker`, `/gh-watcher` |
-| opencode | `opencode/dns-checker.md`, `opencode/gh-watcher.md` | `~/.config/opencode/command/<name>.md` | `/dns-checker`, `/gh-watcher` |
-| Gemini CLI | `generic/AGENTS.md.snippet.md` | Paste the section into `GEMINI.md` | Always in context |
-| Cursor | `generic/AGENTS.md.snippet.md` | Paste the section into `.cursor/rules` | Always in context |
-| Any agent | `generic/AGENTS.md.snippet.md` | Paste into your harness instructions file (`AGENTS.md`, `CONVENTIONS.md`, ...) | Always in context |
+| Platform    | File(s) below                                                                                             | Install path                                                                       | How invoked                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Claude Code | `claude-code/dns-checker/SKILL.md`, `claude-code/gh-watcher/SKILL.md`, `claude-code/tasks-board/SKILL.md` | `~/.claude/skills/<name>/SKILL.md` (or `<project>/.claude/skills/<name>/SKILL.md`) | Automatically when relevant, or `/dns-checker`, `/gh-watcher`, `/tasks-board` |
+| Codex CLI   | `codex/dns-checker.md`, `codex/gh-watcher.md`                                                             | `~/.codex/prompts/<name>.md`                                                       | `/dns-checker`, `/gh-watcher`                                                 |
+| opencode    | `opencode/dns-checker.md`, `opencode/gh-watcher.md`                                                       | `~/.config/opencode/command/<name>.md`                                             | `/dns-checker`, `/gh-watcher`                                                 |
+| Gemini CLI  | `generic/AGENTS.md.snippet.md`                                                                            | Paste the section into `GEMINI.md`                                                 | Always in context                                                             |
+| Cursor      | `generic/AGENTS.md.snippet.md`                                                                            | Paste the section into `.cursor/rules`                                             | Always in context                                                             |
+| Any agent   | `generic/AGENTS.md.snippet.md`                                                                            | Paste into your harness instructions file (`AGENTS.md`, `CONVENTIONS.md`, ...)     | Always in context                                                             |
 
 ## Install examples
 

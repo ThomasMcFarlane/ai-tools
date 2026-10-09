@@ -1,0 +1,27 @@
+{
+  "name": "@ai-tools/tasks-board-check",
+  "version": "0.1.0",
+  "description": "Format check for TASKS.md boards, sharing its parser with the tasks-board mod",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "tasks-board-check": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/cli.js && node ../../scripts/publish-action-bundle.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.10",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

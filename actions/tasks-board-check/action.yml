@@ -1,0 +1,20 @@
+name: Tasks board check
+description: Fail when a TASKS.md board breaks the shared canonical format.
+inputs:
+  path:
+    description: Path to the board.
+    default: TASKS.md
+  format:
+    description: canonical, or lenient (only duplicate IDs and padded cells fail).
+    default: canonical
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - shell: bash
+      env:
+        BOARD_PATH: ${{ inputs.path }}
+        BOARD_FORMAT: ${{ inputs.format }}
+      run: node "${{ github.action_path }}/dist/index.js" "$BOARD_PATH" --format "$BOARD_FORMAT"
