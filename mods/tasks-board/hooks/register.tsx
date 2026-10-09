@@ -470,19 +470,19 @@ export const register: Register = (on, options) => {
       if (isOn) seenActive = true
       used += 1 + (open.includes(t.key) ? details(t).length + 2 : 0)
       const bg = indent > 0 ? CHILD_BG : undefined
+      const cell = `${' '.repeat(indent)}${tagText}${doneText}${padR(t.title, taskW - indent - tagText.length - doneText.length)}`
       return (
         <Box key={`row${t.key}`} flexDirection="column" backgroundColor={bg}>
-          <Button key={`t${t.key}`} label={`${t.id} ${t.title.slice(0, 80)}`} plain onPress={() => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))}>
+          <Box flexDirection="row">
             <Text> </Text>{bar()}
             {isOn && <Text color={accent} hover={{ color: 'white' }}>{spin}</Text>}
             <Text hover={numColor !== undefined || shownMine.has(t.key) ? { color: 'white' } : undefined} color={numColor ?? (shownMine.has(t.key) ? 'green' : undefined)} bold={numColor !== undefined || shownMine.has(t.key)}>{padL(t.id, isOn ? numW - 1 : numW)}</Text>
-            {bar()}<Text>{' '.repeat(indent)}</Text>
-            {tagText !== '' && <Text color={t.isOwn ? 'green' : tagColor(t.tag ?? '')} hover={{ color: 'white' }}>{tagText}</Text>}
-            {doneText !== '' && <Text dimColor hover={{ dimColor: false }}>{doneText}</Text>}
-            <Text>{padR(t.title, taskW - indent - tagText.length - doneText.length)}</Text>
+            {bar()}
+            {/* The live engine takes only a label or one plain string in a Button: the Task cell alone. */}
+            <Button key={`t${t.key}`} label={cell} plain onPress={() => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))} />
             {hasAgent && bar()}{hasAgent && <Text>{padR(who(t.agent), 12)}</Text>}
             {hasEta && bar()}{hasEta && <Text>{padR(t.eta || '—', 6)}</Text>}{bar()}<Text> </Text>
-          </Button>
+          </Box>
           {open.includes(t.key) && (
             <Box flexDirection="column" backgroundColor={bg}>
               <Text dimColor>{rule('┴')}</Text>
@@ -512,20 +512,22 @@ export const register: Register = (on, options) => {
       const suffix = ` (${rows.length})`
       const { num, name: shownName } = epicLabel(name)
       const label = clip(shownName, Math.max(1, taskW - suffix.length))
+      const cell = `${label}${suffix}${' '.repeat(Math.max(0, taskW - label.length - suffix.length))}`
       return (
         <Box key={`epic${id}`} flexDirection="column">
-          <Button key={`epic:${id}`} label={`${shownName}${suffix}`} plain onPress={async () => {
-            // Closing an epic also collapses its tasks' details, so reopening shows them folded.
-            if (isOpen) await update($, expanded, x => x.filter(n => !rows.some(t => t.key === n)))
-            await update($, epicFlips, x => (x.includes(id) ? x.filter(y => y !== id) : [...x, id]))
-          }}>
+          <Box flexDirection="row">
             <Text>{isOpen ? '▾' : '▸'}</Text>{bar()}
             {isOn && <Text color={accent} hover={{ color: 'white' }}>{spin}</Text>}
             <Text hover={numColor !== undefined ? { color: 'white' } : undefined} bold={numColor !== undefined} color={numColor}>{padL(num, isOn ? numW - 1 : numW)}</Text>
-            {bar()}{label}<Text dimColor hover={{ dimColor: false }}>{suffix}</Text>{' '.repeat(Math.max(0, taskW - label.length - suffix.length))}
+            {bar()}
+            <Button key={`epic:${id}`} label={cell} plain onPress={async () => {
+              // Closing an epic also collapses its tasks' details, so reopening shows them folded.
+              if (isOpen) await update($, expanded, x => x.filter(n => !rows.some(t => t.key === n)))
+              await update($, epicFlips, x => (x.includes(id) ? x.filter(y => y !== id) : [...x, id]))
+            }} />
             {hasAgent && bar()}{hasAgent ? padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12) : ''}
             {hasEta && bar()}{hasEta ? padR(eta, 6) : ''}{bar()}<Text> </Text>
-          </Button>
+          </Box>
           {isOpen && rows.map(t => row(t, numColor, 2, accent))}
         </Box>
       )
@@ -554,9 +556,7 @@ export const register: Register = (on, options) => {
       )
     }
     const key = (k: string, label: string, hotkey: string, f2?: TasksBoardFilter) => (
-      <Button key={k} label={`[${hotkey}] ${label}`} plain hotkey={hotkey} onPress={() => (f2 ? update($, filter, () => f2) : refresh($, true))}>
-        <Text bold={f2 === f} inverse={f2 === f}>[{hotkey}] {label}</Text>
-      </Button>
+      <Button key={k} label={`[${hotkey}] ${label}`} plain hotkey={hotkey} dimColor={f2 !== f} onPress={() => (f2 ? update($, filter, () => f2) : refresh($, true))} />
     )
     const age = b.mtimeMs ? `updated ${ageText(b.checkedAt - b.mtimeMs)} ago` : 'not loaded'
 
