@@ -472,7 +472,7 @@ export const register: Register = (on, options) => {
       const bg = indent > 0 ? CHILD_BG : undefined
       return (
         <Box key={`row${t.key}`} flexDirection="column" backgroundColor={bg}>
-          <Button key={`t${t.key}`} plain onPress={() => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))}>
+          <Button key={`t${t.key}`} label={`${t.id} ${t.title.slice(0, 80)}`} plain onPress={() => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))}>
             <Text> </Text>{bar()}
             {isOn && <Text color={accent} hover={{ color: 'white' }}>{spin}</Text>}
             <Text hover={numColor !== undefined || shownMine.has(t.key) ? { color: 'white' } : undefined} color={numColor ?? (shownMine.has(t.key) ? 'green' : undefined)} bold={numColor !== undefined || shownMine.has(t.key)}>{padL(t.id, isOn ? numW - 1 : numW)}</Text>
@@ -514,7 +514,7 @@ export const register: Register = (on, options) => {
       const label = clip(shownName, Math.max(1, taskW - suffix.length))
       return (
         <Box key={`epic${id}`} flexDirection="column">
-          <Button key={`epic:${id}`} plain onPress={async () => {
+          <Button key={`epic:${id}`} label={`${shownName}${suffix}`} plain onPress={async () => {
             // Closing an epic also collapses its tasks' details, so reopening shows them folded.
             if (isOpen) await update($, expanded, x => x.filter(n => !rows.some(t => t.key === n)))
             await update($, epicFlips, x => (x.includes(id) ? x.filter(y => y !== id) : [...x, id]))
@@ -554,7 +554,7 @@ export const register: Register = (on, options) => {
       )
     }
     const key = (k: string, label: string, hotkey: string, f2?: TasksBoardFilter) => (
-      <Button key={k} plain hotkey={hotkey} onPress={() => (f2 ? update($, filter, () => f2) : refresh($, true))}>
+      <Button key={k} label={`[${hotkey}] ${label}`} plain hotkey={hotkey} onPress={() => (f2 ? update($, filter, () => f2) : refresh($, true))}>
         <Text bold={f2 === f} inverse={f2 === f}>[{hotkey}] {label}</Text>
       </Button>
     )
