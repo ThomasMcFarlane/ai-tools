@@ -82,6 +82,8 @@ const forkParsed = new Map<string, TasksBoardTask[]>()
 let wtBoards: WorktreeBoard[] = []
 let wtSignature = ''
 let wtScannedAt = 0
+// Full parsed rows by key (state rows are clipped for the budget); refreshed with every merge.
+let fullTasks = new Map<string, TasksBoardTask>()
 let baseCache: { path: string; mtimeMs: number; size: number; all: TasksBoardTask[]; isClipped: boolean; warn: string } | undefined
 // The board the module state above belongs to, and a counter that moves whenever it changes: a refresh that
 // started for an earlier board drops its results instead of writing them.
@@ -233,6 +235,7 @@ async function refresh($: EngineInterface, isForced = false) {
     // A clipped board is never offered for formatting: the agent would see the full file, the lint only the clipped one.
     if (mayFix && isBaseChanged && !baseCache.isClipped) void maybeAutofix($, path, lintBoard((await readBoard($, path)).text)).catch(err => report($, 'autofix', err))
     const all = mergeBoards(baseCache.all, wtBoards)
+    fullTasks = new Map(all.map(t => [t.key, t]))
     // Only open rows are kept in state (and tracked): the done rows are most of a multi-megabyte file.
     const open = all.filter(t => t.status !== 'done')
     const tasks = slimTasks(all)
@@ -557,30 +560,39 @@ export const register: Register = (on, options) => {
     const bars = barColumns(taskW, hasAgent, hasEta, numW)
     const rule = (join: string) => ruleLine(W, join, bars)
     let used = 0 // rows drawn below the header, to pad the column borders down to the pane's end
-    const details = (t: TasksBoardTask) => {
-      const fields: [string, string][] = [['Owner  ', t.owner], ['Epic   ', t.epic]]
+    const NOTES_CAP = 20_000
+    const details = (t: TasksBoardTask, isClipped: boolean) => {
+      const f = fullTasks.get(t.key) ?? t // state rows are clipped for the budget; the full parse is kept beside them
+      const notes = f.notes.replace(/<br\s*\/?>/gi, '\n')
+      const shown = notes.length > NOTES_CAP ? `${notes.slice(0, NOTES_CAP)}\n… ${notes.length - NOTES_CAP} more characters in TASKS.md` : notes
+      const fields: [string, string][] = [['Owner  ', f.owner], ['Epic   ', t.epic]]
+      if (isClipped) fields.unshift(['Task    ', f.title])
       if (t.id.length > numW - 2) fields.unshift(['Id      ', t.id])
       if (t.wtPath) fields.unshift(['Worktree ', t.wtPath])
-      if (t.depends !== '') fields.push(['Depends ', t.depends])
-      fields.push(['ETA    ', t.eta || '—'], ['', t.notes.slice(0, 300)])
+      if (f.depends !== '') fields.push(['Depends ', f.depends])
+      fields.push(['ETA    ', t.eta || '—'], ['', shown])
       return fields.flatMap(([label, text]) =>
-        wrapText(label + text, detailW).map((line, i) =>
-          i === 0 ? { label, text: line.slice(label.length) } : { label: '', text: line },
+        text.split('\n').flatMap((part, j) =>
+          wrapText(part, detailW - label.length).map((line, i) => ({ label: i === 0 && j === 0 ? label : '', text: line })),
         ),
       )
     }
+    const plainBar = () => <Text dimColor> │ </Text> // no hover: the details block is not interactive
     const row = (t: TasksBoardTask, numColor?: string, indent = 0, accent?: string) => {
       const doneText = t.priorStatus ? '✓ ' : ''
       const tagText = t.tag ? `[${t.tag}${t.isOwn ? '*' : ''}] ` : ''
       const isOn = activeOf(t)
       if (isOn) seenActive = true
-      used += 1 + (open.includes(t.key) ? details(t).length + 2 : 0)
+      const titleW = taskW - indent - tagText.length - doneText.length
+      const detail = open.includes(t.key) ? details(t, (fullTasks.get(t.key) ?? t).title.length > titleW) : []
+      used += 1 + (detail.length > 0 ? detail.length + 2 : 0)
       const bg = indent > 0 ? CHILD_BG : undefined
       const toggle = () => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))
       const isNumColoured = numColor !== undefined || shownMine.has(t.key)
       const numText = padL(t.id, isOn ? numW - 1 : numW)
-      const cell = `${' '.repeat(indent)}${tagText}${doneText}${padR(t.title, taskW - indent - tagText.length - doneText.length)}`
-      return (
+      const cell = `${' '.repeat(indent)}${tagText}${doneText}${padR(t.title, titleW)}`
+      // The details are a sibling of the keyed row Box: hover is scoped to that Box, so nesting them lit the details.
+      return [
         <Box key={`row${t.key}`} flexDirection="column" backgroundColor={bg}>
           <Box flexDirection="row">
             <Text hover={HV}> </Text>{bar()}
@@ -591,21 +603,23 @@ export const register: Register = (on, options) => {
             {hasAgent && bar()}{hasAgent && cellButton(`ca${t.key}`, padR(who(t.agent), 12), toggle)}
             {hasEta && bar()}{hasEta && cellButton(`ce${t.key}`, padR(shortEta(t.eta || '') || '—', ETA_W), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
-          {open.includes(t.key) && (
-            <Box flexDirection="column" backgroundColor={bg}>
-              <Text dimColor>{rule('┴')}</Text>
-              {details(t).map((l, i) => (
-                <Text key={`d${i}`}>
-                  <Text dimColor>{' '}{' │ '}</Text>
-                  <Text dimColor>{l.label}</Text>{padR(l.text, detailW - l.label.length)}
-                  {bar()}<Text> </Text>
-                </Text>
-              ))}
-              <Text dimColor>{rule('┬')}</Text>
-            </Box>
-          )}
-        </Box>
-      )
+        </Box>,
+        ...(detail.length > 0
+          ? [
+              <Box key={`det${t.key}`} flexDirection="column" backgroundColor={bg}>
+                <Text dimColor>{rule('┴')}</Text>
+                {detail.map((l, i) => (
+                  <Text key={`d${i}`}>
+                    <Text dimColor>{' '}{' │ '}</Text>
+                    <Text dimColor>{l.label}</Text>{padR(l.text, detailW - l.label.length)}
+                    {plainBar()}<Text> </Text>
+                  </Text>
+                ))}
+                <Text dimColor>{rule('┬')}</Text>
+              </Box>,
+            ]
+          : []),
+      ]
     }
     // An epic is a normal row; its tasks nest beneath it. All epics start collapsed; a press flips one
     // (kept per section+epic).
@@ -640,7 +654,7 @@ export const register: Register = (on, options) => {
             {hasEta && bar()}{hasEta && cellButton(`ce${id}`, padR(shortEta(eta), ETA_W), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
         </Box>,
-        ...(isOpen ? rows.map(t => row(t, numColor, 2, accent)) : []),
+        ...(isOpen ? rows.flatMap(t => row(t, numColor, 2, accent)) : []),
       ]
     }
     const section = (title: string, list: TasksBoardTask[], color?: string, isDim = false, numColor?: string) => {
