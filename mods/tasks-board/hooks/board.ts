@@ -278,6 +278,26 @@ export function worktreeTag(path: string, cfg: PathConfig): string {
   return path.slice(path.lastIndexOf('/') + 1)
 }
 
+/** The org and repo a board file belongs to: from the baseBoard template, else a repo pattern, else its directory's name. */
+export function boardRepo(path: string, cfg: PathConfig): { org: string; repo: string } {
+  const dir = path.slice(0, path.lastIndexOf('/'))
+  const t = cfg.baseBoard ? matchTemplate(cfg.baseBoard, cfg.reposRoot, path, true) : undefined
+  if (t?.org && t.repo) return { org: t.org, repo: t.repo }
+  const r = repoFromCwd(dir, cfg)
+  if (r) return { org: r.org, repo: r.repo }
+  return { org: '', repo: dir.slice(dir.lastIndexOf('/') + 1) }
+}
+
+/** `git rev-parse --git-common-dir` output made absolute (relative to `dir`) with `.` and `..` folded. */
+export function normaliseGitDir(dir: string, out: string): string {
+  const parts: string[] = []
+  for (const seg of (out.startsWith('/') ? out : `${dir}/${out}`).split('/')) {
+    if (seg === '..') parts.pop()
+    else if (seg !== '' && seg !== '.') parts.push(seg)
+  }
+  return `/${parts.join('/')}`
+}
+
 export type BoardCandidate = { path: string; source: 'primary' | 'walkup' }
 
 /**

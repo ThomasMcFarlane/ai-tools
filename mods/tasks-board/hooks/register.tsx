@@ -6,7 +6,7 @@ import type { WorktreeBoard } from './board'
 import type { BoardConfig } from './config'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
-import { ageText, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
+import { ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
 
 const PANE = 'tasks-board'
 const empty = { numW: 3, repo: '', path: '', mtimeMs: 0, size: 0, checkedAt: 0, tasks: [], error: '' }
@@ -42,12 +42,13 @@ async function mainWorktree($: EngineInterface, dir: string): Promise<string> {
   }
 }
 
-async function resolvePath($: EngineInterface): Promise<{ path: string; source: string; repo: string; cwd: string }> {
+async function resolvePath($: EngineInterface): Promise<{ path: string; source: string; org: string; repo: string; cwd: string }> {
   const cwd = await $.session.cwd()
   const main = await mainWorktree($, cwd)
-  const repo = repoFromCwd(cwd, cfg)?.repo ?? (main || cwd).slice((main || cwd).lastIndexOf('/') + 1)
   const picked = await pickBoard(await read($, pathOverride), boardCandidates(cwd, cfg, main), p => $.fs.exists(p))
-  return { path: picked.path, source: picked.source, repo, cwd }
+  // The label follows the picked board, never the session's directory.
+  const { org, repo } = picked.path ? boardRepo(picked.path, cfg) : { org: '', repo: '' }
+  return { path: picked.path, source: picked.source, org, repo, cwd }
 }
 
 // Other worktrees of the repo, merged into the base board. Kept in module variables (not $.state):
@@ -60,6 +61,33 @@ let wtBoards: WorktreeBoard[] = []
 let wtSignature = ''
 let wtScannedAt = 0
 let baseCache: { path: string; mtimeMs: number; size: number; all: TasksBoardTask[] } | undefined
+// The board the module state above belongs to, and a counter that moves whenever it changes: a refresh that
+// started for an earlier board drops its results instead of writing them.
+let curPath = ''
+let gen = 0
+type WtInfo = { path: string; mtimeMs: number; isOwn: boolean; changed: number }
+let wtInfos: WtInfo[] = []
+let lastPick = { source: '', org: '', repo: '', cwd: '' }
+
+const resetFor = (path: string) => {
+  curPath = path
+  gen += 1
+  wtBoards = []
+  wtSignature = ''
+  wtScannedAt = 0
+  wtInfos = []
+  baseCache = undefined
+}
+
+// The common git directory of `dir`, normalised, or '' when it is not in a repository.
+async function commonDir($: EngineInterface, dir: string): Promise<string> {
+  try {
+    const r = await $.process.run(['git', '-C', dir, 'rev-parse', '--git-common-dir'], { timeoutMs: 20000 })
+    return r.exitCode === 0 && r.stdout.trim() ? normaliseGitDir(dir, r.stdout.trim()) : ''
+  } catch {
+    return ''
+  }
+}
 
 // The board of `wt` at its fork point from the primary checkout's HEAD, or undefined when git cannot say.
 async function forkBoard($: EngineInterface, wt: string, baseSha: string): Promise<TasksBoardTask[] | undefined> {
@@ -83,10 +111,14 @@ async function forkBoard($: EngineInterface, wt: string, baseSha: string): Promi
 
 // The other registered worktrees of the board's checkout whose board changed within the configured hours and
 // after the primary board (the session's own worktree always counts), the newest few. Stats first; only those are read. True when the set changed.
-async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: number, cwd: string, now: number): Promise<boolean> {
-  let found: WorktreeBoard[] = []
+async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: number, cwd: string, now: number): Promise<{ found: WorktreeBoard[]; infos: WtInfo[] }> {
+  const found: WorktreeBoard[] = []
+  const infos: WtInfo[] = []
   {
     const baseDir = basePath.slice(0, basePath.lastIndexOf('/'))
+    // The session's own worktree counts only when it belongs to the same repository as the board.
+    const baseCommon = await commonDir($, baseDir)
+    const isSameRepo = baseCommon !== '' && baseCommon === (await commonDir($, cwd))
     const listed = await $.process.run(['git', '-C', baseDir, 'worktree', 'list', '--porcelain'], { timeoutMs: 20000 })
     const head = await $.process.run(['git', '-C', baseDir, 'rev-parse', 'HEAD'], { timeoutMs: 20000 })
     const baseSha = head.exitCode === 0 ? head.stdout.trim() : ''
@@ -95,7 +127,7 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
     for (const p of paths) {
       try {
         const st = await $.fs.stat(`${p}/TASKS.md`)
-        const isOwn = cwd === p || cwd.startsWith(`${p}/`)
+        const isOwn = isSameRepo && (cwd === p || cwd.startsWith(`${p}/`))
         if (isOwn || (now - st.mtimeMs < cfg.excludeWorktreesOlderThanHours * 3_600_000 && st.mtimeMs > baseMtime)) stats.push({ p, mtimeMs: st.mtimeMs, size: st.size, isOwn })
       } catch {
         /* no board there */
@@ -112,13 +144,10 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
         wtParsed.set(s.p, parsed)
       }
       found.push({ tag: worktreeTag(s.p, cfg), path: s.p, isOwn: s.isOwn, tasks: parsed.tasks })
+      infos.push({ path: s.p, mtimeMs: s.mtimeMs, isOwn: s.isOwn, changed: parsed.tasks.length })
     }
   }
-  const signature = found.map(w => `${w.path}:${wtParsed.get(w.path)?.mtimeMs}:${wtParsed.get(w.path)?.size}`).join('|')
-  wtBoards = found
-  const isChanged = signature !== wtSignature
-  wtSignature = signature
-  return isChanged
+  return { found, infos }
 }
 
 const sync = async ($: EngineInterface) => {
@@ -129,9 +158,21 @@ const sync = async ($: EngineInterface) => {
 const openPane = ($: EngineInterface, repo: string) =>
   $.ui.open({ id: PANE, title: repo ? `Board · ${repo}` : 'Board', columns: 44 })
 
+let ticket = 0
+
 async function refresh($: EngineInterface, isForced = false) {
-  const { path, source, repo, cwd } = await resolvePath($)
+  const mine = ++ticket
+  const { path, source, org, repo, cwd } = await resolvePath($)
+  if (path !== curPath) {
+    // A refresh that started before a newer one must not move the module state back to its (older) board.
+    if (mine !== ticket) return
+    resetFor(path)
+  }
+  const g = gen
+  const isStale = () => g !== gen
+  lastPick = { source, org, repo, cwd }
   const prev = await read($, board)
+  if (isStale()) return
   if (prev.repo !== repo) await update($, board, b => ({ ...b, repo }))
   if (path === '') {
     await update($, board, () => ({ ...empty, repo, checkedAt: Date.now() }))
@@ -142,9 +183,15 @@ async function refresh($: EngineInterface, isForced = false) {
     const now = Date.now()
     const isBaseChanged = !(prev.path === path && prev.mtimeMs === st.mtimeMs && prev.size === st.size)
     let isWtChanged = false
-    if (source !== 'override' && (isForced || isBaseChanged || now - wtScannedAt >= 60_000)) {
+    if (isForced || isBaseChanged || now - wtScannedAt >= 60_000) {
       wtScannedAt = now
-      isWtChanged = await scanWorktrees($, path, st.mtimeMs, cwd, now)
+      const scanned = await scanWorktrees($, path, st.mtimeMs, cwd, now)
+      if (isStale()) return
+      const signature = scanned.found.map(w => `${w.path}:${wtParsed.get(w.path)?.mtimeMs}:${wtParsed.get(w.path)?.size}`).join('|')
+      isWtChanged = signature !== wtSignature
+      wtSignature = signature
+      wtBoards = scanned.found
+      wtInfos = scanned.infos
     }
     if (!isBaseChanged && !isWtChanged && !isForced) {
       await update($, board, b => ({ ...b, checkedAt: now }))
@@ -153,7 +200,9 @@ async function refresh($: EngineInterface, isForced = false) {
     // Only the primary board is ever offered for formatting: not a walked-up one, and never one the person pointed at by hand.
     const mayFix = source === 'primary'
     if (!baseCache || baseCache.path !== path || baseCache.mtimeMs !== st.mtimeMs || baseCache.size !== st.size) {
-      baseCache = { path, mtimeMs: st.mtimeMs, size: st.size, all: parseBoard(await $.fs.read(path), { ownerNames: cfg.ownerNames }) }
+      const all = parseBoard(await $.fs.read(path), { ownerNames: cfg.ownerNames })
+      if (isStale()) return
+      baseCache = { path, mtimeMs: st.mtimeMs, size: st.size, all }
     }
     if (mayFix && isBaseChanged) void maybeAutofix($, path, lintBoard(await $.fs.read(path))).catch(err => report($, 'autofix', err))
     const all = mergeBoards(baseCache.all, wtBoards)
@@ -161,16 +210,38 @@ async function refresh($: EngineInterface, isForced = false) {
     const open = all.filter(t => t.status !== 'done')
     const tasks = slimTasks(all)
     const old = await read($, changes)
+    if (isStale()) return
     await update($, changes, () => ({ path, rows: trackChanges(old?.path === path ? old.rows : undefined, open, Date.now()) }))
+    if (isStale()) return
     await update($, board, () => ({ numW: numColumnWidth(all), repo, path, mtimeMs: st.mtimeMs, size: st.size, checkedAt: Date.now(), tasks, error: '' }))
   } catch (err) {
-    await update($, board, b => ({ ...b, path, checkedAt: Date.now(), error: String(err) }))
+    if (!isStale()) await update($, board, b => ({ ...b, path, checkedAt: Date.now(), error: String(err) }))
   }
 }
 
 const padR = (s: string, n: number) => (s.length > n ? clip(s, n) : s.padEnd(n))
 const padL = (s: string, n: number) => (s.length > n ? clip(s, n) : s.padStart(n))
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s)
+
+async function debugText($: EngineInterface): Promise<string> {
+  await refresh($)
+  const b = await read($, board)
+  const base = baseCache?.path === b.path ? baseCache.all : []
+  const counts = new Map<string, number>()
+  for (const t of base) counts.set(t.status, (counts.get(t.status) ?? 0) + 1)
+  const merged = b.tasks.filter(t => t.wtPath)
+  const lines = [
+    `board: ${b.path || '(none)'} (${lastPick.source})`,
+    `org/repo: ${lastPick.org || '-'}/${lastPick.repo || '-'}`,
+    `session cwd: ${lastPick.cwd}`,
+    `base mtime: ${b.mtimeMs ? new Date(b.mtimeMs).toISOString() : '-'}; rows ${base.length}: ${[...counts].map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`,
+    `worktrees considered: ${wtInfos.length}`,
+    ...wtInfos.map(w => `  ${w.path} mtime ${new Date(w.mtimeMs).toISOString()} own ${w.isOwn} changed rows ${w.changed} variants ${merged.filter(t => t.wtPath === w.path).length}`),
+    `total variants: ${merged.length}`,
+    `state size: ${JSON.stringify(b).length} bytes, ${b.tasks.length} rows`,
+  ]
+  return lines.join('\n')
+}
 
 async function runBoardCommand($: EngineInterface, args: string): Promise<{ text: string }> {
   const [sub = 'open', ...rest] = args.trim().split(/\s+/).filter(Boolean)
@@ -181,6 +252,7 @@ async function runBoardCommand($: EngineInterface, args: string): Promise<{ text
     await sync($)
     return { text: `Board: ${target}` }
   }
+  if (sub === 'debug') return { text: await debugText($) }
   if (sub === 'autofix') {
     if (rest[0] !== 'on' && rest[0] !== 'off') return { text: 'Usage: /board autofix on|off' }
     await update($, autofixOverride, () => rest[0]!)
@@ -299,8 +371,8 @@ export const register: Register = (on, options) => {
     try {
       await $.command.register({
         name: 'board',
-        description: 'TASKS.md board pane: open | path <file> | pin <n...> | unpin <n...> | me <tag> | refresh',
-        argumentHint: '[open|path|pin|unpin|me|refresh]',
+        description: 'TASKS.md board pane: open | path <file> | debug | pin <n...> | unpin <n...> | me <tag> | refresh',
+        argumentHint: '[open|path|debug|pin|unpin|me|refresh]',
       })
       // session.start also fires on a mid-session enable and on a reload (changed modules): start clean there
       // so a stale override cannot win, then search like /board does and open the pane.
