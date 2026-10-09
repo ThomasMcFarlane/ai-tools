@@ -564,3 +564,23 @@ describe('lint rules for CI', () => {
     expect(checkBoard(old.replace('| 1 | a |', '| 1 |  a |'), 'lenient').map(x => x.rule)).toEqual(['padded-cell', 'duplicate-id'])
   })
 })
+
+test('Letter+digit ids (F1, F10, AB2a) count in a Status table; decision tables stay out', () => {
+  const t = parseBoard(`## Work
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| F1 | a | done | | | | | |
+| F10 | b | todo | | | | | |
+| AB2a | c | todo | | | | | |
+| ABCDE1 | d | todo | | | | | |
+
+## Decisions
+
+| ID | Decision | Rationale |
+|---|---|---|
+| D1 | Use X | because |
+`)
+  expect(t.map(x => x.id)).toEqual(['F1', 'F10', 'AB2a'])
+  expect(parseIds(['f1', 'x', 'abcde1'])).toEqual(['F1'])
+})

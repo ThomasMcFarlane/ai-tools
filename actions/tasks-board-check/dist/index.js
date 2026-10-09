@@ -22,7 +22,7 @@ function ownerGate(names) {
   }
   return re;
 }
-var ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|\d+(?:\.\d+)+|\d+[a-z]?)$/;
+var ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d+[a-z]?)$/;
 var normaliseStatus = (s) => {
   const bare = s.replace(/\*\*|~~|`/g, "").trim().replace(/^[*_]+|[*_]+$/g, "");
   const lead = bare.split(/\s*(?:\(|—|–|,|:|;|\s-\s)/)[0];
