@@ -42,13 +42,13 @@ async function mainWorktree($: EngineInterface, dir: string): Promise<string> {
   }
 }
 
-async function resolvePath($: EngineInterface): Promise<{ path: string; source: string; org: string; repo: string; cwd: string }> {
-  const cwd = await $.session.cwd()
-  const main = await mainWorktree($, cwd)
-  const picked = await pickBoard(await read($, pathOverride), boardCandidates(cwd, cfg, main), p => $.fs.exists(p))
+async function resolvePath($: EngineInterface): Promise<{ path: string; source: string; org: string; repo: string; root: string }> {
+  const root = await $.session.root()
+  const main = await mainWorktree($, root)
+  const picked = await pickBoard(await read($, pathOverride), boardCandidates(root, cfg, main), p => $.fs.exists(p))
   // The label follows the picked board, never the session's directory.
   const { org, repo } = picked.path ? boardRepo(picked.path, cfg) : { org: '', repo: '' }
-  return { path: picked.path, source: picked.source, org, repo, cwd }
+  return { path: picked.path, source: picked.source, org, repo, root }
 }
 
 // Other worktrees of the repo, merged into the base board. Kept in module variables (not $.state):
@@ -67,7 +67,7 @@ let curPath = ''
 let gen = 0
 type WtInfo = { path: string; mtimeMs: number; isOwn: boolean; changed: number }
 let wtInfos: WtInfo[] = []
-let lastPick = { source: '', org: '', repo: '', cwd: '' }
+let lastPick = { source: '', org: '', repo: '', root: '' }
 
 const resetFor = (path: string) => {
   curPath = path
@@ -111,14 +111,14 @@ async function forkBoard($: EngineInterface, wt: string, baseSha: string): Promi
 
 // The other registered worktrees of the board's checkout whose board changed within the configured hours and
 // after the primary board (the session's own worktree always counts), the newest few. Stats first; only those are read. True when the set changed.
-async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: number, cwd: string, now: number): Promise<{ found: WorktreeBoard[]; infos: WtInfo[] }> {
+async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: number, root: string, now: number): Promise<{ found: WorktreeBoard[]; infos: WtInfo[] }> {
   const found: WorktreeBoard[] = []
   const infos: WtInfo[] = []
   {
     const baseDir = basePath.slice(0, basePath.lastIndexOf('/'))
     // The session's own worktree counts only when it belongs to the same repository as the board.
     const baseCommon = await commonDir($, baseDir)
-    const isSameRepo = baseCommon !== '' && baseCommon === (await commonDir($, cwd))
+    const isSameRepo = baseCommon !== '' && baseCommon === (await commonDir($, root))
     const listed = await $.process.run(['git', '-C', baseDir, 'worktree', 'list', '--porcelain'], { timeoutMs: 20000 })
     const head = await $.process.run(['git', '-C', baseDir, 'rev-parse', 'HEAD'], { timeoutMs: 20000 })
     const baseSha = head.exitCode === 0 ? head.stdout.trim() : ''
@@ -127,7 +127,7 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
     for (const p of paths) {
       try {
         const st = await $.fs.stat(`${p}/TASKS.md`)
-        const isOwn = isSameRepo && (cwd === p || cwd.startsWith(`${p}/`))
+        const isOwn = isSameRepo && (root === p || root.startsWith(`${p}/`))
         if (isOwn || (now - st.mtimeMs < cfg.excludeWorktreesOlderThanHours * 3_600_000 && st.mtimeMs > baseMtime)) stats.push({ p, mtimeMs: st.mtimeMs, size: st.size, isOwn })
       } catch {
         /* no board there */
@@ -162,7 +162,7 @@ let ticket = 0
 
 async function refresh($: EngineInterface, isForced = false) {
   const mine = ++ticket
-  const { path, source, org, repo, cwd } = await resolvePath($)
+  const { path, source, org, repo, root } = await resolvePath($)
   if (path !== curPath) {
     // A refresh that started before a newer one must not move the module state back to its (older) board.
     if (mine !== ticket) return
@@ -170,7 +170,7 @@ async function refresh($: EngineInterface, isForced = false) {
   }
   const g = gen
   const isStale = () => g !== gen
-  lastPick = { source, org, repo, cwd }
+  lastPick = { source, org, repo, root }
   const prev = await read($, board)
   if (isStale()) return
   if (prev.repo !== repo) await update($, board, b => ({ ...b, repo }))
@@ -185,7 +185,7 @@ async function refresh($: EngineInterface, isForced = false) {
     let isWtChanged = false
     if (isForced || isBaseChanged || now - wtScannedAt >= 60_000) {
       wtScannedAt = now
-      const scanned = await scanWorktrees($, path, st.mtimeMs, cwd, now)
+      const scanned = await scanWorktrees($, path, st.mtimeMs, root, now)
       if (isStale()) return
       const signature = scanned.found.map(w => `${w.path}:${wtParsed.get(w.path)?.mtimeMs}:${wtParsed.get(w.path)?.size}`).join('|')
       isWtChanged = signature !== wtSignature
@@ -233,7 +233,7 @@ async function debugText($: EngineInterface): Promise<string> {
   const lines = [
     `board: ${b.path || '(none)'} (${lastPick.source})`,
     `org/repo: ${lastPick.org || '-'}/${lastPick.repo || '-'}`,
-    `session cwd: ${lastPick.cwd}`,
+    `session root: ${lastPick.root}`,
     `base mtime: ${b.mtimeMs ? new Date(b.mtimeMs).toISOString() : '-'}; rows ${base.length}: ${[...counts].map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}`,
     `worktrees considered: ${wtInfos.length}`,
     ...wtInfos.map(w => `  ${w.path} mtime ${new Date(w.mtimeMs).toISOString()} own ${w.isOwn} changed rows ${w.changed} variants ${merged.filter(t => t.wtPath === w.path).length}`),

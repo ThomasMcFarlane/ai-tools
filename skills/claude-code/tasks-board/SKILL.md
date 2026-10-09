@@ -29,7 +29,7 @@ Declared under `userConfig` in `.claude-plugin/plugin.json`; all optional.
 |---|---|---|
 | `baseBoard` | empty | Path template for the primary board with `{org}`, `{repo}`, `{root}`. Example: `{root}/main/{org}/{repo}/TASKS.md`. |
 | `reposRoot` | empty | Value of `{root}`; also where the walk-up for a board stops. Example: `/work/repos`. |
-| `repoPatterns` | empty | Templates (one per line or `;`-separated) that derive `{org}`, `{repo}` and the worktree name `{task}` from the session directory. Example: `{root}/trees/{org}/{task}/{repo}`. First match wins. |
+| `repoPatterns` | empty | Templates (one per line or `;`-separated) that derive `{org}`, `{repo}` and the worktree name `{task}` from the session root. Example: `{root}/trees/{org}/{task}/{repo}`. First match wins. |
 | `fixInstructions` | empty | Extra rules appended to the formatting agent's prompt. Example: `Wait for CI with the team's watcher script.` |
 | `autofix` | `true` | Offer non-canonical primary boards for automatic formatting. |
 | `excludeWorktreesOlderThanHours` | `48` | Worktree boards older than this are not merged. |
@@ -63,8 +63,8 @@ Each field is also a row in `/config`; a change reloads the module. A plugin loa
 
 1. A board named with `/board <arg>` for this session wins.
 2. Else the configured primary board for the session's repo (`baseBoard` with the org and repo that `repoPatterns` derive from the directory).
-3. Else `TASKS.md` in the git **main worktree** (the first entry of `git worktree list --porcelain`, run from the session directory).
-4. Else the nearest `TASKS.md` above the session directory.
+3. Else `TASKS.md` in the git **main worktree** (the first entry of `git worktree list --porcelain`, run from the session root).
+4. Else the nearest `TASKS.md` above the session root.
 
 The other entries of that `git worktree list` are merged in: only worktrees whose `TASKS.md` changed within `excludeWorktreesOlderThanHours` and after the primary board (the session's own worktree always counts), the newest `maxWorktrees`. A row that is new, or differs in status, title, owner or ETA, is shown tagged `[worktree]`; one variant replaces the primary row, several sit beside it. A worktree that has finished a row the primary still has open shows it dim with `✓`. Scans run every 60 s and cache by file time and size.
 
