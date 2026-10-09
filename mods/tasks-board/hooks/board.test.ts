@@ -404,6 +404,18 @@ describe('worktree merge', () => {
     expect(m[1]!.tag).toBe('ci-infra')
     expect(m[1]!.wtPath).toBe('/w/ci-infra/r')
   })
+  test('a worktree overrides only fields it changed since the fork', () => {
+    const base = [mk('1', 'in_progress', { eta: '5m', owner: 'b' })]
+    const fork = [mk('1', 'todo', { eta: '', owner: 'a' })]
+    const m = mergeBoards(base, [{ tag: 'w', path: '/p', isOwn: false, fork, tasks: [mk('1', 'blocked', { eta: '', owner: 'a' })] }])
+    expect(m[0]!).toMatchObject({ key: '1@w', status: 'blocked', eta: '5m', owner: 'b' })
+    expect(mergeBoards(base, [{ tag: 'w', path: '/p', isOwn: false, fork, tasks: fork }])).toEqual(base)
+  })
+  test('an empty worktree field never blanks a base value', () => {
+    const base = [mk('1', 'todo', { eta: '5m', owner: 'b' })]
+    const m = mergeBoards(base, [{ tag: 'w', path: '/p', isOwn: false, tasks: [mk('1', 'blocked', { eta: '', owner: '' })] }])
+    expect(m[0]!).toMatchObject({ status: 'blocked', eta: '5m', owner: 'b' })
+  })
   test('two worktrees changing the same id are both shown beside the base row', () => {
     const a = { tag: 'a', path: '/w/a/r', isOwn: false, tasks: [mk('3', 'in_progress')] }
     const b = { tag: 'b-very-long-folder-name', path: '/w/b/r', isOwn: true, tasks: [mk('3', 'blocked')] }

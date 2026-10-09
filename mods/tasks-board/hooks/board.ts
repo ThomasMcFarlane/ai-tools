@@ -362,7 +362,8 @@ export function changedSinceFork(fork: TasksBoardTask[], worktree: TasksBoardTas
   })
 }
 
-export type WorktreeBoard = { tag: string; path: string; isOwn: boolean; tasks: TasksBoardTask[] }
+// `fork` is the board at the worktree's fork point; without it every field of a changed row counts as changed.
+export type WorktreeBoard = { tag: string; path: string; isOwn: boolean; tasks: TasksBoardTask[]; fork?: TasksBoardTask[] }
 
 const same = (a: TasksBoardTask, b: TasksBoardTask) =>
   a.status === b.status && a.title === b.title && a.owner === b.owner && a.eta === b.eta
@@ -378,8 +379,15 @@ export function mergeBoards(base: TasksBoardTask[], worktrees: WorktreeBoard[]):
   const added: TasksBoardTask[] = []
   for (const w of worktrees) {
     const tag = w.tag.slice(0, 14)
-    for (const t of w.tasks) {
+    const forkAt = new Map((w.fork ?? []).map(f => [f.key, f]))
+    for (let t of w.tasks) {
       const b = byKey.get(t.key)
+      if (b) {
+        // A field overrides only if the worktree changed it since the fork, and an empty one never blanks the base.
+        const f = forkAt.get(t.key)
+        const pick = (k: 'status' | 'title' | 'owner' | 'eta') => ((f && f[k] === t[k]) || (t[k] === '' && b[k] !== '') ? b[k] : t[k])
+        t = { ...t, status: pick('status'), title: pick('title'), owner: pick('owner'), eta: pick('eta') }
+      }
       // A worktree finishing a row the base still has open is shown (as done) until the base catches up;
       // other done rows are ignored.
       if (t.status === 'done' && (!b || b.status === 'done')) continue
