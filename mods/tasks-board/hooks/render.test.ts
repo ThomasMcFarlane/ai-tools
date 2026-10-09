@@ -189,3 +189,54 @@ test('worktree variants are what the worktree changed since it forked, not where
   expect(drawn).not.toContain('[stale]')
   expect(reported).toEqual([])
 })
+
+test('every Button has a label or one string child, on an mc3-like board', { options: { autofix: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const head = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|'
+  const text = `# Tasks\n\n## Live\n\n${head}\n| F1 | ${long(8)} | in_progress | agent-a | | | | n |\n| 12a | short | todo | | | F1 | | n |\n| 7 | renumbered | blocked_on_owner | | | | 2026-10-10 14:00 ICT | n |\n| 8 | ${long(12)} | done | | | | | n |\n\n## Archive — era\n\n${head}\n| 1 | old | done | | | | | n |\n| 2 | older | done | | | | | n |\n`
+  const reported: string[] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => ({
+    value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', (_$, e) => {
+    reported.push(String(e.text))
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  for (const bodyColumns of [44, 60]) {
+    const ui = await $.ui.mount({
+      plugin: 'tasks-board',
+      surface: 'terminal',
+      component: 'Pane',
+      requestId: 'tasks-board',
+      props: { title: 'Board', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+      viewport: { columns: bodyColumns + 40, rows: 60, isFullscreen: true },
+    })
+    for (const b of await ui.findAll({ type: 'Button' })) {
+      if (bodyColumns === 44 && b.key?.startsWith('epic:')) await ui.press({ key: b.key })
+    }
+    const drawn = JSON.stringify(await ui.drawn())
+    // The engine insists on a label or one string child; labels must be plain stable text, never the drawn row.
+    const labels = (await ui.findAll({ type: 'Button' })).map(b => String(b.props?.label))
+    const f1 = parseBoard(text).find(t => t.id === 'F1')!
+    expect(labels).toContain(`F1 ${f1.title.slice(0, 80)}`)
+    expect(labels).toContain('12a short')
+    expect(labels).toContain('Live (1)')
+    expect(labels).toContain('[a] all')
+    expect(labels.filter(l => l.includes('│'))).toEqual([])
+    expect(drawn).not.toContain('render failed')
+    expect(drawn).toContain('F1')
+    await ui.unmount()
+  }
+  expect(reported).toEqual([])
+})
