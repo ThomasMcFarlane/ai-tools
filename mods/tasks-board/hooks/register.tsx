@@ -513,7 +513,12 @@ export const register: Register = (on, options) => {
     const numW = b.numW
     const taskW = Math.max(6, W - (11 + numW) - (hasAgent ? 15 : 0) - (hasEta ? 9 : 0))
     const header = tableLine({ num: '#', task: 'Task', agent: 'Agent', eta: 'ETA' }, taskW, hasAgent, hasEta, numW)
-    const bar = () => <Text dimColor hover={{ dimColor: false }}> │ </Text>
+    // Hovering anywhere on a row (it is a keyed Box) inverts every cell of it.
+    const HV = { inverse: true } as const
+    const bar = () => <Text dimColor hover={{ dimColor: false, inverse: true }}> │ </Text>
+    // A Button holds only a label (the engine refuses other children), so every plain cell is its own Button
+    // with the row's onPress. A Button takes no colour: cells that carry one stay Text, and are not pressable.
+    const cellButton = (k: string, label: string, onPress: () => unknown) => <Button key={k} label={label} plain hover={HV} onPress={onPress} />
     // Child rows carry CHILD_BG on the row's Box, not on each Text, so the focus and pointer inversion
     // of the Button covers separators and padding uniformly (explicit Text colours would resist it).
     // Detail lines keep the blank chevron and # cells (and their separators), then use the Task column to the right edge.
@@ -542,18 +547,20 @@ export const register: Register = (on, options) => {
       if (isOn) seenActive = true
       used += 1 + (open.includes(t.key) ? details(t).length + 2 : 0)
       const bg = indent > 0 ? CHILD_BG : undefined
+      const toggle = () => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))
+      const isNumColoured = numColor !== undefined || shownMine.has(t.key)
+      const numText = padL(t.id, isOn ? numW - 1 : numW)
       const cell = `${' '.repeat(indent)}${tagText}${doneText}${padR(t.title, taskW - indent - tagText.length - doneText.length)}`
       return (
         <Box key={`row${t.key}`} flexDirection="column" backgroundColor={bg}>
           <Box flexDirection="row">
-            <Text> </Text>{bar()}
-            {isOn && <Text color={accent} hover={{ color: 'white' }}>{spin}</Text>}
-            <Text hover={numColor !== undefined || shownMine.has(t.key) ? { color: 'white' } : undefined} color={numColor ?? (shownMine.has(t.key) ? 'green' : undefined)} bold={numColor !== undefined || shownMine.has(t.key)}>{padL(t.id, isOn ? numW - 1 : numW)}</Text>
+            <Text hover={HV}> </Text>{bar()}
+            {isOn && <Text color={accent} hover={HV}>{spin}</Text>}
+            {isNumColoured ? <Text hover={HV} color={numColor ?? 'green'} bold>{numText}</Text> : cellButton(`cn${t.key}`, numText, toggle)}
             {bar()}
-            {/* The live engine takes only a label or one plain string in a Button: the Task cell alone. */}
-            <Button key={`t${t.key}`} label={cell} plain onPress={() => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))} />
-            {hasAgent && bar()}{hasAgent && <Text>{padR(who(t.agent), 12)}</Text>}
-            {hasEta && bar()}{hasEta && <Text>{padR(t.eta || '—', 6)}</Text>}{bar()}<Text> </Text>
+            <Button key={`t${t.key}`} label={cell} plain hover={HV} onPress={toggle} />
+            {hasAgent && bar()}{hasAgent && cellButton(`ca${t.key}`, padR(who(t.agent), 12), toggle)}
+            {hasEta && bar()}{hasEta && cellButton(`ce${t.key}`, padR(t.eta || '—', 6), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
           {open.includes(t.key) && (
             <Box flexDirection="column" backgroundColor={bg}>
@@ -583,22 +590,24 @@ export const register: Register = (on, options) => {
       const eta = rows.find(t => t.eta !== '')?.eta ?? '' // first ETA found in file order; ETAs are free text
       const suffix = ` (${rows.length})`
       const { num, name: shownName } = epicLabel(name)
+      const toggle = async () => {
+        // Closing an epic also collapses its tasks' details, so reopening shows them folded.
+        if (isOpen) await update($, expanded, x => x.filter(n => !rows.some(t => t.key === n)))
+        await update($, epicFlips, x => (x.includes(id) ? x.filter(y => y !== id) : [...x, id]))
+      }
+      const numText = padL(num, isOn ? numW - 1 : numW)
       const label = clip(shownName, Math.max(1, taskW - suffix.length))
       const cell = `${label}${suffix}${' '.repeat(Math.max(0, taskW - label.length - suffix.length))}`
       return (
         <Box key={`epic${id}`} flexDirection="column">
           <Box flexDirection="row">
-            <Text>{isOpen ? '▾' : '▸'}</Text>{bar()}
-            {isOn && <Text color={accent} hover={{ color: 'white' }}>{spin}</Text>}
-            <Text hover={numColor !== undefined ? { color: 'white' } : undefined} bold={numColor !== undefined} color={numColor}>{padL(num, isOn ? numW - 1 : numW)}</Text>
+            {cellButton(`ch${id}`, isOpen ? '▾' : '▸', toggle)}{bar()}
+            {isOn && <Text color={accent} hover={HV}>{spin}</Text>}
+            {numColor !== undefined ? <Text hover={HV} bold color={numColor}>{numText}</Text> : cellButton(`cn${id}`, numText, toggle)}
             {bar()}
-            <Button key={`epic:${id}`} label={cell} plain onPress={async () => {
-              // Closing an epic also collapses its tasks' details, so reopening shows them folded.
-              if (isOpen) await update($, expanded, x => x.filter(n => !rows.some(t => t.key === n)))
-              await update($, epicFlips, x => (x.includes(id) ? x.filter(y => y !== id) : [...x, id]))
-            }} />
-            {hasAgent && bar()}{hasAgent ? padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12) : ''}
-            {hasEta && bar()}{hasEta ? padR(eta, 6) : ''}{bar()}<Text> </Text>
+            <Button key={`epic:${id}`} label={cell} plain hover={HV} onPress={toggle} />
+            {hasAgent && bar()}{hasAgent && cellButton(`ca${id}`, padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12), toggle)}
+            {hasEta && bar()}{hasEta && cellButton(`ce${id}`, padR(eta, 6), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
           {isOpen && rows.map(t => row(t, numColor, 2, accent))}
         </Box>

@@ -122,3 +122,69 @@ test('board repo comes from the board path', () => {
   expect(normaliseGitDir('/w/a', '../a/./.git/')).toBe('/w/a/.git')
   expect(normaliseGitDir('/w/a', '/w/a/.git')).toBe('/w/a/.git')
 })
+
+const mountPane = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
+  $.ui.mount({
+    plugin: 'tasks-board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tasks-board',
+    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    viewport: { columns: 120, rows: 60, isFullscreen: true },
+  })
+
+test('pressing any cell of an epic or task row toggles it', async ($, on) => {
+  const { clock } = setup(on, { cwd: '/work/a' })
+  await $.session.start({ cwd: '/work/a', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await mountPane($)
+  const has = async (text: string) => JSON.stringify(await ui.drawn()).includes(text)
+  const id = (await ui.findAll({ type: 'Button' })).find(b => b.key?.startsWith('epic:'))!.key!.slice('epic:'.length)
+  for (const k of [`ch${id}`, `cn${id}`, `epic:${id}`, `ca${id}`, `ce${id}`]) {
+    expect(await has('AlphaWt one')).toBe(false)
+    await ui.press({ key: k })
+    expect(await has('AlphaWt one')).toBe(true)
+    await ui.press({ key: k })
+  }
+  await ui.press({ key: `epic:${id}` })
+  for (const k of ['cn1@a-wt', 't1@a-wt', 'ca1@a-wt', 'ce1@a-wt']) {
+    expect(await has('Owner')).toBe(false)
+    await ui.press({ key: k })
+    expect(await has('Owner')).toBe(true)
+    await ui.press({ key: k })
+  }
+  await ui.unmount()
+})
+
+test('every cell of a row carries the hover style', async ($, on) => {
+  const { clock } = setup(on, { cwd: '/work/a' })
+  await $.session.start({ cwd: '/work/a', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await mountPane($)
+  const epic = (await ui.findAll({ type: 'Button' })).find(b => b.key?.startsWith('epic:'))!
+  await ui.press({ key: epic.key! })
+  const rows: unknown[][] = []
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) n.forEach(walk)
+    else if (n && typeof n === 'object') {
+      const o = n as { type?: string; props?: { key?: string }; children?: unknown }
+      if (o.type === 'Box' && o.props?.key?.startsWith('row')) rows.push(o.children as unknown[])
+      Object.values(n).forEach(walk)
+    }
+  }
+  walk(await ui.drawn())
+  expect(rows.length).toBeGreaterThan(0)
+  const leaves: { type?: string; hover?: { inverse?: boolean } }[] = []
+  const collect = (n: unknown) => {
+    if (Array.isArray(n)) n.forEach(collect)
+    else if (n && typeof n === 'object') {
+      const o = n as { type?: string; hover?: { inverse?: boolean } }
+      if (o.type === 'Text' || o.type === 'Button') leaves.push(o)
+      else Object.values(n).forEach(collect)
+    }
+  }
+  rows.forEach(collect)
+  expect(leaves.length).toBeGreaterThan(5)
+  expect(leaves.filter(l => l.hover?.inverse !== true)).toEqual([])
+  await ui.unmount()
+})
