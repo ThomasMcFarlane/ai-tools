@@ -39,12 +39,12 @@ Declared under `userConfig` in `.claude-plugin/plugin.json`; all optional.
 
 ### Where values live
 
-In the `settings.json` of the config directory in use (`~/.claude/settings.json` for the user scope, or the project's `.claude/settings.json` / `.claude/settings.local.json`), under `pluginConfigs`, keyed by the plugin's name:
+In the `settings.json` of the config directory in use (`~/.claude/settings.json` for the user scope, or the project's `.claude/settings.json` / `.claude/settings.local.json`), under `pluginConfigs`, keyed by `<plugin>@<marketplace>` for an installed plugin (`tasks-board@ai-tools`); `tasks-board` applies only to a `--plugin-dir` load:
 
 ```json
 {
   "pluginConfigs": {
-    "tasks-board": {
+    "tasks-board@ai-tools": {
       "options": {
         "baseBoard": "{root}/main/{org}/{repo}/TASKS.md",
         "reposRoot": "/work/repos",
@@ -80,7 +80,7 @@ Check boards in CI with the shared format check, which applies the same rules as
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@v1
+- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1
   with:
     path: TASKS.md
     format: canonical # or lenient while migrating
