@@ -444,6 +444,14 @@ export function wrapText(text: string, width: number): string[] {
   return lines
 }
 
+/** Epic ETA: the latest canonical ETA among open rows (time zone ignored); else the first ETA in file order (free text). */
+export const epicEta = (rows: TasksBoardTask[]): string => {
+  const key = (eta: string) => (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}\b/.test(eta) ? eta.slice(0, 16) : '')
+  const dated = rows.filter(t => t.status !== 'done' && key(t.eta))
+  const latest = dated.reduce((a, t) => (key(t.eta) > key(a.eta) ? t : a), dated[0] ?? { eta: '' })
+  return latest.eta || (rows.find(t => t.eta !== '')?.eta ?? '')
+}
+
 export const ETA_W = 10 // fits "23rd 02:45"
 
 /** `2026-10-11 02:45 ICT` (or `T` separator, TZ optional) -> `11th 02:45`; date only -> `11th`; anything else unchanged. */

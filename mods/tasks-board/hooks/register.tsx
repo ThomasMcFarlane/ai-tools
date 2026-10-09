@@ -6,7 +6,7 @@ import type { WorktreeBoard } from './board'
 import type { BoardConfig } from './config'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
-import { ETA_W, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
+import { ETA_W, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
 
 const PANE = 'tasks-board'
 const empty = { numW: 3, repo: '', path: '', mtimeMs: 0, size: 0, checkedAt: 0, tasks: [], error: '' }
@@ -587,7 +587,7 @@ export const register: Register = (on, options) => {
       used += 1
       const isOpen = flips.includes(id)
       const agents = [...new Set(rows.map(t => t.agent))]
-      const eta = rows.find(t => t.eta !== '')?.eta ?? '' // first ETA found in file order; ETAs are free text
+      const eta = epicEta(rows)
       const suffix = ` (${rows.length})`
       const { num, name: shownName } = epicLabel(name)
       const toggle = async () => {
