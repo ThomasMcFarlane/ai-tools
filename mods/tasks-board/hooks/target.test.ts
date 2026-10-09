@@ -15,7 +15,7 @@ const boards: Record<string, string> = {
 const NOW = 1_760_000_000_000
 const commonOf = (dir: string) => (dir.startsWith('/work/a') ? '/work/a/.git' : '/work/b/.git')
 
-function setup(on: Parameters<Parameters<typeof test>[1]>[1], opts: { cwd: string; gate?: Promise<void>; bListsA?: boolean; shellCwd?: string }) {
+function setup(on: Parameters<Parameters<typeof test>[1]>[1], opts: { cwd: string; gate?: Promise<void>; bListsA?: boolean; shellCwd?: string; over?: boolean; unreadable?: boolean }) {
   mock.store(on)
   const clock = mock.clock(on, { now: NOW })
   const opened: string[] = []
@@ -29,9 +29,12 @@ function setup(on: Parameters<Parameters<typeof test>[1]>[1], opts: { cwd: strin
   })
   on('fs.read', async (_$, e) => {
     if (e.path === '/work/a/TASKS.md' && opts.gate) await opts.gate
+    if (opts.unreadable && e.path === '/work/a/TASKS.md') return { deny: 'EACCES' }
+    if (opts.over && e.path === '/work/a/TASKS.md') return { deny: `${e.path} refused: the file is over the 4194304-byte limit` }
     return { value: boards[e.path] ?? '' }
   })
   on('process.run', (_$, e) => {
+    if (e.argv[0] === 'awk') return { value: { exitCode: 0, stdout: boards[e.argv.at(-1)!]!.replace('Alpha one', 'Alpha clipped one'), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     const dir = e.argv[2]!
     const git = e.argv.slice(3).join(' ')
     const out = git.startsWith('worktree list')
@@ -197,4 +200,20 @@ test('a shell cd away from the repo does not move the board', async ($, on) => {
   const text = (await board($, 'debug')).text
   expect(text).toContain('board: /work/a/TASKS.md')
   expect(text).toContain('session root: /work/a')
+})
+
+test('a board over the read limit is read through the clipping filter and renders', async ($, on) => {
+  const { clock } = setup(on, { cwd: '/work/a', over: true })
+  await $.session.start({ cwd: '/work/a', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const drawn = await drawnPane($)
+  expect(drawn).toContain('\"1\",\" IP\"') // the epic is collapsed; the counts prove the rows parsed
+  expect(drawn).not.toContain('board unreadable')
+})
+
+test('an unreadable board shows a short message instead of throwing', async ($, on) => {
+  const { clock } = setup(on, { cwd: '/work/a', unreadable: true })
+  await $.session.start({ cwd: '/work/a', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(await drawnPane($)).toContain('board unreadable: $.fs.read: EACCES')
 })

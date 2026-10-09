@@ -175,7 +175,7 @@ test('worktree variants are what the worktree changed since it forked, not where
         ? 'base1\n'
         : git.startsWith('merge-base')
           ? 'fork1\n'
-          : git.startsWith('show fork1:TASKS.md')
+          : e.argv[0] === 'sh' && e.argv[5] === 'fork1:TASKS.md'
             ? fork
             : ''
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }

@@ -30,6 +30,28 @@ const me = atom({ plugin: 'tasks-board', key: 'me' } as const, '')
 // The plugin's options, set by register() on every load or reload.
 let cfg: BoardConfig = DEFAULT_CONFIG
 
+// Cell cap for boards over the engine's 4 MiB read limit; the pane clips notes far below it.
+const CELL_CAP = 2000
+const CLIP_AWK = `{for(i=1;i<=NF;i++) if(length($i)>${CELL_CAP}) $i=substr($i,1,${CELL_CAP - 1}) "…"; print}`
+const isOverLimit = (err: unknown) => /over the \d+-byte limit/.test(String(err instanceof Error ? err.message : err))
+const reason = (err: unknown) => String(err instanceof Error ? err.message : err).replace(/^(\w*Error: )?tasks-board: /, '').slice(0, 120)
+
+// Board text from a file (or a `git show` ref). Over the read limit it is read through awk with every table cell clipped.
+async function readBoard($: EngineInterface, path: string, ref?: { wt: string; sha: string }): Promise<{ text: string; isClipped: boolean; isTruncated: boolean }> {
+  if (!ref) {
+    try {
+      return { text: await $.fs.read(path), isClipped: false, isTruncated: false }
+    } catch (err) {
+      if (!isOverLimit(err)) throw err
+    }
+  }
+  const r = ref
+    ? await $.process.run(['sh', '-c', 'git -C "$1" show "$2" | awk -F"|" -v OFS="|" "$3"', 'sh', ref.wt, `${ref.sha}:TASKS.md`, CLIP_AWK], { timeoutMs: 20000 })
+    : await $.process.run(['awk', '-F|', '-v', 'OFS=|', CLIP_AWK, path], { timeoutMs: 20000 })
+  if (r.exitCode !== 0 || (ref && r.stdout === '')) throw new Error(`cannot read ${ref ? `${ref.sha}:TASKS.md` : path}: ${r.stderr.trim() || `exit ${r.exitCode}`}`)
+  return { text: r.stdout, isClipped: true, isTruncated: r.isStdoutTruncated }
+}
+
 const union = (a: string[], b: string[]) => [...new Set([...a, ...b])]
 
 // The git main worktree of the checkout at `dir` (the first `git worktree list` entry), or ''.
@@ -60,7 +82,7 @@ const forkParsed = new Map<string, TasksBoardTask[]>()
 let wtBoards: WorktreeBoard[] = []
 let wtSignature = ''
 let wtScannedAt = 0
-let baseCache: { path: string; mtimeMs: number; size: number; all: TasksBoardTask[] } | undefined
+let baseCache: { path: string; mtimeMs: number; size: number; all: TasksBoardTask[]; isClipped: boolean; warn: string } | undefined
 // The board the module state above belongs to, and a counter that moves whenever it changes: a refresh that
 // started for an earlier board drops its results instead of writing them.
 let curPath = ''
@@ -98,9 +120,7 @@ async function forkBoard($: EngineInterface, wt: string, baseSha: string): Promi
     if (mb.exitCode !== 0 || !sha) return undefined
     let tasks = forkParsed.get(sha)
     if (!tasks) {
-      const shown = await $.process.run(['git', '-C', wt, 'show', `${sha}:TASKS.md`], { timeoutMs: 20000 })
-      if (shown.exitCode !== 0) return undefined
-      tasks = parseBoard(shown.stdout, { ownerNames: cfg.ownerNames })
+      tasks = parseBoard((await readBoard($, '', { wt, sha })).text, { ownerNames: cfg.ownerNames })
       forkParsed.set(sha, tasks)
     }
     return tasks
@@ -137,7 +157,12 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
     for (const s of stats.slice(0, cfg.maxWorktrees)) {
       let parsed = wtParsed.get(s.p)
       if (!parsed || parsed.mtimeMs !== s.mtimeMs || parsed.size !== s.size || parsed.baseSha !== baseSha) {
-        const all = parseBoard(await $.fs.read(`${s.p}/TASKS.md`), { ownerNames: cfg.ownerNames })
+        let all: TasksBoardTask[]
+        try {
+          all = parseBoard((await readBoard($, `${s.p}/TASKS.md`)).text, { ownerNames: cfg.ownerNames })
+        } catch {
+          continue // an unreadable worktree board is skipped, not fatal
+        }
         // Only what the worktree changed since it forked counts; if git cannot say, every row does.
         const fork = await forkBoard($, s.p, baseSha)
         parsed = { mtimeMs: s.mtimeMs, size: s.size, baseSha, tasks: fork ? changedSinceFork(fork, all) : all }
@@ -200,11 +225,13 @@ async function refresh($: EngineInterface, isForced = false) {
     // Only the primary board is ever offered for formatting: not a walked-up one, and never one the person pointed at by hand.
     const mayFix = source === 'primary'
     if (!baseCache || baseCache.path !== path || baseCache.mtimeMs !== st.mtimeMs || baseCache.size !== st.size) {
-      const all = parseBoard(await $.fs.read(path), { ownerNames: cfg.ownerNames })
+      const text = await readBoard($, path)
+      const all = parseBoard(text.text, { ownerNames: cfg.ownerNames })
       if (isStale()) return
-      baseCache = { path, mtimeMs: st.mtimeMs, size: st.size, all }
+      baseCache = { path, mtimeMs: st.mtimeMs, size: st.size, all, isClipped: text.isClipped, warn: text.isTruncated ? 'board over 4 MiB even clipped: later rows missing' : '' }
     }
-    if (mayFix && isBaseChanged) void maybeAutofix($, path, lintBoard(await $.fs.read(path))).catch(err => report($, 'autofix', err))
+    // A clipped board is never offered for formatting: the agent would see the full file, the lint only the clipped one.
+    if (mayFix && isBaseChanged && !baseCache.isClipped) void maybeAutofix($, path, lintBoard((await readBoard($, path)).text)).catch(err => report($, 'autofix', err))
     const all = mergeBoards(baseCache.all, wtBoards)
     // Only open rows are kept in state (and tracked): the done rows are most of a multi-megabyte file.
     const open = all.filter(t => t.status !== 'done')
@@ -213,9 +240,10 @@ async function refresh($: EngineInterface, isForced = false) {
     if (isStale()) return
     await update($, changes, () => ({ path, rows: trackChanges(old?.path === path ? old.rows : undefined, open, Date.now()) }))
     if (isStale()) return
-    await update($, board, () => ({ numW: numColumnWidth(all), repo, path, mtimeMs: st.mtimeMs, size: st.size, checkedAt: Date.now(), tasks, error: '' }))
+    await update($, board, () => ({ numW: numColumnWidth(all), repo, path, mtimeMs: st.mtimeMs, size: st.size, checkedAt: Date.now(), tasks, error: baseCache.warn }))
   } catch (err) {
-    if (!isStale()) await update($, board, b => ({ ...b, path, checkedAt: Date.now(), error: String(err) }))
+    // Keep the last good rows; say why they may be stale.
+    if (!isStale()) await update($, board, b => ({ ...b, path, checkedAt: Date.now(), error: `board unreadable: ${reason(err)}` }))
   }
 }
 
