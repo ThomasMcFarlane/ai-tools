@@ -98,6 +98,7 @@ function checklistTask(isDone, text2, epic, section, item, taken, gate) {
 function parseBoard(text2, opts = {}) {
   const names = (opts.ownerNames ?? []).map((n) => n.toLowerCase());
   const gate = ownerGate(opts.ownerNames ?? []);
+  const canonical = /\|\s*blocked_on_owner\s*\|/.test(text2) || lintBoard(text2).canonical;
   const tasks2 = [];
   let epic = "";
   let col;
@@ -164,7 +165,7 @@ function parseBoard(text2, opts = {}) {
       eta: (col.eta >= 0 ? c[col.eta] : "") || extractEta(notes),
       line,
       ...col.branch >= 0 && c[col.branch] ? { branch: c[col.branch] } : {},
-      ...isOwnerGate(c[col.status] ?? "", status, notes, gate, names.includes(owner.split(" (")[0].trim().toLowerCase())) ? { onOwner: true } : {}
+      ...isOwnerGate(c[col.status] ?? "", status, notes, gate, canonical, names.includes(owner.split(" (")[0].trim().toLowerCase())) ? { onOwner: true } : {}
     });
   }
   flush();
@@ -176,7 +177,16 @@ function parseBoard(text2, opts = {}) {
   }
   return tasks2;
 }
-var isOwnerGate = (rawStatus, status, notes, gate, isNamed) => /^blocked[\s_-]+on[\s_-]+owner/i.test(rawStatus) || status === "blocked" && (isNamed || gate.test(`${rawStatus} ${notes}`));
+var isOwnerGate = (rawStatus, status, notes, gate, canonical, isNamed) => /^blocked[\s_-]+on[\s_-]+owner/i.test(rawStatus) || !canonical && status === "blocked" && (isNamed || gate.test(`${rawStatus} ${latestUpdate(notes)}`));
+function latestUpdate(notes) {
+  const ds = [...notes.matchAll(/\d{4}-\d{2}-\d{2}/g)];
+  if (ds.length === 0) return notes;
+  let best = 0;
+  ds.forEach((d, i) => {
+    if (d[0] >= ds[best][0]) best = i;
+  });
+  return notes.slice(ds[best].index, ds[best + 1]?.index);
+}
 var ACTIVE_MS = 30 * 60 * 1e3;
 var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "done"];
 var CANON_HEADER = ["ID", "Task", "Status", "Owner", "Branch", "Depends", "ETA", "Notes"];
