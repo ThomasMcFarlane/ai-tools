@@ -1,0 +1,191 @@
+import { expect, mock, test } from 'claude-code/testing'
+
+import { parseBoard } from './board'
+
+// Synthetic boards in the styles real projects use: long titles and notes, repeated ids, dotted and suffixed ids,
+// escaped pipes, multi-line rows, checklists. The plugin runs end to end on each (session.start refreshes through
+// fs.* and process.run answered below), the Pane is mounted on the terminal surface at several widths, every epic
+// and task row is opened, and the drawn tree is read back after each step.
+const long = (n: number) => 'lorem ipsum dolor sit amet '.repeat(n).trim()
+const rows = (make: (i: number) => string, n: number) => Array.from({ length: n }, (_, i) => make(i + 1)).join('\n')
+const status = ['done', 'in_progress', 'todo', 'blocked', 'done (merged #12)', 'In review', 'open, not started']
+
+const table = (header: string, sep: string, make: (i: number) => string, epics = 4, per = 12) =>
+  Array.from({ length: epics }, (_, e) => `## Epic ${e + 1}\n\n${header}\n${sep}\n${rows(i => make(e * per + i), per)}`).join('\n\n')
+
+const BOARDS: [string, string][] = [
+  ['numeric ids, Depends on, long notes', `# Tasks\n\n${table('| # | Task | Status | Owner | Depends on | Acceptance |', '|---|---|---|---|---|---|', i => `| ${i} | Task ${i} ${long(3)} | ${status[i % 7]} | agent-${i % 3} (alias) | ${i - 1} | ${long(60)} ETA: 2026-10-10 |`)}\n`],
+  ['prefixed ids and a decision table', `# Tasks\n\n${table('| # | Task | Status | Owner | Notes |', '|---|---|---|---|---|', i => `| PZ-${String(i).padStart(3, '0')} | Task ${i} | ${status[i % 7]} | | ${long(10)} |`)}\n\n## Decisions\n\n| # | Decision |\n|---|---|\n| D1 | Use X |\n`],
+  ['multi-segment ids, Picked up by', `# Tasks\n\n${table('| # | Task | Status | Picked up by | Notes |', '|---|---|---|---|---|', i => `| CF-AREA-NAME-${String(i).padStart(2, '0')} | Task ${i} | ${status[i % 7]} | worker | ${long(5)} |`)}\n`],
+  ['checklist items', `# Todo\n\n${Array.from({ length: 6 }, (_, e) => `## Section ${e + 1}, 2026-10-0${e + 1}\n\n${rows(i => `- [${i % 3 === 0 ? 'x' : ' '}] ${i % 4 === 0 ? 'Owner action. ' : ''}Item ${i} ${long(4)}\n  continued ${long(3)}`, 6)}`).join('\n\n')}\n`],
+  ['repeated, dotted and suffixed ids, escaped pipes, multi-line rows', `# Tasks\n\n## One\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 7 | first \\| second | in-progress | a | x |\n| 7 | repeated id | todo | a | ${long(5)} |\n| 3.2 | dotted | todo | a | n |\n| 12a | suffixed | todo | a | n |\n| 13 | a row whose notes\n  continue here | blocked | a | Owner decision pending |\n| 14 | closing | todo | a | n |\n`],
+]
+
+for (const [name, text] of BOARDS) {
+  test(`renders a board with ${name}`, { options: { autofix: false } }, async ($, on) => {
+    const dir = '/work/repo'
+    const path = `${dir}/TASKS.md`
+    const wtDir = '/work/feature-x'
+    const wtText = text.replace('todo', 'done')
+    const reported: string[] = []
+    mock.store(on)
+    const clock = mock.clock(on, { now: 1_760_000_000_000 })
+    on('session.start', () => ({ cwd: dir }))
+    on('session.cwd', () => ({ value: dir }))
+    on('fs.exists', (_$, e) => ({ value: e.path === path }))
+    on('fs.stat', (_$, e) => ({
+      value: { kind: 'file', size: (e.path === path ? text : wtText).length, mtimeMs: e.path === path ? 1_759_000_000_000 : Date.now(), isLink: false },
+    }))
+    on('fs.read', (_$, e) => ({ value: e.path === path ? text : wtText }))
+    on('process.run', (_$, e) => ({
+      value: {
+        exitCode: 0,
+        stdout: e.argv[0] === 'git' ? `worktree ${dir}\n\nworktree ${wtDir}\n` : '[]',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }))
+    on('command.register', () => ({ value: undefined as never }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.status', (_$, e) => {
+      reported.push(String(e.text))
+      return { value: undefined }
+    })
+
+    await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+    await clock.settle() // session.start's board refresh runs unawaited
+
+    const ip = parseBoard(text).find(t => t.status === 'in_progress')!
+    for (const bodyColumns of [44, 60, 30]) {
+      const ui = await $.ui
+        .mount({
+          plugin: 'tasks-board',
+          surface: 'terminal',
+          component: 'Pane',
+          requestId: 'tasks-board',
+          props: { title: 'Board', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+          viewport: { columns: bodyColumns + 40, rows: 60, isFullscreen: true },
+        })
+        .catch(err => {
+          throw new Error(`${String(err)} at ${bodyColumns} columns; reported: ${reported.join(' ;; ')}`)
+        })
+      const first = JSON.stringify(await ui.drawn())
+      expect(first).not.toContain('render failed')
+      expect(first).toContain('Task')
+
+      if (bodyColumns === 44) {
+        // Open every epic, then some task rows (state persists across the later widths).
+        for (const b of await ui.findAll({ type: 'Button' })) {
+          if (b.key?.startsWith('epic:')) await ui.press({ key: b.key })
+        }
+        if (ip) expect(JSON.stringify(await ui.drawn())).toContain(ip.id)
+        for (const b of (await ui.findAll({ type: 'Button' })).slice(0, 12)) {
+          if (b.key?.startsWith('t')) await ui.press({ key: b.key })
+        }
+        expect(JSON.stringify(await ui.drawn())).toContain('Owner')
+      } else {
+        expect(JSON.stringify(await ui.drawn())).not.toContain('render failed')
+      }
+      await ui.unmount()
+    }
+    expect(reported).toEqual([])
+  })
+}
+
+test('a non-canonical primary board launches the formatting agent once, recorded in the store', async ($, on) => {
+  const dir = '/work/repo'
+  const text = '# Tasks\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | a | todo | | n |\n'
+  const spawned: string[] = []
+  const calls: string[] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => {
+    calls.push(e.argv.join(' '))
+    const out = e.argv[0] === 'gh' ? '[]' : e.argv.includes('remote') ? 'git@github.com:Some-Org/app.git\n' : `worktree ${dir}\n`
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('agent.spawn', (_$, e) => {
+    spawned.push(e.prompt)
+    return { model: 'sonnet', agentId: 'a1' }
+  })
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(spawned.length).toBe(1)
+  expect(spawned[0]).toContain('Some-Org/app')
+  expect(calls.some(c => c.startsWith('gh pr list -R Some-Org/app'))).toBe(true)
+  // A second refresh (another session, a reload) finds the record and launches nothing.
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(spawned.length).toBe(1)
+})
+
+test('worktree variants are what the worktree changed since it forked, not where the primary moved on', async ($, on) => {
+  const dir = '/work/repo'
+  const table = (s1: string, s2: string, s3: string) =>
+    `# Tasks\n\n## Epic\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | one | ${s1} | | |\n| 2 | two | ${s2} | | |\n| 3 | three | ${s3} | | |\n`
+  const primary = table('todo', 'in_progress', 'todo') // the primary moved on: row 2 started
+  const fork = table('todo', 'todo', 'todo')
+  const boards: Record<string, string> = {
+    [`${dir}/TASKS.md`]: primary,
+    '/work/stale/TASKS.md': fork, // unchanged since it forked
+    '/work/edited/TASKS.md': table('todo', 'todo', 'in_progress'), // started row 3 itself
+  }
+  const reported: string[] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', (_$, e) => ({
+    value: { kind: 'file', size: (boards[e.path] ?? '').length, mtimeMs: e.path === `${dir}/TASKS.md` ? 1_759_000_000_000 : Date.now(), isLink: false },
+  }))
+  on('fs.read', (_$, e) => ({ value: boards[e.path] ?? '' }))
+  on('process.run', (_$, e) => {
+    const git = e.argv.slice(3).join(' ')
+    const out = git.startsWith('worktree list')
+      ? `worktree ${dir}\n\nworktree /work/stale\n\nworktree /work/edited\n`
+      : git.startsWith('rev-parse')
+        ? 'base1\n'
+        : git.startsWith('merge-base')
+          ? 'fork1\n'
+          : git.startsWith('show fork1:TASKS.md')
+            ? fork
+            : ''
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', (_$, e) => {
+    reported.push(String(e.text))
+    return { value: undefined }
+  })
+
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({
+    plugin: 'tasks-board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tasks-board',
+    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    viewport: { columns: 120, rows: 60, isFullscreen: true },
+  })
+  for (const b of await ui.findAll({ type: 'Button' })) {
+    if (b.key?.startsWith('epic:')) await ui.press({ key: b.key })
+  }
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('[edited]')
+  expect(drawn).not.toContain('[stale]')
+  expect(reported).toEqual([])
+})

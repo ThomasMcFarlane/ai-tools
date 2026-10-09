@@ -1,0 +1,68 @@
+{
+  "name": "tasks-board",
+  "version": "0.4.0",
+  "author": {
+    "name": "Thomas McFarlane"
+  },
+  "description": "Docked right-hand pane showing a project's TASKS.md board: blocked on you, this session and in-progress work, merged with its other git worktrees.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "baseBoard": {
+      "type": "string",
+      "title": "Primary board path",
+      "description": "Path template for the primary TASKS.md, with {org}, {repo} and {root}. Empty: the TASKS.md of the git main worktree of the session's directory, else the nearest one above it.",
+      "required": false
+    },
+    "reposRoot": {
+      "type": "string",
+      "title": "Repositories root",
+      "description": "Value of {root} in the path templates.",
+      "required": false
+    },
+    "repoPatterns": {
+      "type": "string",
+      "title": "Repo path patterns",
+      "description": "Path templates, one per line or separated by semicolons, that derive org, repo and worktree name from the session's directory. Placeholders {root}, {org}, {repo}, {task}.",
+      "required": false
+    },
+    "fixInstructions": {
+      "type": "string",
+      "title": "Formatting agent instructions",
+      "description": "Extra rules appended to the prompt of the agent that rewrites a non-canonical board (workflow conventions, where scratch scripts go, how to wait for CI).",
+      "required": false
+    },
+    "autofix": {
+      "type": "boolean",
+      "title": "Offer to format boards automatically",
+      "description": "When on, a non-canonical primary board is rewritten to the canonical format by a background agent that opens a pull request (at most once per repository per day). /board autofix on|off overrides this for a session.",
+      "default": true,
+      "required": false
+    },
+    "excludeWorktreesOlderThanHours": {
+      "type": "number",
+      "title": "Worktree boards: maximum age (hours)",
+      "description": "Other worktrees whose TASKS.md changed longer ago than this are not merged into the board.",
+      "default": 48,
+      "required": false
+    },
+    "maxWorktrees": {
+      "type": "number",
+      "title": "Worktree boards: maximum count",
+      "description": "At most this many worktree boards (the newest) are merged.",
+      "default": 50,
+      "required": false
+    },
+    "ownerNames": {
+      "type": "string",
+      "title": "Owner names",
+      "description": "Names, separated by commas or semicolons, of the people whose decision a blocked row may wait on, besides \"owner\".",
+      "required": false
+    },
+    "agentPrefixPattern": {
+      "type": "string",
+      "title": "Agent name prefix pattern",
+      "description": "A regular expression removed from the start of an agent name when it is shown (for example a date-stamped prefix).",
+      "required": false
+    }
+  }
+}

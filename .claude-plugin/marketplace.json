@@ -1,0 +1,11 @@
+{
+  "name": "ai-tools",
+  "owner": { "name": "Thomas McFarlane" },
+  "plugins": [
+    {
+      "name": "tasks-board",
+      "source": "./mods/tasks-board",
+      "description": "Docked right-hand pane showing a project's TASKS.md board."
+    }
+  ]
+}
