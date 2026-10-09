@@ -58,7 +58,7 @@ const drawnPane = async ($: Parameters<Parameters<typeof test>[1]>[0]) => {
     surface: 'terminal',
     component: 'Pane',
     requestId: 'tasks-board',
-    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    props: { title: 'Board', isFocused: false, bodyColumns: 64, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
     viewport: { columns: 120, rows: 60, isFullscreen: true },
   })
   const drawn = JSON.stringify(await ui.drawn())
@@ -130,7 +130,7 @@ const mountPane = ($: Parameters<Parameters<typeof test>[1]>[0]) =>
     surface: 'terminal',
     component: 'Pane',
     requestId: 'tasks-board',
-    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    props: { title: 'Board', isFocused: false, bodyColumns: 64, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
     viewport: { columns: 120, rows: 60, isFullscreen: true },
   })
 

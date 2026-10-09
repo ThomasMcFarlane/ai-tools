@@ -444,14 +444,25 @@ export function wrapText(text: string, width: number): string[] {
   return lines
 }
 
+export const ETA_W = 10 // fits "23rd 02:45"
+
+/** `2026-10-11 02:45 ICT` (or `T` separator, TZ optional) -> `11th 02:45`; date only -> `11th`; anything else unchanged. */
+export function shortEta(eta: string): string {
+  const m = /^\d{4}-\d{2}-(\d{2})(?:[ T](\d{2}:\d{2})(?::\d{2})?(?:\s*\S+)?)?$/.exec(eta.trim())
+  if (!m) return eta
+  const d = Number(m[1])
+  const suffix = d % 100 >= 11 && d % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[d % 10] ?? 'th'
+  return `${d}${suffix}${m[2] ? ` ${m[2]}` : ''}`
+}
+
 /**
- * Column indices of the `│` borders: chevron (1) | # (`numW`) | Task | Agent (12) | ETA (6) | gutter (1), a ` │ `
+ * Column indices of the `│` borders: chevron (1) | # (`numW`) | Task | Agent (12) | ETA (ETA_W) | gutter (1), a ` │ `
  * before every cell after the chevron. The last is the right border, at `width - 3` (mirroring column 2).
  */
 export const barColumns = (taskW: number, hasAgent: boolean, hasEta: boolean, numW: number): number[] => {
   const bars = [2]
   let cursor = 4
-  for (const w of [numW, taskW, ...(hasAgent ? [12] : []), ...(hasEta ? [6] : [])]) {
+  for (const w of [numW, taskW, ...(hasAgent ? [12] : []), ...(hasEta ? [ETA_W] : [])]) {
     cursor += w
     bars.push(cursor + 1)
     cursor += 3
@@ -470,7 +481,7 @@ export const tableLine = (
   hasEta: boolean,
   numW: number,
 ): string =>
-  ` ${' │ '}${fit(c.num ?? '', numW, true)} │ ${fit(c.task ?? '', taskW)}${hasAgent ? ` │ ${fit(c.agent ?? '', 12)}` : ''}${hasEta ? ` │ ${fit(c.eta ?? '', 6)}` : ''} │  `
+  ` ${' │ '}${fit(c.num ?? '', numW, true)} │ ${fit(c.task ?? '', taskW)}${hasAgent ? ` │ ${fit(c.agent ?? '', 12)}` : ''}${hasEta ? ` │ ${fit(c.eta ?? '', ETA_W)}` : ''} │  `
 
 /** A horizontal rule from the first border (`├`) to the right border (`┤`), with `join` where the others meet it. */
 export const ruleLine = (width: number, join: string, bars: number[]): string => {
