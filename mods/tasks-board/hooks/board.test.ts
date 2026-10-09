@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { ETA_W, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
+import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
 
@@ -618,4 +618,10 @@ test('rows with an ETA keep equal width', () => {
     const line = tableLine({ num: '1', task: 't', agent: 'a', eta }, taskW, true, true, 3)
     expect(line.length).toBe(bars[bars.length - 1]! + 3)
   }
+})
+
+test('epicEta is the latest canonical ETA of open rows', () => {
+  const r = (eta: string, status = 'todo') => ({ eta, status }) as never
+  expect(epicEta([r('2026-10-11 18:00 ICT'), r('2026-12-01 09:00 ICT', 'done'), r('2026-10-20 08:00 ICT'), r('soon')])).toBe('2026-10-20 08:00 ICT')
+  expect(epicEta([r('soon'), r('later')])).toBe('soon')
 })
