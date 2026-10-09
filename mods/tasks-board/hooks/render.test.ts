@@ -256,3 +256,60 @@ test('every Button has a label or one string child, on an mc3-like board', { opt
   }
   expect(reported).toEqual([])
 })
+
+test('an open epic keeps its task rows outside its own Box, so hovering a task does not light the epic', { options: { autofix: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const text = `# Tasks\n\n## Epic\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | one | todo | | |\n| 2 | two | todo | | |\n`
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => ({
+    value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({
+    plugin: 'tasks-board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tasks-board',
+    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    viewport: { columns: 100, rows: 60, isFullscreen: true },
+  })
+  for (const b of await ui.findAll({ type: 'Button' })) {
+    if (b.key?.startsWith('epic:')) await ui.press({ key: b.key })
+  }
+  // Element keys live in props.key; collect them under a node, and find the epic Boxes.
+  type Node = { type?: string; props?: { key?: string }; children?: unknown[] }
+  const keys = (node: unknown, out: string[] = []): string[] => {
+    if (Array.isArray(node)) node.forEach(n => keys(n, out))
+    else if (node && typeof node === 'object') {
+      const n = node as Node
+      if (typeof n.props?.key === 'string') out.push(n.props.key)
+      keys(n.children, out)
+    }
+    return out
+  }
+  const epics: Node[] = []
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) node.forEach(walk)
+    else if (node && typeof node === 'object') {
+      const n = node as Node
+      if (n.type === 'Box' && n.props?.key?.startsWith('epic') && !n.props.key.startsWith('epic:')) epics.push(n)
+      walk(n.children)
+    }
+  }
+  const drawn = await ui.drawn()
+  walk(drawn)
+  expect(keys(drawn).filter(k => k.startsWith('row')).length).toBeGreaterThan(0) // the epic is open
+  expect(epics.length).toBeGreaterThan(0)
+  for (const e of epics) expect(keys(e).filter(k => k.startsWith('row'))).toEqual([])
+  await ui.unmount()
+})

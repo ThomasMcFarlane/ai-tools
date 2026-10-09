@@ -598,7 +598,8 @@ export const register: Register = (on, options) => {
       const numText = padL(num, isOn ? numW - 1 : numW)
       const label = clip(shownName, Math.max(1, taskW - suffix.length))
       const cell = `${label}${suffix}${' '.repeat(Math.max(0, taskW - label.length - suffix.length))}`
-      return (
+      // Child rows are siblings of the epic's Box, not inside it: hover is scoped to the keyed Box, so nesting them lit the epic.
+      return [
         <Box key={`epic${id}`} flexDirection="column">
           <Box flexDirection="row">
             {cellButton(`ch${id}`, isOpen ? '▾' : '▸', toggle)}{bar()}
@@ -609,9 +610,9 @@ export const register: Register = (on, options) => {
             {hasAgent && bar()}{hasAgent && cellButton(`ca${id}`, padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12), toggle)}
             {hasEta && bar()}{hasEta && cellButton(`ce${id}`, padR(eta, 6), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
-          {isOpen && rows.map(t => row(t, numColor, 2, accent))}
-        </Box>
-      )
+        </Box>,
+        ...(isOpen ? rows.map(t => row(t, numColor, 2, accent)) : []),
+      ]
     }
     const section = (title: string, list: TasksBoardTask[], color?: string, isDim = false, numColor?: string) => {
       if (list.length === 0) return false
