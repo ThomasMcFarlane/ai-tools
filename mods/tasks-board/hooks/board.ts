@@ -126,6 +126,8 @@ function checklistTask(
 export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): TasksBoardTask[] {
   const names = (opts.ownerNames ?? []).map(n => n.toLowerCase())
   const gate = ownerGate(opts.ownerNames ?? [])
+  // Canonical vocabulary: only an explicit `blocked_on_owner` status means owner-blocked.
+  const canonical = /\|\s*blocked_on_owner\s*\|/.test(text) || lintBoard(text).canonical
   const tasks: TasksBoardTask[] = []
   let epic = ''
   let col: Cols | undefined
@@ -195,7 +197,7 @@ export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): 
       eta: (col.eta >= 0 ? c[col.eta] : '') || extractEta(notes),
       line,
       ...(col.branch >= 0 && c[col.branch] ? { branch: c[col.branch] } : {}),
-      ...(isOwnerGate(c[col.status] ?? '', status, notes, gate, names.includes(owner.split(' (')[0]!.trim().toLowerCase())) ? { onOwner: true } : {}),
+      ...(isOwnerGate(c[col.status] ?? '', status, notes, gate, canonical, names.includes(owner.split(' (')[0]!.trim().toLowerCase())) ? { onOwner: true } : {}),
     })
   }
   flush()
@@ -210,8 +212,17 @@ export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): 
 }
 
 /** Decided at parse time, from the whole status and notes (state keeps clipped notes). */
-const isOwnerGate = (rawStatus: string, status: string, notes: string, gate: RegExp, isNamed: boolean): boolean =>
-  /^blocked[\s_-]+on[\s_-]+owner/i.test(rawStatus) || (status === 'blocked' && (isNamed || gate.test(`${rawStatus} ${notes}`)))
+const isOwnerGate = (rawStatus: string, status: string, notes: string, gate: RegExp, canonical: boolean, isNamed: boolean): boolean =>
+  /^blocked[\s_-]+on[\s_-]+owner/i.test(rawStatus) || (!canonical && status === 'blocked' && (isNamed || gate.test(`${rawStatus} ${latestUpdate(notes)}`)))
+
+/** The newest dated update (`2026-10-10 …`) in the notes, up to the next date; the whole notes if none is dated. */
+export function latestUpdate(notes: string): string {
+  const ds = [...notes.matchAll(/\d{4}-\d{2}-\d{2}/g)]
+  if (ds.length === 0) return notes
+  let best = 0
+  ds.forEach((d, i) => { if (d[0] >= ds[best]![0]) best = i })
+  return notes.slice(ds[best]!.index, ds[best + 1]?.index)
+}
 
 export const isBlockedOnYou = (t: TasksBoardTask): boolean =>
   t.status === 'blocked' && t.onOwner === true // a bare `owner` in the Owner column means nobody has picked it up

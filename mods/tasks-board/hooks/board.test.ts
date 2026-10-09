@@ -493,6 +493,21 @@ describe('blocked on you needs an explicit owner-gate phrase', () => {
   })
 })
 
+describe('owner gate by board vocabulary', () => {
+  const H = '| # | Task | Status | Owner | Notes |\n|--|--|--|--|--|\n'
+  const CH = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n'
+  test('canonical board: only blocked_on_owner is owner-blocked', () => {
+    const t = parseBoard(`${CH}| A1 | a | blocked | x | | | | owner decision made earlier |\n| A2 | b | blocked_on_owner | x | | | | n |\n`, { ownerNames: ['Ann'] })
+    expect(t.map(isBlockedOnYou)).toEqual([false, true])
+  })
+  test('non-canonical board keeps the text heuristic, on the latest dated update only', () => {
+    const b = (n: string) => parseBoard(`${H}| 1 | a | blocked | x | ${n} |`)[0]!
+    expect(isBlockedOnYou(b('Owner decision pending'))).toBe(true)
+    expect(isBlockedOnYou(b('2026-10-01 owner decision needed. 2026-10-09 waiting on row 3'))).toBe(false)
+    expect(isBlockedOnYou(b('2026-10-09 waiting on row 3. 2026-10-10 owner action: rotate key'))).toBe(true)
+  })
+})
+
 describe('survey fixes', () => {
   const st = (s: string) => parseBoard(`| # | Task | Status | Owner | Notes |\n|--|--|--|--|--|\n| 1 | a | ${s} | x | n |`)[0]?.status
   test('status lead splits on : and ; and strips markup', () => {
