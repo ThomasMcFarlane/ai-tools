@@ -1,9 +1,27 @@
 ---
 name: tasks-board
-description: Configure, debug or extend the tasks-board mod (the docked TASKS.md board pane in Claude Code), or edit or add TASKS.md board rules, formats or the board format check.
+description: Configure, debug or extend the tasks-board mod (the docked TASKS.md board pane in Claude Code), or edit or add TASKS.md board rules, formats or the board format check. Also use when an agent picks up, updates, blocks or finishes a TASKS.md row, to set its status and ETA.
 ---
 
 # tasks-board
+
+## Working on a board
+
+Statuses (full text in [FORMAT.md](../../../mods/tasks-board/FORMAT.md)):
+
+- `todo`: nobody has picked it up (Owner empty or `owner`).
+- `in_progress`: an agent is working on it now; Owner is that agent; ETA required.
+- `in_review`: a PR is open; link it in Notes; ETA is the expected merge.
+- `blocked`: waits on something other than the owner's input (another row, an agent prerequisite, CI, an external service, a quota). Name the row ID in Depends and say what it waits on in Notes.
+- `blocked_on_owner`: only when the owner must give input (a decision, approval, credentials, an action only they can take). Notes state exactly what is needed. Anything an agent or another task can resolve is `blocked`.
+- `done`: merged or verified; Notes hold the evidence.
+
+Update the row as work goes, the moment the state changes, not at the end of the session:
+
+- Pick-up: `in_progress`, Owner, Branch, ETA. PR open: `in_review` plus link. Blocked: status plus what on (row ID or the exact owner question). Finished: `done` plus evidence.
+- Every `in_progress` and `in_review` row carries an ETA (`YYYY-MM-DD HH:MM <TZ>`). Revise it as soon as it slips; an open row with an ETA in the past is wrong.
+- Add a row as soon as new work is discovered; never leave follow-up work only in chat, logs or PR comments.
+- Clear the blocker fields when unblocked.
 
 ## What the mod does
 
@@ -19,7 +37,7 @@ New boards, and boards the mod rewrites, use the "epic tables" format described 
 
 The parser also reads other layouts (numeric or prefixed ids, `Picked up by`, `Workstream`, free-text statuses such as `done (merged #12)`, multi-line rows, checklists with `- [ ]`). It keys tables by header names, so a table needs an id column (`#` or `ID`), a task or title column and a status column. `Branch` is parsed but never shown.
 
-A bare `owner` in the Owner column means nobody has picked the row up. A blocked row counts as blocked on you only with an explicit phrase (`owner action`, `owner decision`, `waiting on the owner`, `blocked on owner decision D7`, the configured `ownerNames` followed by `to decide`) or the status `blocked_on_owner`.
+A bare `owner` in the Owner column means nobody has picked the row up. "Blocked on you" means the owner must give input (a decision, approval, credentials or an action only they can take); a row blocked by an agent prerequisite, another row, CI or a quota is plain `blocked`. A blocked row counts as blocked on you only with an explicit phrase (`owner action`, `owner decision`, `waiting on the owner`, `blocked on owner decision D7`, the configured `ownerNames` followed by `to decide`) or the status `blocked_on_owner`.
 
 ## Options
 
