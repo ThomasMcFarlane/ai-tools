@@ -321,7 +321,7 @@ test('number cells are plain pressable Buttons, open epics and toggle tasks, in 
     }
   }
   walk(await ui.drawn())
-  const full = { backgroundColor: '#d0d0d0', color: '#1c1c1c', dimColor: false }
+  const full = { inverse: true, backgroundColor: '#1c1c1c', color: '#d0d0d0', dimColor: false }
   // every hover is the full row style
   for (const h of hovers) expect(h.hover).toEqual(full)
   for (const h of hovers) if (h.type === 'Button') expect(h.hover).toEqual(full)

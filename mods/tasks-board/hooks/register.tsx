@@ -526,7 +526,7 @@ export const register: Register = (on, options) => {
     const HEAD_FG = '#bcbcbc' // the column header is inverted: light fill, dark text and borders
     const SUB_BG = '#3a3a3a'
     const CHILD_BG = '#181818' // darker than HEAD_BG and SUB_BG
-    const ROW_HOVER_BG = '#d0d0d0' // hovered row: light fill, dark text
+    const ROW_HOVER_BG = '#d0d0d0' // hovered row: light fill, dark text (HV swaps them and sets inverse so the Button under the pointer, which the engine inverts too, stays light)
     const ROW_HOVER_FG = '#1c1c1c'
     const hasAgent = W >= 50
     const hasEta = W >= 36
@@ -546,7 +546,7 @@ export const register: Register = (on, options) => {
     const taskW = Math.max(6, W - (11 + numW) - (hasAgent ? 15 : 0) - (hasEta ? ETA_W + 3 : 0))
     const header = tableLine({ num: '#', task: 'Task', agent: 'Agent', eta: 'ETA' }, taskW, hasAgent, hasEta, numW)
     // Hovering anywhere on a row (it is a keyed Box) lights every cell of it.
-    const HV = { backgroundColor: ROW_HOVER_BG, color: ROW_HOVER_FG, dimColor: false } as const
+    const HV = { inverse: true, backgroundColor: ROW_HOVER_FG, color: ROW_HOVER_BG, dimColor: false } as const
     const bar = () => <Text dimColor hover={HV}> │ </Text>
     // A Button holds only a label (the engine refuses children), so every plain cell is its own Button
     // with the row's onPress. A Button takes no colour: cells that carry one stay Text, and are not pressable.
