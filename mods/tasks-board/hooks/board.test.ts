@@ -114,6 +114,9 @@ describe('formatting agent prompt', () => {
     expect(p).toContain('/x/TASKS.md')
     expect(p).toContain('board-format-20261009')
     expect(p).toContain('Do NOT merge')
+    expect(p).toContain('## <N>. <Epic name>')
+    expect(p).toContain('tasks-board-check-v2')
+    expect(p).toContain('<epic>.<task>')
     expect(p).not.toContain('Additional rules')
   })
   test('appends the configured instructions verbatim', () => {
@@ -306,6 +309,8 @@ test('state stays small for a multi-megabyte board', () => {
 describe('epic grouping', () => {
   test('epic heading with a task number splits into number and name', () => {
     expect(epicLabel('Task 443: comprehensive code mode')).toEqual({ num: '443', name: 'comprehensive code mode' })
+    expect(epicLabel('3. Code mode')).toEqual({ num: '3', name: 'Code mode' })
+    expect(epicLabel('12. Task 5: x')).toEqual({ num: '12', name: 'Task 5: x' })
     expect(epicLabel('Epic one')).toEqual({ num: '', name: 'Epic one' })
   })
   const all = parseBoard(FIXTURE)
@@ -440,11 +445,11 @@ describe('worktree merge', () => {
 
 const CANON = `# Tasks
 
-## Epic one
+## 1. Epic one
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| PZ-001 | First | in_progress | claude-1 | feat/pz-001 | PZ-000 | 2026-10-10 14:00 ICT | n |
+| PZ-001 | First | in_progress | claude-1 | feat/pz-001 | 1.PZ-002 | 2026-10-10 14:00 ICT | n |
 | PZ-002 | Second | blocked_on_owner | | | | | approve |
 `
 
@@ -453,7 +458,7 @@ describe('canonical format', () => {
     expect(lintBoard(CANON)).toEqual({ canonical: true, issues: [], findings: [] })
     const t = parseBoard(CANON)
     expect(t[0]!.eta).toBe('2026-10-10 14:00 ICT')
-    expect(t[0]!.depends).toBe('PZ-000')
+    expect(t[0]!.depends).toBe('1.PZ-002')
     expect(t[0]!.branch).toBe('feat/pz-001')
     expect(t[1]!.branch).toBeUndefined()
     expect(slimTasks(t)[0]!.branch).toBeUndefined()
@@ -563,7 +568,7 @@ test('changedSinceFork keeps new rows and rows that differ from the fork point',
 })
 
 describe('lint rules for CI', () => {
-  const GOOD = '# Tasks\n\n## E\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| A-1 | one | todo | | | | 2026-10-10 14:00 ICT | n |\n| A-2 | two | done | | | | 2026-10-10 14:00 UTC+07:00 | n |\n'
+  const GOOD = '# Tasks\n\n## 1. E\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| A-1 | one | todo | | | | 2026-10-10 14:00 ICT | n |\n| A-2 | two | done | | | | 2026-10-10 14:00 UTC+07:00 | n |\n'
   test('timezone abbreviations and offsets are accepted', () => {
     expect(lintBoard(GOOD).findings).toEqual([])
     for (const eta of ['2026-10-10 14:00 UTC', '2026-10-10 14:00 BST', '2026-10-10 14:00 +07:00', '2026-10-10 14:00 UTC-05', '2026-10-10 14:00 UTC+0530']) {
@@ -583,6 +588,28 @@ describe('lint rules for CI', () => {
     expect(f).toEqual([])
     const padded = GOOD.replace('| A-1 | one |', '| A-1 |  one  |')
     expect(lintBoard(padded).findings.map(x => `${x.line}:${x.rule}`)).toEqual(['7:padded-cell'])
+  })
+  test('epic headings need a number, unique on the board; prose headings are exempt', () => {
+    const tbl = '\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+    const row = (id: string, dep = '') => `| ${id} | t | todo | | |${dep ? ` ${dep} ` : ''}| | n |\n`
+    const board = (...h: string[]) => '# Tasks\n\n## Conventions\n\nprose\n\n' + h.map((x, i) => `## ${x}\n${tbl}${row(`A-${i + 1}`)}`).join('\n')
+    expect(lintBoard(board('1. One', '2. Two')).findings).toEqual([])
+    expect(lintBoard(board('One', '2. Two')).findings.map(f => f.rule)).toEqual(['epic-number'])
+    expect(lintBoard(board('Task 5: One')).findings.map(f => f.rule)).toEqual(['epic-number'])
+    expect(lintBoard(board('1. One', '1. Two')).findings.map(f => `${f.rule}:${f.line}`)).toEqual(['epic-unique:13'])
+    expect(checkBoard(board('One', '1. Two', '1. Three'), 'lenient')).toEqual([])
+    expect(checkBoard(board('One'), 'canonical').map(f => f.rule)).toEqual(['epic-number'])
+  })
+  test('Depends entries are <epic>.<task> references that resolve to a row', () => {
+    const tbl = '\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+    const row = (id: string, dep = '') => `| ${id} | t | todo | | |${dep ? ` ${dep} ` : ''}| | n |\n`
+    const board = (dep: string) => `# Tasks\n\n## 1. One${tbl}${row('A-1', dep)}${row('12')}\n## 2. Two${tbl}${row('PZ-001')}`
+    expect(lintBoard(board('2.PZ-001, 1.12')).findings).toEqual([])
+    expect(lintBoard(board('PZ-001')).findings.map(f => f.rule)).toEqual(['depends'])
+    expect(lintBoard(board('1.PZ-001')).findings.map(f => f.message)).toEqual(['Depends reference 1.PZ-001 matches no row'])
+    expect(lintBoard(board('2.PZ-001, 9')).findings.map(f => f.rule)).toEqual(['depends'])
+    expect(checkBoard(board('PZ-001'), 'lenient')).toEqual([])
+    expect(checkBoard(board('PZ-001'), 'canonical').map(f => f.rule)).toEqual(['depends'])
   })
   test('checkBoard: canonical fails on everything, lenient only on duplicates and padding', () => {
     const old = '| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | a | todo | | n |\n| 1 | b | todo | | n |\n- [ ] item\n'
@@ -634,7 +661,7 @@ test('rows with an ETA keep equal width', () => {
 
 test('parked is a canonical status, parses as parked, is never owner-blocked and is excluded from epicEta', () => {
   const CH = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
-  const text = `# Tasks\n\n## E\n\n${CH}| A-1 | a | parked | | | | | Parked by owner 2026-10-09: hold; resumes when web is done |\n`
+  const text = `# Tasks\n\n## 1. E\n\n${CH}| A-1 | a | parked | | | | | Parked by owner 2026-10-09: hold; resumes when web is done |\n`
   expect(lintBoard(text).findings).toEqual([])
   const rows = parseBoard(text)
   expect(rows.map(t => t.status)).toEqual(['parked'])

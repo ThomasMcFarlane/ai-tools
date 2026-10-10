@@ -2,18 +2,25 @@
 
 ```
 # Tasks
-## <Epic name>
+## <N>. <Epic name>
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| PZ-001 | … | in_progress | agent-name | feat/pz-001 | PZ-000 | 2026-10-10 14:00 ICT | … |
+| PZ-001 | … | in_progress | agent-name | feat/pz-001 | 1.PZ-000 | 2026-10-10 14:00 ICT | … |
 ```
 
-- One `##` heading per epic; one table per epic, with exactly the header above.
+- One `##` heading per epic; one table per epic, with exactly the header above. The heading is `## <N>. <Epic name>`,
+  N a positive integer unique on the board. Numbers are stable: never renumber or reuse one; a new epic takes the
+  highest number + 1. Headings that hold no task table (Conventions, Identities, archive notes) are not epics and are
+  not numbered. The parser still reads the older `Task <n>: <name>` form, but it is not canonical.
+- A task's reference is `<epic>.<task>`, e.g. `3.579` or `2.PZ-001`; the ID column keeps the task's own ID verbatim
+  (unique across the board). Agents use the reference everywhere they name a task: Depends, Notes, commit messages,
+  PR titles and bodies, chat and reports. Depends cells hold comma-separated references in that form, each
+  resolving to an existing row.
 - Status is exactly one of the following.
   - `todo`: not started; nobody has picked it up (Owner empty or `owner`).
   - `in_progress`: an agent is working on it now. Owner is that agent; ETA is required.
   - `in_review`: a PR is open and waits on CI, review or merge. Link the PR in Notes; ETA is the expected merge.
-  - `blocked`: cannot proceed because of something other than the owner's input: another row (name its ID in
+  - `blocked`: cannot proceed because of something other than the owner's input: another row (name its reference in
     Depends), an agent prerequisite, a failing dependency, CI, an external service or a quota. Notes say what it
     waits on.
   - `blocked_on_owner`: only when the owner (the person running the agents) must give input: a decision, an

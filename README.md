@@ -178,7 +178,7 @@ ai-tools/
 ├── mods/
 │   └── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
 ├── actions/
-│   └── tasks-board-check/  # GitHub Action: `uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1`
+│   └── tasks-board-check/  # GitHub Action: `uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v2`
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
 ├── packages/
 │   └── hooks/         # @ai-tools/hooks (shared exec/webhook/file/notify hooks)

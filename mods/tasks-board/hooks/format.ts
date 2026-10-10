@@ -2,12 +2,17 @@
 export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
 
 # Tasks
-## <Epic name>
+## <N>. <Epic name>
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| PZ-001 | … | in_progress | agent-name | feat/pz-001 | PZ-000 | 2026-10-10 14:00 ICT | … |
+| PZ-001 | … | in_progress | agent-name | feat/pz-001 | 1.PZ-000 | 2026-10-10 14:00 ICT | … |
 
-- One ## heading per epic; one table per epic, with exactly the header above.
+- One ## heading per epic; one table per epic, with exactly the header above. The heading is "## <N>. <Epic name>",
+  N a positive integer unique on the board. Numbers are stable: never renumber or reuse one; a new epic takes the
+  highest number + 1. Headings that hold no task table (Conventions, Identities, archive notes) are not epics and
+  are not numbered.
+- A task's reference is <epic>.<task>, e.g. 3.579 or 2.PZ-001. The ID column keeps the task's own ID verbatim.
+  Depends cells hold comma-separated references in that form, each resolving to an existing row.
 - Status is exactly one of:
   - todo: not started; nobody has picked it up (Owner empty or "owner").
   - in_progress: an agent is working on it now. Owner is that agent; ETA is required.
@@ -52,6 +57,8 @@ Rules:
 - In the same PR, update those checkers, their tests and the documented conventions to the canonical format, and run them locally. Then wait for CI to finish and fix what it reports.
 - If a checker cannot be migrated safely, leave the board unchanged, open no PR, and report why.
 - Preserve every task and every piece of text; delete nothing.
+- Number the epics in file order starting at 1, keeping any existing number (\`Task 12\`, \`12.\`) and never renumbering. Rewrite every Depends cell to comma-separated \`<epic>.<task>\` references. Leave Notes prose as written.
+- If the repository's CI uses \`ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1\`, change it to \`@tasks-board-check-v2\` in the same PR.
 - If an ID appears twice, renumber the later duplicate to the next free ID in that board's numbering and note its old ID in Notes.
 - Verify with a script, kept outside the repository, that every original ID is present exactly once afterwards, and that the open and done counts match before and after.
 - Commit, push, and run \`gh pr create\` titled "${FIX_PR_TITLE}".

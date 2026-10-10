@@ -21,6 +21,15 @@ describe('check', () => {
     expect(r.problems.map((p) => p.line)).toEqual(expect.arrayContaining([3, 4, 5, 6]));
   });
 
+  it('requires numbered epics and <epic>.<task> Depends', () => {
+    const row = (d: string) => `| A-1 | t | todo | a | |${d ? ` ${d} ` : ''}| | |\n`;
+    expect(check('## 1. E\n\n' + H + row('')).failed).toBe(false);
+    expect(check('## E\n\n' + H + row('')).failed).toBe(true);
+    expect(check('## E\n\n' + H + row(''), 'lenient').failed).toBe(false);
+    expect(check('## 1. E\n\n' + H + row('A-1')).failed).toBe(true);
+    expect(check('## 1. E\n\n' + H + row('1.A-1')).failed).toBe(false);
+  });
+
   it('accepts the parked status', () => {
     expect(check(H + '| A-1 | t | parked | | | | | Parked by owner |\n').failed).toBe(false);
   });
@@ -29,7 +38,8 @@ describe('check', () => {
     expect(check('- [ ] x\n', 'lenient').failed).toBe(false);
     expect(check('| ID | Task |\n|---|---|\n| A | t |\n', 'lenient').failed).toBe(false);
     expect(
-      check(H + '| A-1 | t | todo | a | | | | |\n| A-1 | t | todo | a | | | | |\n', 'lenient').failed,
+      check(H + '| A-1 | t | todo | a | | | | |\n| A-1 | t | todo | a | | | | |\n', 'lenient')
+        .failed,
     ).toBe(true);
     expect(check('| ID |  Task |\n|---|---|\n', 'lenient').failed).toBe(true);
   });

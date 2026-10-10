@@ -371,3 +371,54 @@ test('expanded details show the full notes, split on <br>, with no hover and out
   expect(lines.filter(l => l.includes('SECOND') && l.includes('THIRD'))).toEqual([]) // <br> and <br/> each break the line
   await ui.unmount()
 })
+
+test('expanded details start with a Ref line <epic>.<task>', { options: { autofix: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const long = Array.from({ length: 250 }, (_, i) => `w${i}x`).join(' ') // ~1,250 characters
+  const text = `# Tasks\n\n## 7. Epic\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 41 | one | todo | | ${long}<br>SECOND<br/>THIRD |\n`
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => ({
+    value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({
+    plugin: 'tasks-board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tasks-board',
+    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 100 }, view: {} },
+    viewport: { columns: 100, rows: 100, isFullscreen: true },
+  })
+  for (const b of await ui.findAll({ type: 'Button' })) if (b.key?.startsWith('epic:')) await ui.press({ key: b.key })
+  for (const b of await ui.findAll({ type: 'Button' })) if (b.key?.startsWith('t')) await ui.press({ key: b.key })
+  type Node = { type?: string; props?: { key?: string; hover?: unknown }; children?: unknown[] }
+  const find = (node: unknown, f: (n: Node) => boolean, out: Node[] = []): Node[] => {
+    if (Array.isArray(node)) node.forEach(n => find(n, f, out))
+    else if (node && typeof node === 'object') {
+      const n = node as Node
+      if (f(n)) out.push(n)
+      find(n.children, f, out)
+    }
+    return out
+  }
+  const drawn = await ui.drawn()
+  const [det] = find(drawn, n => n.type === 'Box' && !!n.props?.key?.startsWith('det'))
+  expect(det).toBeDefined()
+  expect(find(drawn, n => n.type === 'Box' && !!n.props?.key?.startsWith('row')).flatMap(r => find(r, n => n.props?.key?.startsWith('det') === true))).toEqual([])
+  expect(find(det, n => n.props?.hover !== undefined)).toEqual([])
+  expect(JSON.stringify(det)).toMatch(/Ref {5}.*7\.41/s)
+  const first = (det!.children as unknown[])[1]
+  expect(JSON.stringify(first)).toContain('Ref')
+  await ui.unmount()
+})

@@ -2,7 +2,7 @@
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1
+- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v2
   with:
     path: TASKS.md # default
     format: canonical # or lenient while migrating
