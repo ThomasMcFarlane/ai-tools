@@ -503,7 +503,6 @@ export const register: Register = (on, options) => {
     const st = (t: TasksBoardTask) => t.priorStatus ?? t.status
     const live = b.tasks.filter(t => t.status !== 'done' || t.priorStatus)
     const count = (s: string) => live.filter(t => st(t) === s).length
-    const shownMine = new Set<string>()
     const shown = new Set<string>()
     const take = (list: TasksBoardTask[]) => {
       const fresh = list.filter(t => !shown.has(t.key))
@@ -516,7 +515,6 @@ export const register: Register = (on, options) => {
     const session = f === 'session' ? take(live.filter(isMine)) : []
     const onYou = take(blocked.filter(isBlockedOnYou))
     if (f !== 'session') session.push(...take(live.filter(isMine)))
-    live.filter(isMine).forEach(t => shownMine.add(t.key))
     const other = take(blocked)
     const working = take(live.filter(t => st(t) === 'in_progress'))
     working.sort((x, y) => x.agent.localeCompare(y.agent) || x.n - y.n)
@@ -549,7 +547,6 @@ export const register: Register = (on, options) => {
     const header = tableLine({ num: '#', task: 'Task', agent: 'Agent', eta: 'ETA' }, taskW, hasAgent, hasEta, numW)
     // Hovering anywhere on a row (it is a keyed Box) lights every cell of it.
     const HV = { backgroundColor: ROW_HOVER_BG, color: ROW_HOVER_FG, dimColor: false } as const
-    const HV_NUM = { backgroundColor: ROW_HOVER_BG } as const // number cells keep their own colour
     const bar = () => <Text dimColor hover={HV}> │ </Text>
     // A Button holds only a label (the engine refuses children), so every plain cell is its own Button
     // with the row's onPress. A Button takes no colour: cells that carry one stay Text, and are not pressable.
@@ -582,19 +579,11 @@ export const register: Register = (on, options) => {
         ),
       )
     }
-    // A coloured or spinning number cell stays Text (a Button takes no colour and no children), so it is not
-    // pressable; its hover changes only the background and keeps its colour.
-    const numCell = (k: string, text: string, onPress: () => unknown, color?: string, isOn?: boolean, accent?: string) =>
-      color === undefined && !isOn ? (
-        cellButton(k, text, onPress)
-      ) : (
-        <>
-          {isOn && <Text color={accent} hover={HV_NUM}>{spin}</Text>}
-          {color === undefined ? cellButton(k, text, onPress) : <Text color={color} bold hover={HV_NUM}>{text}</Text>}
-        </>
-      )
+    // The spinner shares the number's label (same width), so both are clickable and drawn in the default colour.
+    const numCell = (k: string, text: string, onPress: () => unknown, isOn: boolean) =>
+      cellButton(k, isOn ? `${spin}${text}` : text, onPress)
     const plainBar = () => <Text dimColor> │ </Text> // no hover: the details block is not interactive
-    const row = (t: TasksBoardTask, numColor?: string, indent = 0, accent?: string) => {
+    const row = (t: TasksBoardTask, indent = 0) => {
       const doneText = t.priorStatus ? '✓ ' : ''
       const tagText = t.tag ? `[${t.tag}${t.isOwn ? '*' : ''}] ` : ''
       const isOn = activeOf(t)
@@ -604,7 +593,6 @@ export const register: Register = (on, options) => {
       used += 1 + (detail.length > 0 ? detail.length + 2 : 0)
       const bg = indent > 0 ? CHILD_BG : undefined
       const toggle = () => update($, expanded, x => (x.includes(t.key) ? x.filter(n => n !== t.key) : [...x, t.key]))
-      const isNumColoured = numColor !== undefined || shownMine.has(t.key)
       const numText = padL(t.id, isOn ? numW - 1 : numW)
       const cell = `${' '.repeat(indent)}${tagText}${doneText}${padR(t.title, titleW)}`
       // The details are a sibling of the keyed row Box: hover is scoped to that Box, so nesting them lit the details.
@@ -612,7 +600,7 @@ export const register: Register = (on, options) => {
         <Box key={`row${t.key}`} flexDirection="column" backgroundColor={bg}>
           <Box flexDirection="row">
             <Text hover={HV}> </Text>{bar()}
-            {numCell(`cn${t.key}`, numText, toggle, isNumColoured ? (numColor ?? 'green') : undefined, isOn, accent)}
+            {numCell(`cn${t.key}`, numText, toggle, isOn)}
             {bar()}
             <Button key={`t${t.key}`} label={cell} plain hover={HV} onPress={toggle} />
             {hasAgent && bar()}{hasAgent && cellButton(`ca${t.key}`, padR(who(t.agent), 12), toggle)}
@@ -638,7 +626,7 @@ export const register: Register = (on, options) => {
     }
     // An epic is a normal row; its tasks nest beneath it. All epics start collapsed; a press flips one
     // (kept per section+epic).
-    const epicRow = (title: string, name: string, rows: TasksBoardTask[], numColor?: string, accent?: string) => {
+    const epicRow = (title: string, name: string, rows: TasksBoardTask[]) => {
       const isOn = rows.some(activeOf)
       if (isOn) seenActive = true
       const id = `${title}|${name}`
@@ -661,17 +649,17 @@ export const register: Register = (on, options) => {
         <Box key={`epic${id}`} flexDirection="column">
           <Box flexDirection="row">
             {cellButton(`ch${id}`, isOpen ? '▾' : '▸', toggle)}{bar()}
-            {numCell(`cn${id}`, numText, toggle, numColor, isOn, accent)}
+            {numCell(`cn${id}`, numText, toggle, isOn)}
             {bar()}
             <Button key={`epic:${id}`} label={cell} plain hover={HV} onPress={toggle} />
             {hasAgent && bar()}{hasAgent && cellButton(`ca${id}`, padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12), toggle)}
             {hasEta && bar()}{hasEta && cellButton(`ce${id}`, padR(shortEta(eta), ETA_W), toggle)}{bar()}<Text hover={HV}> </Text>
           </Box>
         </Box>,
-        ...(isOpen ? rows.flatMap(t => row(t, numColor, 2, accent)) : []),
+        ...(isOpen ? rows.flatMap(t => row(t, 2)) : []),
       ]
     }
-    const section = (title: string, list: TasksBoardTask[], color?: string, isDim = false, numColor?: string) => {
+    const section = (title: string, list: TasksBoardTask[], color?: string, isDim = false) => {
       if (list.length === 0) return false
       used += 3 // title plus a half-row of padding either side, each still a whole row
       return (
@@ -690,7 +678,7 @@ export const register: Register = (on, options) => {
               ))}
             </Text>
           ))}
-          {groupByEpic(b.tasks, list, () => 0).map(x => epicRow(title, x.epic, x.rows, numColor, isDim ? undefined : color))}
+          {groupByEpic(b.tasks, list, () => 0).map(x => epicRow(title, x.epic, x.rows))}
         </Box>
       )
     }
@@ -700,7 +688,7 @@ export const register: Register = (on, options) => {
     const age = b.mtimeMs ? `updated ${ageText(b.checkedAt - b.mtimeMs)} ago` : 'not loaded'
 
     const sections = [
-      f !== 'session' && section('BLOCKED ON YOU', onYou, 'red', false, 'red'),
+      f !== 'session' && section('BLOCKED ON YOU', onYou, 'red'),
       f !== 'blocked' && section('THIS SESSION', session, 'green'),
       f === 'all' && section('IN PROGRESS', working, 'cyan'),
       f !== 'session' && section('BLOCKED', other, 'yellow'),

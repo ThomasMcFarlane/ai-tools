@@ -261,10 +261,10 @@ test('every Button has a label or one string child, on an mc3-like board', { opt
   expect(reported).toEqual([])
 })
 
-test('number cells keep their colour and hover with the row background', { options: { autofix: false } }, async ($, on) => {
+test('number cells are plain pressable Buttons, open epics and toggle tasks, in coloured and active rows', { options: { autofix: false } }, async ($, on) => {
   const dir = '/work/repo'
   const head = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|'
-  const text = `# Tasks\n\n## Live\n\n${head}\n| F1 | ${long(8)} | in_progress | agent-a | | | | n |\n| 12a | short | todo | | | F1 | | n |\n| 7 | renumbered | blocked_on_owner | | | | 2026-10-10 14:00 ICT | n |\n| 8 | ${long(12)} | done | | | | | n |\n\n## Archive — era\n\n${head}\n| 1 | old | done | | | | | n |\n| 2 | older | done | | | | | n |\n`
+  let text = `# Tasks\n\n## Live\n\n${head}\n| F1 | ${long(8)} | in_progress | agent-a | | | | n |\n| 12a | short | todo | | | F1 | | n |\n| 7 | renumbered | blocked_on_owner | | | | 2026-10-10 14:00 ICT | n |\n| 8 | ${long(12)} | done | | | | | n |\n\n## Archive — era\n\n${head}\n| 1 | old | done | | | | | n |\n| 2 | older | done | | | | | n |\n`
   const reported: string[] = []
   mock.store(on)
   const clock = mock.clock(on, { now: 1_760_000_000_000 })
@@ -293,6 +293,24 @@ test('number cells keep their colour and hover with the row background', { optio
     props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
     viewport: { columns: 100, rows: 60, isFullscreen: true },
   })
+  text = text.replace('| renumbered |', '| renumbered again |').replace('| F1 | ', '| F1 | edited ') // a later change marks rows active
+  await ui.press({ key: 'fr' })
+  await clock.settle()
+  const cn = async () => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('cn'))
+  const dets = async () => JSON.stringify(await ui.drawn()).split('"key":"det').length - 1
+  const epics = await cn()
+  expect(epics.length).toBeGreaterThan(0)
+  for (const b of epics) await ui.press({ key: b.key! }) // epic numbers open their epic
+  const tasks = (await cn()).filter(b => !b.key!.includes('|'))
+  expect(tasks.length).toBeGreaterThanOrEqual(3)
+  expect(await dets()).toBe(0)
+  for (const b of tasks) {
+    await ui.press({ key: b.key! }) // each number toggles its row's details, coloured section or spinner or not
+    expect(await dets()).toBe(1)
+    await ui.press({ key: b.key! })
+    expect(await dets()).toBe(0)
+  }
+  expect(JSON.stringify(await ui.drawn())).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/) // an active row's spinner sits in its number label
   const hovers: { type?: string; hover?: unknown }[] = []
   const walk = (n: unknown) => {
     if (Array.isArray(n)) n.forEach(walk)
@@ -304,9 +322,8 @@ test('number cells keep their colour and hover with the row background', { optio
   }
   walk(await ui.drawn())
   const full = { backgroundColor: '#d0d0d0', color: '#1c1c1c', dimColor: false }
-  // coloured number and spinner cells (Text) keep their own colour: background only; every Button carries the full row style
-  expect(hovers.filter(h => JSON.stringify(h.hover) === JSON.stringify({ backgroundColor: '#d0d0d0' })).length).toBeGreaterThan(0)
-  for (const h of hovers) expect([full, { backgroundColor: '#d0d0d0' }]).toContainEqual(h.hover)
+  // every hover is the full row style
+  for (const h of hovers) expect(h.hover).toEqual(full)
   for (const h of hovers) if (h.type === 'Button') expect(h.hover).toEqual(full)
   expect(badButtons(await ui.drawn())).toEqual([])
   expect(reported).toEqual([])
