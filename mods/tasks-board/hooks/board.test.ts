@@ -391,7 +391,7 @@ test('Hold, PR and implemented statuses, and heading names', () => {
   expect(['done on 9 Oct', 'implemented', 'dropped'].map(st)).toEqual(['done', 'done', 'done'])
   expect(['in progress', 'in PR', 'in review', 'partly done'].map(st)).toEqual(['in_progress', 'in_progress', 'in_progress', 'in_progress'])
   expect(['pending', 'planned'].map(st)).toEqual(['todo', 'todo'])
-  expect(st('on hold')).toBe('blocked')
+  expect(st('on hold')).toBe('todo') // legacy deferred without owner evidence
   const t = parseBoard('## Active: Server write queue (2026-10-09)\n\n| # | Task | Status | Picked up by | Notes |\n|--|--|--|--|--|\n| 9872 | a | done | x | n |')
   expect(t[0]!.epic).toBe('Server write queue')
   expect(t[0]!.id).toBe('9872')
@@ -482,7 +482,7 @@ describe('canonical format', () => {
   test('every other style has issues', () => {
     for (const text of [FIXTURE, PZ, AIS, CF, CHECK]) expect(lintBoard(text).canonical).toBe(false)
     expect(lintBoard(CANON.replace('| Branch ', '').replace('|---|---|---|---|---|---|---|---|', '|---|---|---|---|---|---|---|')).issues[0]).toContain('header')
-    expect(lintBoard(CANON.replace('in_progress', 'in progress')).issues[0]).toContain('vocabulary')
+    expect(lintBoard(CANON.replace('in_progress', 'in progress')).issues[0]).toContain('see FORMAT.md, Legacy statuses')
     expect(lintBoard(CANON.replace('2026-10-10 14:00 ICT', 'tomorrow')).issues[0]).toContain('ETA')
   })
   test('launch decision: once per repo per 24 h, only non-canonical, only with autofix on', () => {
@@ -513,7 +513,7 @@ describe('blocked on you needs an explicit owner-gate phrase', () => {
   test('explicit gates count, wherever they sit in the notes', () => {
     expect(isBlockedOnYou(row('blocked', 'claude-1', 'Blocked on owner decision D7'))).toBe(true)
     expect(isBlockedOnYou(row('blocked', 'claude-1', 'x'.repeat(600) + ' Owner action: rotate the key'))).toBe(true)
-    expect(isBlockedOnYou(row('on hold', 'claude-1', 'Ann must decide the budget'))).toBe(true)
+    expect(isBlockedOnYou(row('blocked', 'claude-1', 'Ann must decide the budget'))).toBe(true)
     expect(isBlockedOnYou(row('waiting on owner', '', 'n'))).toBe(true)
     expect(isBlockedOnYou(row('blocked', 'Ann', 'n'))).toBe(true)
     expect(isBlockedOnYou(row('blocked', 'owner', 'n'))).toBe(false) // unassigned, not blocked on the owner
@@ -594,7 +594,7 @@ describe('lint rules for CI', () => {
   test('findings carry the line and the rule', () => {
     const f = lintBoard(GOOD.replace('| A-2 |', '| A-1 |')).findings
     expect(f).toEqual([{ line: 8, rule: 'duplicate-id', message: 'duplicate ID A-1' }])
-    expect(lintBoard(GOOD.replace('todo', 'wip')).findings).toEqual([{ line: 7, rule: 'status', message: 'status outside the vocabulary: "wip"' }])
+    expect(lintBoard(GOOD.replace('todo', 'wip')).findings).toEqual([{ line: 7, rule: 'status', message: 'status "wip" is not one of todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped; see FORMAT.md, Legacy statuses' }])
     expect(lintBoard(GOOD).issues).toEqual([])
   })
   test('padded cells are reported on their line', () => {
@@ -682,6 +682,41 @@ test('parked is a canonical status, parses as parked, is never owner-blocked and
   expect(rows.map(isBlockedOnYou)).toEqual([false])
   const r = (eta: string, status: string) => ({ eta, status }) as never
   expect(epicEta([r('2026-12-01 09:00 ICT', 'parked'), r('2026-10-20 08:00 ICT', 'todo')])).toBe('2026-10-20 08:00 ICT')
+})
+
+describe('legacy statuses', () => {
+  const CH = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+  const board = (status: string, notes: string) => `# Tasks\n\n## 1. E\n\n${CH}| A-1 | a | ${status} | | | | | ${notes} |\n`
+  test('dropped is canonical only with a Dropped: prefix', () => {
+    expect(lintBoard(board('dropped', 'Dropped: superseded by 2.B-1.')).findings).toEqual([])
+    const bad = lintBoard(board('dropped', 'not needed'))
+    expect(bad.findings.map(f => f.rule)).toEqual(['dropped'])
+    expect(checkBoard(board('dropped', 'gone'), 'canonical').map(f => f.rule)).toEqual(['dropped'])
+  })
+  test('cancelled-style statuses parse as done (hidden, not open)', () => {
+    for (const s of ['dropped', 'cancelled', 'canceled', 'wontfix', 'abandoned', 'obsolete', "won't fix", '~~cancelled~~'])
+      expect(parseBoard(board(s, 'x')).map(t => t.status)).toEqual(['done'])
+    expect(slimTasks(parseBoard(board('dropped', 'Dropped: x.')))).toEqual([])
+  })
+  test('deferred without owner evidence is todo, with owner evidence is parked', () => {
+    for (const s of ['deferred', 'on hold', 'later', 'postponed', 'backlog']) {
+      expect(parseBoard(board(s, 'Deferred: low value')).map(t => t.status)).toEqual(['todo'])
+      expect(parseBoard(board(s, 'owner decision 2026-10-09: pause until web ships')).map(t => t.status)).toEqual(['parked'])
+    }
+    expect(parseBoard(board('deferred', 'Thomas paused it'), { ownerNames: ['Thomas'] }).map(t => t.status)).toEqual(['parked'])
+  })
+  test('unknown status message names the set and the mapping table', () => {
+    const [msg] = lintBoard(board('deferred', 'x')).issues
+    expect(msg).toContain('todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped')
+    expect(msg).toContain('see FORMAT.md, Legacy statuses')
+  })
+  test('autofix prompt carries the table', () => {
+    const p = fixPrompt('o/r', '/x/TASKS.md', '20261009')
+    expect(p).toContain('Legacy statuses')
+    expect(p).toContain('Dropped: <reason>.')
+    expect(p).toContain('Deferred: <reason>.')
+    expect(p).toContain('Previous status')
+  })
 })
 
 test('epicEta is the latest canonical ETA of open rows', () => {

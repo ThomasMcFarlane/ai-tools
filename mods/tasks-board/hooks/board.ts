@@ -26,21 +26,27 @@ export function ownerGate(names: string[]): RegExp {
 // PZ-001, CF-EMAIL-ROUTING-01, F10, 65, 12a, 3.2.1
 const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d+[a-z]?)$/
 
-/** Statuses are grouped as in_progress / blocked / todo / parked / done; anything unknown counts as todo. */
-export const normaliseStatus = (s: string): string => {
+/**
+ * Statuses are grouped as in_progress / blocked / todo / parked / done; anything unknown counts as todo. Legacy
+ * cancelled work (`dropped`, `cancelled`, `wontfix`, `abandoned`, `obsolete`) displays as done, so it is hidden and
+ * not counted open. Legacy deferred work (`deferred`, `on hold`, `later`, `postponed`, `backlog`) is `parked` when
+ * `ownerPaused` (the row shows the owner paused it), otherwise `todo`. See FORMAT.md, Legacy statuses.
+ */
+export const normaliseStatus = (s: string, ownerPaused = false): string => {
   // The leading phrase decides: `done (merged #337)`, `done - published as v1`, `merged via PR [#35](…)`, `open, not started`.
   const bare = s.replace(/\*\*|~~|`/g, '').trim().replace(/^[*_]+|[*_]+$/g, '')
   const lead = bare.split(/\s*(?:\(|—|–|,|:|;|\s-\s)/)[0]!
   const k = lead.trim().toLowerCase().replace(/[\s-]+/g, '_')
   if (/^(in_progress|in_review|review|partly|doing|in_pr$|in_pr_|pr_(#?\d+_)?open)/.test(k)) return 'in_progress'
   if (k === 'parked') return 'parked'
-  if (k.startsWith('blocked') || k.startsWith('waiting_on') || k.startsWith('on_hold')) return 'blocked'
+  if (/^(deferred|on_hold|later|postponed|backlog)(_|$)/.test(k)) return ownerPaused ? 'parked' : 'todo'
+  if (k.startsWith('blocked') || k.startsWith('waiting_on')) return 'blocked'
   if (DONE_WORDS.includes(k.split('_')[0]!) || DONE_PHRASES.some(p => k === p || k.startsWith(`${p}_`))) return 'done'
   return 'todo'
 }
 
 const DONE_PHRASES = ['not_applicable', 'n/a', 'client_side_done', 'root_cause_fixed', 'runtime_validated', 're_landed']
-const DONE_WORDS = ['rejected', 'declined', 'deployed', 'configured', 'done', 'complete', 'completed', 'closed', 'merged', 'recorded', 'published', 'accepted', 'fixed', 'shipped', 'released', 'resolved', 'superseded', 'implemented', 'dropped', 'cancelled', 'canceled', "won't"]
+const DONE_WORDS = ['rejected', 'declined', 'deployed', 'configured', 'done', 'complete', 'completed', 'closed', 'merged', 'recorded', 'published', 'accepted', 'fixed', 'shipped', 'released', 'resolved', 'superseded', 'implemented', 'dropped', 'cancelled', 'canceled', 'wontfix', 'abandoned', 'obsolete', "won't"]
 
 // Splits on unescaped pipes only; `\|` inside a cell is a literal pipe.
 const cells = (line: string): string[] =>
@@ -187,7 +193,7 @@ export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): 
     if (!col || !ID.test(id)) continue
     const owner = col.owner < 0 ? '' : (c[col.owner] ?? '')
     const notes = c.slice(col.notes).join(' | ')
-    const status = normaliseStatus(c[col.status] ?? '')
+    const status = normaliseStatus(c[col.status] ?? '', ownerPaused(`${c[col.status] ?? ''} ${notes}`, names))
     tasks.push({
       id,
       key: id,
@@ -214,6 +220,12 @@ export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): 
     t.key = n === 1 ? t.id : `${t.id}#${n}`
   }
   return tasks
+}
+
+/** A legacy deferred row counts as owner-paused only when its status or notes say the owner (or a configured owner name) paused it. */
+const ownerPaused = (text: string, names: string[]): boolean => {
+  const who = ['owner', ...names.map(escapeRe)].join('|')
+  return new RegExp(`\\b(${who})\\b[^.;|]{0,30}\\b(paused|parked|held|deferred|postponed|decision)|\\b(paused|parked|held|deferred|postponed|put on hold) (by|per) (the )?(${who})\\b|\\b(${who})[ -](decision|paused)`, 'i').test(text)
 }
 
 /** Decided at parse time, from the whole status and notes (state keeps clipped notes). */
@@ -644,7 +656,7 @@ export async function pickBoard(
   return { path: '', source: 'none' }
 }
 
-export const FORMAT_STATUSES = ['todo', 'in_progress', 'in_review', 'blocked', 'blocked_on_owner', 'parked', 'done']
+export const FORMAT_STATUSES = ['todo', 'in_progress', 'in_review', 'blocked', 'blocked_on_owner', 'parked', 'done', 'dropped']
 export const CANON_HEADER = ['ID', 'Task', 'Status', 'Owner', 'Branch', 'Depends', 'ETA', 'Notes']
 // `YYYY-MM-DD HH:MM` and a timezone: an abbreviation (ICT, UTC), `UTC+07(:00)` or an offset `+07:00`.
 const ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/
@@ -653,7 +665,7 @@ export type LintIssue = { line: number; rule: string; message: string }
 
 /**
  * Checks a board against the canonical "epic tables" format (see FORMAT.md). `findings` carry the line and the
- * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, duplicate-id, padded-cell, epic-number, epic-unique, depends.
+ * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, dropped, duplicate-id, padded-cell, epic-number, epic-unique, depends.
  */
 export function lintBoard(text: string): { canonical: boolean; issues: string[]; findings: LintIssue[] } {
   const findings: LintIssue[] = []
@@ -699,7 +711,8 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
       seenIds.add(c[col.id]!)
     }
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? '')) continue
-    if (!FORMAT_STATUSES.includes(c[col.status] ?? '')) add(no, 'status', `status outside the vocabulary: "${c[col.status]}"`)
+    if (!FORMAT_STATUSES.includes(c[col.status] ?? '')) add(no, 'status', `status "${c[col.status]}" is not one of ${FORMAT_STATUSES.join(', ')}; see FORMAT.md, Legacy statuses`)
+    else if (c[col.status] === 'dropped' && !/^Dropped: \S/.test(c.slice(col.notes).join(' | '))) add(no, 'dropped', 'dropped row needs Notes starting "Dropped: <reason>."')
     const epicNum = epics[epics.length - 1]?.num
     if (epicNum !== undefined) refs.add(`${epicNum}.${c[col.id]}`)
     if (col.depends >= 0 && (c[col.depends] ?? '') !== '') deps.push({ no, value: c[col.depends]! })
