@@ -1,9 +1,9 @@
 {
   "name": "plan-view",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Thomas McFarlane"
   },
-  "description": "Docked right-hand pane that shows the plan Claude writes in plan mode as formatted markdown.",
+  "description": "Docked right-hand pane that shows the plan Claude writes, and Markdown files it mentions, as formatted markdown.",
   "types": "./types/index.d.ts"
 }

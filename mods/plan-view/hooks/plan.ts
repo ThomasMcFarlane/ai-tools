@@ -7,11 +7,13 @@ export const planTitle = (text: string, path: string): string => {
   return m?.[1] ?? (path.split('/').pop() ?? path).replace(/\.md$/, '')
 }
 
-/** Whether `path` is a markdown file directly in `<configDir>/plans`, or the plan already remembered. */
-export const isPlanPath = (path: string, configDir: string, known: string): boolean => {
-  if (path === '') return false
-  const prefix = `${configDir.replace(/\/+$/, '')}/plans/`
-  return path === known || (path.startsWith(prefix) && path.endsWith('.md') && !path.slice(prefix.length).includes('/'))
+/** Whether `path` is the plan file already remembered from plan mode. */
+export const isPlanPath = (path: string, known: string): boolean => path !== '' && path === known
+
+/** The `.md` paths a reply mentions (bare, in backticks, in links, `file:` links), as written, in order, deduped. */
+export const mdMentions = (text: string): string[] => {
+  const found = text.replace(/file:(\/\/)?/g, '').match(/[\w@%+.~/-]+\.md(?!\w)/g) ?? []
+  return [...new Set(found.map(m => m.replace(/^\.\//, '')))]
 }
 
 /** The text to draw, cut at the Markdown cap, and whether it was cut. */

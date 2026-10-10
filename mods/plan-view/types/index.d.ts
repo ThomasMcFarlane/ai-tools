@@ -5,10 +5,18 @@ export type PlanViewPlan = {
   at: number
 }
 
+export type PlanViewOffer = {
+  // absolute paths of mentioned .md files awaiting Open or Dismiss, newest last
+  pending: string[]
+  // every path ever offered this session, so none is offered twice
+  seen: string[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'plan-view': {
       plan: PlanViewPlan
+      offer: PlanViewOffer
     }
   }
 }

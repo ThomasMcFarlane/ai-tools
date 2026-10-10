@@ -1,13 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { clip, isPlanPath, planTitle } from './plan'
+import { clip, isPlanPath, mdMentions, planTitle } from './plan'
 
 const PANE = 'plan-view'
 // '/plan' is Claude Code's own command (enter plan mode), so this one is '/plan-view'.
 const COMMAND = 'plan-view'
 
 const plan = atom({ plugin: 'plan-view', key: 'plan' } as const, { path: '', at: 0 })
+
+// Markdown files mentioned in replies: `pending` waits for an answer (newest last), `seen` was ever offered.
+const offer = atom({ plugin: 'plan-view', key: 'offer' } as const, { pending: [] as string[], seen: [] as string[] })
 
 // The drawn text. A module variable on purpose: a render may not write $.state, and session.start re-reads it after a reload.
 let shown = ''
@@ -19,8 +22,6 @@ const report = ($: EngineInterface, where: string, err: unknown) => {
     /* nothing left to do */
   }
 }
-
-const configDir = async ($: EngineInterface) => (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${(await $.env.get('HOME')) ?? ''}/.claude`
 
 const load = async ($: EngineInterface, path: string) => {
   shown = String(await $.fs.read(path))
@@ -41,7 +42,7 @@ const show = async ($: EngineInterface, path: string) => {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
-      await $.command.register({ name: COMMAND, description: "Toggle the pane showing Claude's latest plan" })
+      await $.command.register({ name: COMMAND, description: "Toggle the Markdown preview pane (the plan, or the last file opened)" })
       const { path } = await read($, plan)
       if (path) await load($, path).catch(() => undefined) // a deleted plan just leaves the pane empty
     } catch (err) {
@@ -70,7 +71,7 @@ export const register: Register = on => {
     const file = typeof input.file_path === 'string' ? input.file_path : ''
     try {
       const known = (await read($, plan)).path
-      const isWrite = ['Write', 'Edit', 'MultiEdit'].includes(tool) && isPlanPath(file, await configDir($), known)
+      const isWrite = ['Write', 'Edit', 'MultiEdit'].includes(tool) && isPlanPath(file, known)
       if (!isWrite && tool !== 'ExitPlanMode') return next(e)
       const ran = await next(e)
       // A pane failure must never fail a tool call that already ran.
@@ -88,33 +89,85 @@ export const register: Register = on => {
     }
   })
 
+  // Offers a preview of each existing .md file the reply names.
+  on('turn.complete', async ($, e, next) => {
+    try {
+      const home = (await $.env.get('HOME')) ?? ''
+      const bases = [await $.session.cwd(), await $.session.root()]
+      const { pending, seen } = await read($, offer)
+      const shownPath = (await read($, plan)).path
+      const fresh: string[] = []
+      for (const m of mdMentions(e.answer)) {
+        const options = m.startsWith('/') ? [m] : m.startsWith('~/') ? [`${home}${m.slice(1)}`] : bases.map(b => `${b.replace(/\/+$/, '')}/${m}`)
+        for (const path of options) {
+          if (seen.includes(path) || fresh.includes(path) || (path === shownPath && (await $.ui.panes()).some(p => p.id === PANE))) continue
+          if (await $.fs.exists(path)) {
+            fresh.push(path)
+            break
+          }
+        }
+      }
+      if (fresh.length) await update($, offer, o => ({ pending: [...o.pending, ...fresh], seen: [...o.seen, ...fresh] }))
+    } catch (err) {
+      report($, 'turn.complete', err)
+    }
+    return next(e)
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const { pending } = await read($, offer)
+    const path = pending[pending.length - 1]
+    if (!path || e.props.hasSurvey) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor wrap="truncate-middle">{`Preview ${path.split('/').pop()}? ${path}${pending.length > 1 ? ` (+${pending.length - 1} more)` : ''}`}</Text>
+        <Box>
+          <Button
+            key="open"
+            label="Open"
+            onPress={async () => {
+              try {
+                await update($, offer, o => ({ ...o, pending: o.pending.filter(p => p !== path) }))
+                await show($, path)
+              } catch (err) {
+                report($, 'open', err)
+              }
+            }}
+          />
+          <Button key="dismiss" label="Dismiss" onPress={() => update($, offer, o => ({ ...o, pending: [] }))} />
+        </Box>
+      </Box>
+    )
+  })
+
   on('command.run', { command: COMMAND }, async $ => {
     try {
       if ((await $.ui.panes()).some(p => p.id === PANE)) {
         await $.ui.close({ id: PANE })
-        return { text: 'Plan pane closed.' }
+        return { text: 'Preview pane closed.' }
       }
       const { path } = await read($, plan)
-      if (!path) return { text: 'No plan yet.' }
+      if (!path) return { text: 'Nothing to preview yet.' }
       await show($, path)
-      return { text: 'Plan pane opened.' }
+      return { text: 'Preview pane opened.' }
     } catch (err) {
       report($, 'command.run', err)
-      return { text: `Plan pane failed: ${String(err instanceof Error ? err.message : err)}` }
+      return { text: `Preview pane failed: ${String(err instanceof Error ? err.message : err)}` }
     }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Markdown } = $.ui.resolve(e)
     const p = await read($, plan)
-    if (!shown) return <Text dimColor>No plan yet.</Text>
+    if (!shown) return <Text dimColor>Nothing to preview yet.</Text>
     const { text, isCut } = clip(shown)
     const time = p.at ? new Date(p.at).toLocaleTimeString('en-GB') : ''
     return (
       <Box flexDirection="column">
         <Text dimColor wrap="wrap">{`${p.path}${time ? ` · updated ${time}` : ''}`}</Text>
         <Markdown key="plan" text={text} />
-        {isCut && <Text dimColor wrap="wrap">{`Plan cut at ${text.length} characters; the rest is in ${p.path}`}</Text>}
+        {isCut && <Text dimColor wrap="wrap">{`Cut at ${text.length} characters; the rest is in ${p.path}`}</Text>}
       </Box>
     )
   })
