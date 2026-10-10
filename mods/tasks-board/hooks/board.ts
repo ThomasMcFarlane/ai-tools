@@ -28,7 +28,7 @@ const ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d
 
 /**
  * Statuses are grouped as in_progress / blocked / todo / parked / done; anything unknown counts as todo. Legacy
- * cancelled work (`dropped`, `cancelled`, `wontfix`, `abandoned`, `obsolete`) displays as done, so it is hidden and
+ * cancelled work (`dropped`, `cancelled`, `wontfix`, `abandoned`, `obsolete`, `rejected`, `declined`) and `superseded` work display as done, so it is hidden and
  * not counted open. Legacy deferred work (`deferred`, `on hold`, `later`, `postponed`, `backlog`) is `parked` when
  * `ownerPaused` (the row shows the owner paused it), otherwise `todo`. See FORMAT.md, Legacy statuses.
  */
@@ -45,7 +45,7 @@ export const normaliseStatus = (s: string, ownerPaused = false): string => {
   return 'todo'
 }
 
-const DONE_PHRASES = ['not_applicable', 'n/a', 'client_side_done', 'root_cause_fixed', 'runtime_validated', 're_landed']
+const DONE_PHRASES = ['client_side_done', 'root_cause_fixed', 'runtime_validated', 're_landed']
 const DONE_WORDS = ['rejected', 'declined', 'deployed', 'configured', 'done', 'complete', 'completed', 'closed', 'merged', 'recorded', 'published', 'accepted', 'fixed', 'shipped', 'released', 'resolved', 'superseded', 'implemented', 'dropped', 'cancelled', 'canceled', 'wontfix', 'abandoned', 'obsolete', "won't"]
 
 // Splits on unescaped pipes only; `\|` inside a cell is a literal pipe.
@@ -656,7 +656,7 @@ export async function pickBoard(
   return { path: '', source: 'none' }
 }
 
-export const FORMAT_STATUSES = ['todo', 'in_progress', 'in_review', 'blocked', 'blocked_on_owner', 'parked', 'done', 'dropped']
+export const FORMAT_STATUSES = ['todo', 'in_progress', 'in_review', 'blocked', 'blocked_on_owner', 'parked', 'done', 'dropped', 'superseded']
 export const CANON_HEADER = ['ID', 'Task', 'Status', 'Owner', 'Branch', 'Depends', 'ETA', 'Notes']
 // `YYYY-MM-DD HH:MM` and a timezone: an abbreviation (ICT, UTC), `UTC+07(:00)` or an offset `+07:00`.
 const ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/
@@ -665,7 +665,7 @@ export type LintIssue = { line: number; rule: string; message: string }
 
 /**
  * Checks a board against the canonical "epic tables" format (see FORMAT.md). `findings` carry the line and the
- * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, dropped, duplicate-id, padded-cell, epic-number, epic-unique, depends.
+ * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, dropped, superseded, duplicate-id, padded-cell, epic-number, epic-unique, depends.
  */
 export function lintBoard(text: string): { canonical: boolean; issues: string[]; findings: LintIssue[] } {
   const findings: LintIssue[] = []
@@ -680,6 +680,7 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   const epics: { no: number; num?: string; hasTable: boolean }[] = []
   const refs = new Set<string>()
   const deps: { no: number; value: string }[] = []
+  const superseders: { no: number; ref: string }[] = []
   const raw = text.split('\n')
   raw.forEach((line, i) => {
     if (line.startsWith('|') && (/ {2,}\|/.test(line) || /\| {2,}/.test(line))) add(i + 1, 'padded-cell', 'two or more spaces next to a pipe: cells must not be padded')
@@ -713,6 +714,11 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? '')) continue
     if (!FORMAT_STATUSES.includes(c[col.status] ?? '')) add(no, 'status', `status "${c[col.status]}" is not one of ${FORMAT_STATUSES.join(', ')}; see FORMAT.md, Legacy statuses`)
     else if (c[col.status] === 'dropped' && !/^Dropped: \S/.test(c.slice(col.notes).join(' | '))) add(no, 'dropped', 'dropped row needs Notes starting "Dropped: <reason>."')
+    else if (c[col.status] === 'superseded') {
+      const ref = /^Superseded by (\d+\.[^\s,;]*[^\s,;.])/.exec(c.slice(col.notes).join(' | '))?.[1]
+      if (ref === undefined) add(no, 'superseded', 'superseded row needs Notes starting "Superseded by <epic>.<task>."')
+      else superseders.push({ no, ref })
+    }
     const epicNum = epics[epics.length - 1]?.num
     if (epicNum !== undefined) refs.add(`${epicNum}.${c[col.id]}`)
     if (col.depends >= 0 && (c[col.depends] ?? '') !== '') deps.push({ no, value: c[col.depends]! })
@@ -730,6 +736,7 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
       if (!/^\d+\..+$/.test(ref)) add(d.no, 'depends', `Depends entry not an <epic>.<task> reference: "${ref}"`)
       else if (!refs.has(ref)) add(d.no, 'depends', `Depends reference ${ref} matches no row`)
     }
+  for (const s of superseders) if (!refs.has(s.ref)) add(s.no, 'superseded', `Superseded by reference ${s.ref} matches no row`)
   if (items > 0) add(firstItem, 'checklist', `${items} checklist items instead of table rows`)
   findings.sort((a, b) => a.line - b.line)
   return { canonical: findings.length === 0, issues: [...new Set(findings.map(f => f.message))], findings }

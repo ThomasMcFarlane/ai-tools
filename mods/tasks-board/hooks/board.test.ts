@@ -545,7 +545,7 @@ describe('survey fixes', () => {
     expect(['done: merged #294', 'complete; closed', '**complete**', '~~done~~', '`done`', '_done_'].map(st)).toEqual(Array(6).fill('done'))
   })
   test('more status words', () => {
-    for (const s of ['rejected', 'declined', 'deployed', 'configured', 'not applicable', 'n/a', 're-landed', 'runtime-validated', 'client side done', 'root cause fixed']) expect(st(s)).toBe('done')
+    for (const s of ['rejected', 'declined', 'deployed', 'configured', 're-landed', 'runtime-validated', 'client side done', 'root cause fixed']) expect(st(s)).toBe('done')
     for (const s of ['doing', 'PR open', 'PR #12 open']) expect(st(s)).toBe('in_progress')
     for (const s of ['deferred', 'owner']) expect(st(s)).toBe('todo')
   })
@@ -594,7 +594,7 @@ describe('lint rules for CI', () => {
   test('findings carry the line and the rule', () => {
     const f = lintBoard(GOOD.replace('| A-2 |', '| A-1 |')).findings
     expect(f).toEqual([{ line: 8, rule: 'duplicate-id', message: 'duplicate ID A-1' }])
-    expect(lintBoard(GOOD.replace('todo', 'wip')).findings).toEqual([{ line: 7, rule: 'status', message: 'status "wip" is not one of todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped; see FORMAT.md, Legacy statuses' }])
+    expect(lintBoard(GOOD.replace('todo', 'wip')).findings).toEqual([{ line: 7, rule: 'status', message: 'status "wip" is not one of todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped, superseded; see FORMAT.md, Legacy statuses' }])
     expect(lintBoard(GOOD).issues).toEqual([])
   })
   test('padded cells are reported on their line', () => {
@@ -693,8 +693,19 @@ describe('legacy statuses', () => {
     expect(bad.findings.map(f => f.rule)).toEqual(['dropped'])
     expect(checkBoard(board('dropped', 'gone'), 'canonical').map(f => f.rule)).toEqual(['dropped'])
   })
+  test('superseded needs "Superseded by <epic>.<task>." naming an existing row', () => {
+    const two = (notes: string) => `# Tasks\n\n## 1. E\n\n${CH}| A-1 | a | superseded | | | | | ${notes} |\n| A-2 | b | todo | | | | | |\n`
+    expect(lintBoard(two('Superseded by 1.A-2.')).findings).toEqual([])
+    expect(lintBoard(board('superseded', 'replaced')).findings.map(f => f.rule)).toEqual(['superseded'])
+    expect(lintBoard(two('Superseded by 1.A-9.')).findings.map(f => f.message)).toEqual(['Superseded by reference 1.A-9 matches no row'])
+    expect(parseBoard(two('Superseded by 1.A-2.')).map(t => t.status)).toEqual(['done', 'todo'])
+  })
+  test('n/a is rejected by lint and not auto-mapped to done', () => {
+    expect(lintBoard(board('n/a', 'x')).findings.map(f => f.rule)).toEqual(['status'])
+    expect(parseBoard(board('n/a', 'x')).map(t => t.status)).toEqual(['todo'])
+  })
   test('cancelled-style statuses parse as done (hidden, not open)', () => {
-    for (const s of ['dropped', 'cancelled', 'canceled', 'wontfix', 'abandoned', 'obsolete', "won't fix", '~~cancelled~~'])
+    for (const s of ['dropped', 'cancelled', 'rejected', 'declined', 'canceled', 'wontfix', 'abandoned', 'obsolete', "won't fix", '~~cancelled~~'])
       expect(parseBoard(board(s, 'x')).map(t => t.status)).toEqual(['done'])
     expect(slimTasks(parseBoard(board('dropped', 'Dropped: x.')))).toEqual([])
   })
@@ -707,7 +718,7 @@ describe('legacy statuses', () => {
   })
   test('unknown status message names the set and the mapping table', () => {
     const [msg] = lintBoard(board('deferred', 'x')).issues
-    expect(msg).toContain('todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped')
+    expect(msg).toContain('todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped, superseded')
     expect(msg).toContain('see FORMAT.md, Legacy statuses')
   })
   test('autofix prompt carries the table', () => {
@@ -716,6 +727,8 @@ describe('legacy statuses', () => {
     expect(p).toContain('Dropped: <reason>.')
     expect(p).toContain('Deferred: <reason>.')
     expect(p).toContain('Previous status')
+    expect(p).toContain('Superseded by <epic>.<task>.')
+    expect(p).toContain("decide from the row's context")
   })
 })
 
