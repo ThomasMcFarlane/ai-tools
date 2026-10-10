@@ -177,7 +177,7 @@ ai-tools/
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check (TASKS.md format check)
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
-│   └── plan-view/     # Claude Code plugin: docked markdown view of Claude's plan
+│   └── plan-view/     # Claude Code plugin: docked markdown preview of Claude's plan and the .md files it mentions
 ├── actions/
 │   └── tasks-board-check/  # GitHub Action: `uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v2`
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
