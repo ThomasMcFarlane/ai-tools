@@ -528,6 +528,8 @@ export const register: Register = (on, options) => {
     const HEAD_FG = '#bcbcbc' // the column header is inverted: light fill, dark text and borders
     const SUB_BG = '#3a3a3a'
     const CHILD_BG = '#181818' // darker than HEAD_BG and SUB_BG
+    const ROW_HOVER_BG = '#d0d0d0' // hovered row: light fill, dark text
+    const ROW_HOVER_FG = '#1c1c1c'
     const hasAgent = W >= 50
     const hasEta = W >= 36
     const prefix = (() => {
@@ -545,11 +547,12 @@ export const register: Register = (on, options) => {
     const numW = b.numW
     const taskW = Math.max(6, W - (11 + numW) - (hasAgent ? 15 : 0) - (hasEta ? ETA_W + 3 : 0))
     const header = tableLine({ num: '#', task: 'Task', agent: 'Agent', eta: 'ETA' }, taskW, hasAgent, hasEta, numW)
-    // Hovering anywhere on a row (it is a keyed Box) inverts every cell of it.
-    const HV = { inverse: true } as const
-    const bar = () => <Text dimColor hover={{ dimColor: false, inverse: true }}> │ </Text>
-    // A Button holds only a label (the engine refuses other children), so every plain cell is its own Button
-    // with the row's onPress. A Button takes no colour: cells that carry one stay Text, and are not pressable.
+    // Hovering anywhere on a row (it is a keyed Box) lights every cell of it.
+    const HV = { backgroundColor: ROW_HOVER_BG, color: ROW_HOVER_FG, dimColor: false } as const
+    const HV_NUM = { backgroundColor: ROW_HOVER_BG } as const // number cells keep their own colour
+    const bar = () => <Text dimColor hover={HV}> │ </Text>
+    // Every plain cell is its own label-only Button with the row's onPress. A label carries no colour, so
+    // the number cell, when coloured or spinning, is a Button with Text children and no label.
     const cellButton = (k: string, label: string, onPress: () => unknown) => <Button key={k} label={label} plain hover={HV} onPress={onPress} />
     // Child rows carry CHILD_BG on the row's Box, not on each Text, so the focus and pointer inversion
     // of the Button covers separators and padding uniformly (explicit Text colours would resist it).
@@ -579,6 +582,15 @@ export const register: Register = (on, options) => {
         ),
       )
     }
+    const numCell = (k: string, text: string, onPress: () => unknown, color?: string, isOn?: boolean, accent?: string) =>
+      color === undefined && !isOn ? (
+        cellButton(k, text, onPress)
+      ) : (
+        <Button key={k} plain hover={HV_NUM} onPress={onPress}>
+          {isOn && <Text color={accent}>{spin}</Text>}
+          <Text color={color} bold={color !== undefined}>{text}</Text>
+        </Button>
+      )
     const plainBar = () => <Text dimColor> │ </Text> // no hover: the details block is not interactive
     const row = (t: TasksBoardTask, numColor?: string, indent = 0, accent?: string) => {
       const doneText = t.priorStatus ? '✓ ' : ''
@@ -598,8 +610,7 @@ export const register: Register = (on, options) => {
         <Box key={`row${t.key}`} flexDirection="column" backgroundColor={bg}>
           <Box flexDirection="row">
             <Text hover={HV}> </Text>{bar()}
-            {isOn && <Text color={accent} hover={HV}>{spin}</Text>}
-            {isNumColoured ? <Text hover={HV} color={numColor ?? 'green'} bold>{numText}</Text> : cellButton(`cn${t.key}`, numText, toggle)}
+            {numCell(`cn${t.key}`, numText, toggle, isNumColoured ? (numColor ?? 'green') : undefined, isOn, accent)}
             {bar()}
             <Button key={`t${t.key}`} label={cell} plain hover={HV} onPress={toggle} />
             {hasAgent && bar()}{hasAgent && cellButton(`ca${t.key}`, padR(who(t.agent), 12), toggle)}
@@ -648,8 +659,7 @@ export const register: Register = (on, options) => {
         <Box key={`epic${id}`} flexDirection="column">
           <Box flexDirection="row">
             {cellButton(`ch${id}`, isOpen ? '▾' : '▸', toggle)}{bar()}
-            {isOn && <Text color={accent} hover={HV}>{spin}</Text>}
-            {numColor !== undefined ? <Text hover={HV} bold color={numColor}>{numText}</Text> : cellButton(`cn${id}`, numText, toggle)}
+            {numCell(`cn${id}`, numText, toggle, numColor, isOn, accent)}
             {bar()}
             <Button key={`epic:${id}`} label={cell} plain hover={HV} onPress={toggle} />
             {hasAgent && bar()}{hasAgent && cellButton(`ca${id}`, padR(agents.length === 1 ? who(agents[0]!) : `${agents.length} agents`, 12), toggle)}

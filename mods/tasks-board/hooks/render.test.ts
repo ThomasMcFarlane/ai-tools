@@ -6,13 +6,16 @@ import { parseBoard } from './board'
 // escaped pipes, multi-line rows, checklists. The plugin runs end to end on each (session.start refreshes through
 // fs.* and process.run answered below), the Pane is mounted on the terminal surface at several widths, every epic
 // and task row is opened, and the drawn tree is read back after each step.
-// The live engine refuses a Button whose children are not nothing or one plain string (a Text or an array fails).
+// The live engine refuses a Button given both a label and children (the drawn tree shows a label derived from the
+// children, so only the source can tell). A label-only Button is the norm; the one other shape is a number cell
+// (key `cn…`) with Text/string children, which this guard allows.
 const badButtons = (node: unknown, found: string[] = []): string[] => {
   if (Array.isArray(node)) node.forEach(n => badButtons(n, found))
   else if (node && typeof node === 'object') {
-    const n = node as { type?: string; key?: string; props?: { children?: unknown }; children?: unknown }
+    const n = node as { type?: string; key?: string; props?: { key?: string; children?: unknown }; children?: unknown }
     const kids = n.children ?? n.props?.children
-    if (n.type === 'Button' && !(kids === undefined || kids === '' || typeof kids === 'string' || (Array.isArray(kids) && (kids.length === 0 || (kids.length === 1 && typeof kids[0] === 'string'))))) found.push(String(n.key))
+    const hasKids = !(kids === undefined || kids === '' || (Array.isArray(kids) && kids.length === 0))
+    if (n.type === 'Button' && (hasKids && !String(n.props?.key ?? n.key).startsWith('cn'))) found.push(String(n.props?.key ?? n.key))
     for (const v of Object.values(node)) badButtons(v, found)
   }
   return found
@@ -259,6 +262,74 @@ test('every Button has a label or one string child, on an mc3-like board', { opt
     await ui.unmount()
   }
   expect(reported).toEqual([])
+})
+
+test('number cells are pressable, keep their colour and hover with the row background', { options: { autofix: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const head = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|'
+  const text = `# Tasks\n\n## Live\n\n${head}\n| F1 | ${long(8)} | in_progress | agent-a | | | | n |\n| 12a | short | todo | | | F1 | | n |\n| 7 | renumbered | blocked_on_owner | | | | 2026-10-10 14:00 ICT | n |\n| 8 | ${long(12)} | done | | | | | n |\n\n## Archive — era\n\n${head}\n| 1 | old | done | | | | | n |\n| 2 | older | done | | | | | n |\n`
+  const reported: string[] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => ({
+    value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', (_$, e) => {
+    reported.push(String(e.text))
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({
+    plugin: 'tasks-board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tasks-board',
+    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    viewport: { columns: 100, rows: 60, isFullscreen: true },
+  })
+  const hoverOf = async () => {
+    const out: Record<string, unknown> = {}
+    const walk = (n: unknown) => {
+      if (Array.isArray(n)) n.forEach(walk)
+      else if (n && typeof n === 'object') {
+        const o = n as { type?: string; props?: { key?: string }; hover?: unknown }
+        if (o.type === 'Button') out[String(o.props?.key)] = o.hover
+        Object.values(n).forEach(walk)
+      }
+    }
+    walk(await ui.drawn())
+    return out
+  }
+  const hv = await hoverOf()
+  const nums = Object.keys(hv).filter(k => k.startsWith('cn'))
+  expect(nums.length).toBeGreaterThan(0)
+  const full = { backgroundColor: '#d0d0d0', color: '#1c1c1c', dimColor: false }
+  // coloured number cells (Text children) keep their own colour: background only; the rest carry the full row style
+  const coloured = nums.filter(k => JSON.stringify(hv[k]) === JSON.stringify({ backgroundColor: '#d0d0d0' }))
+  expect(coloured.length).toBeGreaterThan(0)
+  for (const k of Object.keys(hv)) if (hv[k] !== undefined && !coloured.includes(k)) expect(hv[k]).toEqual(full)
+  // pressing an epic's number opens it, as pressing the row does
+  const epicNum = coloured.find(k => k.includes('|'))!
+  const before = (await ui.findAll({ type: 'Button' })).length
+  await ui.press({ key: epicNum })
+  expect((await ui.findAll({ type: 'Button' })).length).toBeGreaterThan(before)
+  // pressing a task's number opens its details
+  const taskNum = Object.keys(await hoverOf()).find(k => k.startsWith('cn') && !k.includes('|'))!
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Owner')
+  await ui.press({ key: taskNum })
+  expect(JSON.stringify(await ui.drawn())).toContain('Owner')
+  expect(badButtons(await ui.drawn())).toEqual([])
+  expect(reported).toEqual([])
+  await ui.unmount()
 })
 
 test('an open epic keeps its task rows outside its own Box, so hovering a task does not light the epic', { options: { autofix: false } }, async ($, on) => {
