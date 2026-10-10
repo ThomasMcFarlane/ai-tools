@@ -23,18 +23,19 @@ function ownerGate(names) {
   return re;
 }
 var ID = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{1,4}\d+[a-z]?|\d+(?:\.\d+)+|\d+[a-z]?)$/;
-var normaliseStatus = (s) => {
+var normaliseStatus = (s, ownerPaused2 = false) => {
   const bare = s.replace(/\*\*|~~|`/g, "").trim().replace(/^[*_]+|[*_]+$/g, "");
   const lead = bare.split(/\s*(?:\(|—|–|,|:|;|\s-\s)/)[0];
   const k = lead.trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (/^(in_progress|in_review|review|partly|doing|in_pr$|in_pr_|pr_(#?\d+_)?open)/.test(k)) return "in_progress";
   if (k === "parked") return "parked";
-  if (k.startsWith("blocked") || k.startsWith("waiting_on") || k.startsWith("on_hold")) return "blocked";
+  if (/^(deferred|on_hold|later|postponed|backlog)(_|$)/.test(k)) return ownerPaused2 ? "parked" : "todo";
+  if (k.startsWith("blocked") || k.startsWith("waiting_on")) return "blocked";
   if (DONE_WORDS.includes(k.split("_")[0]) || DONE_PHRASES.some((p) => k === p || k.startsWith(`${p}_`))) return "done";
   return "todo";
 };
 var DONE_PHRASES = ["not_applicable", "n/a", "client_side_done", "root_cause_fixed", "runtime_validated", "re_landed"];
-var DONE_WORDS = ["rejected", "declined", "deployed", "configured", "done", "complete", "completed", "closed", "merged", "recorded", "published", "accepted", "fixed", "shipped", "released", "resolved", "superseded", "implemented", "dropped", "cancelled", "canceled", "won't"];
+var DONE_WORDS = ["rejected", "declined", "deployed", "configured", "done", "complete", "completed", "closed", "merged", "recorded", "published", "accepted", "fixed", "shipped", "released", "resolved", "superseded", "implemented", "dropped", "cancelled", "canceled", "wontfix", "abandoned", "obsolete", "won't"];
 var cells = (line) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
 function joinRowsNumbered(lines) {
   const out = [];
@@ -154,7 +155,7 @@ function parseBoard(text2, opts = {}) {
     if (!col || !ID.test(id)) continue;
     const owner = col.owner < 0 ? "" : c[col.owner] ?? "";
     const notes = c.slice(col.notes).join(" | ");
-    const status = normaliseStatus(c[col.status] ?? "");
+    const status = normaliseStatus(c[col.status] ?? "", ownerPaused(`${c[col.status] ?? ""} ${notes}`, names));
     tasks2.push({
       id,
       key: id,
@@ -181,6 +182,10 @@ function parseBoard(text2, opts = {}) {
   }
   return tasks2;
 }
+var ownerPaused = (text2, names) => {
+  const who = ["owner", ...names.map(escapeRe)].join("|");
+  return new RegExp(`\\b(${who})\\b[^.;|]{0,30}\\b(paused|parked|held|deferred|postponed|decision)|\\b(paused|parked|held|deferred|postponed|put on hold) (by|per) (the )?(${who})\\b|\\b(${who})[ -](decision|paused)`, "i").test(text2);
+};
 var isOwnerGate = (rawStatus, status, notes, gate, canonical, isNamed) => /^blocked[\s_-]+on[\s_-]+owner/i.test(rawStatus) || !canonical && status === "blocked" && (isNamed || gate.test(`${rawStatus} ${latestUpdate(notes)}`));
 function latestUpdate(notes) {
   const ds = [...notes.matchAll(/\d{4}-\d{2}-\d{2}/g)];
@@ -192,7 +197,7 @@ function latestUpdate(notes) {
   return notes.slice(ds[best].index, ds[best + 1]?.index);
 }
 var ACTIVE_MS = 30 * 60 * 1e3;
-var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "parked", "done"];
+var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "parked", "done", "dropped"];
 var CANON_HEADER = ["ID", "Task", "Status", "Owner", "Branch", "Depends", "ETA", "Notes"];
 var ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/;
 function lintBoard(text2) {
@@ -238,7 +243,8 @@ function lintBoard(text2) {
       seenIds.add(c[col.id]);
     }
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? "")) continue;
-    if (!FORMAT_STATUSES.includes(c[col.status] ?? "")) add(no, "status", `status outside the vocabulary: "${c[col.status]}"`);
+    if (!FORMAT_STATUSES.includes(c[col.status] ?? "")) add(no, "status", `status "${c[col.status]}" is not one of ${FORMAT_STATUSES.join(", ")}; see FORMAT.md, Legacy statuses`);
+    else if (c[col.status] === "dropped" && !/^Dropped: \S/.test(c.slice(col.notes).join(" | "))) add(no, "dropped", 'dropped row needs Notes starting "Dropped: <reason>."');
     const epicNum = epics[epics.length - 1]?.num;
     if (epicNum !== void 0) refs.add(`${epicNum}.${c[col.id]}`);
     if (col.depends >= 0 && (c[col.depends] ?? "") !== "") deps.push({ no, value: c[col.depends] });

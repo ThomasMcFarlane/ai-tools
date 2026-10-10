@@ -31,7 +31,9 @@
     done"). Nobody works on it and nothing is needed from the owner until the owner un-parks it. No ETA. Notes say who
     parked it, when, and the resume condition. Distinct from `blocked_on_owner`, which is only for when the owner
     must actively give input.
-  - `done`: merged or verified; Notes hold the evidence (PR, commit, check).
+  - `done`: merged or verified; Notes hold the evidence (PR, commit, check). Never use it for cancelled work.
+  - `dropped`: terminal. The work was cancelled and never done. Notes must start `Dropped: <reason>.` The pane hides
+    it like `done` and does not count it open.
 - Branch is the git branch doing the row's work, when it can be determined (named in the row's notes or owner, or a
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one. The board pane does not display it.
@@ -45,6 +47,27 @@
 - Cells are not padded: no run of two or more spaces next to a pipe.
 - Prose that is not a task (status notes, decisions, conventions) is kept verbatim above the first epic, or
   under its own heading. Nothing is deleted.
+
+## Legacy statuses
+
+The parser reads old and free-text statuses leniently (the leading phrase decides, so `done (merged #12)` is `done`).
+When rewriting a board into the canonical format, convert them as follows. Unknown text counts as `todo`; the
+canonical check rejects any status outside the list above.
+
+| Legacy value | Canonical status | Notes rule |
+|---|---|---|
+| `dropped`, `cancelled`, `canceled`, `wontfix`, `won't fix`, `abandoned`, `obsolete`, a struck-through row marked cancelled | `dropped` | Start with `Dropped: <reason>.` Never map cancelled work to `done`. |
+| `deferred`, `on hold`, `later`, `postponed`, `backlog`, when the row shows the owner paused it (owner decision, owner paused, a configured owner name pausing it) | `parked` | Say who parked it, when, and the resume condition. |
+| the same values without that owner evidence | `todo` | Start with `Deferred: <reason>.`, keeping the reason from the old row. |
+| `done`, `complete`, `closed`, `merged`, `shipped`, `released`, `resolved`, `fixed`, `deployed`, `published`, and similar, with free text after (`done (merged #12)`, `merged via PR #35`) | `done` | Keep or add the evidence (PR, commit, check). |
+| `rejected`, `declined`, `superseded`, `not applicable` / `n/a` | `done` | Say what closed it. |
+| `in progress`, `doing`, `partly`, `review`, `in PR`, `PR #n open` | `in_progress` (or `in_review` when a PR is open) | Link the PR; ETA is required. |
+| `blocked ...`, `waiting on ...` | `blocked`, or `blocked_on_owner` only when the owner must give input | Say what it waits on. |
+| `parked` | `parked` | As above. |
+| Owner column `owner` (a bare placeholder) | `todo`, unassigned | Leave Owner empty. |
+| anything else (`open`, `not started`, empty) | `todo` | None. |
+
+Do not add `Previous status: <old>.` to Notes: the `Dropped:` or `Deferred:` prefix carries the meaning.
 
 ## Keeping the board current
 

@@ -15,7 +15,10 @@ Statuses (full text in [FORMAT.md](../../../mods/tasks-board/FORMAT.md)):
 - `blocked`: waits on something other than the owner's input (another row, an agent prerequisite, CI, an external service, a quota). Name the row ID in Depends and say what it waits on in Notes.
 - `blocked_on_owner`: only when the owner must give input (a decision, approval, credentials, an action only they can take). Notes state exactly what is needed. Anything an agent or another task can resolve is `blocked`. Never for owner-paused work: use `parked`.
 - `parked`: the owner deliberately paused or held the work. Nobody works on it and nothing is needed from the owner until the owner un-parks it. No ETA. Notes say who parked it, when, and the resume condition.
-- `done`: merged or verified; Notes hold the evidence.
+- `done`: merged or verified; Notes hold the evidence. Never for cancelled work.
+- `dropped`: terminal; the work was cancelled and never done. Notes start `Dropped: <reason>.`
+
+Old or free-text statuses (`cancelled`, `wontfix`, `deferred`, `on hold`, ...) map as in the Legacy statuses table in FORMAT.md; deferred work is `parked` only when the owner paused it, otherwise `todo` with Notes starting `Deferred: <reason>.`
 
 Epic headings are numbered `## <N>. <name>`; numbers are stable (never renumbered or reused). Reference a task as `<epic>.<task>` (for example `3.579` or `2.PZ-001`) everywhere you name it: Depends cells (comma-separated references), Notes, commit messages, PR titles and bodies, chat and reports.
 
@@ -36,7 +39,7 @@ Update the row as work goes, the moment the state changes, not at the end of the
 
 ## Canonical board format
 
-New boards, and boards the mod rewrites, use the "epic tables" format described in [FORMAT.md](../../../mods/tasks-board/FORMAT.md): one numbered `## <N>. <name>` heading per epic, one table per epic, header `| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |`, status one of `todo`, `in_progress`, `in_review`, `blocked`, `blocked_on_owner`, `parked`, `done`.
+New boards, and boards the mod rewrites, use the "epic tables" format described in [FORMAT.md](../../../mods/tasks-board/FORMAT.md): one numbered `## <N>. <name>` heading per epic, one table per epic, header `| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |`, status one of `todo`, `in_progress`, `in_review`, `blocked`, `blocked_on_owner`, `parked`, `done`, `dropped`.
 
 The parser also reads other layouts (numeric or prefixed ids, `Picked up by`, `Workstream`, free-text statuses such as `done (merged #12)`, multi-line rows, checklists with `- [ ]`). It keys tables by header names, so a table needs an id column (`#` or `ID`), a task or title column and a status column. `Branch` is parsed but never shown.
 

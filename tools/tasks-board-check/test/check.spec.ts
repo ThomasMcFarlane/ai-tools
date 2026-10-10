@@ -34,6 +34,18 @@ describe('check', () => {
     expect(check(H + '| A-1 | t | parked | | | | | Parked by owner |\n').failed).toBe(false);
   });
 
+  it('dropped needs a Dropped: prefix', () => {
+    expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | Dropped: not needed. |\n').failed).toBe(false);
+    expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | not needed |\n').failed).toBe(true);
+  });
+
+  it('rejects legacy statuses and points to the table', () => {
+    const r = check('## 1. E\n\n' + H + '| A-1 | t | deferred | | | | | x |\n');
+    expect(r.failed).toBe(true);
+    expect(r.problems[0]!.message).toContain('see FORMAT.md, Legacy statuses');
+    expect(r.problems[0]!.message).toContain('dropped');
+  });
+
   it('lenient fails only on duplicate IDs and padded cells', () => {
     expect(check('- [ ] x\n', 'lenient').failed).toBe(false);
     expect(check('| ID | Task |\n|---|---|\n| A | t |\n', 'lenient').failed).toBe(false);
