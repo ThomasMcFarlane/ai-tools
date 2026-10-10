@@ -425,8 +425,10 @@ export function groupByEpic(
     .filter(g => g.rows.length > 0)
 }
 
-/** An epic heading such as `Task 443: code mode` splits into its number and the name after the colon. */
+/** An epic heading such as `3. Code mode` (canonical) or `Task 443: code mode` (lenient) splits into its number and the name after the colon. */
 export function epicLabel(epic: string): { num: string; name: string } {
+  const n = /^(\d+)\.\s+(\S.*)$/.exec(epic)
+  if (n) return { num: n[1]!, name: n[2]! }
   const m = /\bTask\s+(\d+)\b\s*[:\-–—]?\s*/i.exec(epic)
   if (!m) return { num: '', name: epic }
   return { num: m[1]!, name: epic.replace(m[0], '').trim() || epic }
@@ -647,7 +649,7 @@ export type LintIssue = { line: number; rule: string; message: string }
 
 /**
  * Checks a board against the canonical "epic tables" format (see FORMAT.md). `findings` carry the line and the
- * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, duplicate-id, padded-cell.
+ * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, duplicate-id, padded-cell, epic-number, epic-unique, depends.
  */
 export function lintBoard(text: string): { canonical: boolean; issues: string[]; findings: LintIssue[] } {
   const findings: LintIssue[] = []
@@ -658,11 +660,17 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   let firstItem = 0
   const seenIds = new Set<string>()
   let prev: string[] = []
+  // `##` headings that hold a task table are epics; they need a unique `<N>. ` number.
+  const epics: { no: number; num?: string; hasTable: boolean }[] = []
+  const refs = new Set<string>()
+  const deps: { no: number; value: string }[] = []
   const raw = text.split('\n')
   raw.forEach((line, i) => {
     if (line.startsWith('|') && (/ {2,}\|/.test(line) || /\| {2,}/.test(line))) add(i + 1, 'padded-cell', 'two or more spaces next to a pipe: cells must not be padded')
   })
   for (const { text: line, no } of joinRowsNumbered(raw)) {
+    const heading = /^##\s+(.*)$/.exec(line)
+    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1]!.trim())?.[1], hasTable: false })
     if (/^- \[( |x|X)\]/.test(line)) {
       items += 1
       firstItem ||= no
@@ -677,6 +685,7 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     }
     if (/^(#|id)$/i.test(c[0] ?? '')) {
       col = columnsOf(c)
+      if (col && epics.length > 0) epics[epics.length - 1]!.hasTable = true
       canonicalTable = col !== undefined && c.join('|') === CANON_HEADER.join('|')
       if (col && !canonicalTable) add(no, 'header', `non-canonical header: | ${c.join(' | ')} |`)
       continue
@@ -687,9 +696,23 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     }
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? '')) continue
     if (!FORMAT_STATUSES.includes(c[col.status] ?? '')) add(no, 'status', `status outside the vocabulary: "${c[col.status]}"`)
+    const epicNum = epics[epics.length - 1]?.num
+    if (epicNum !== undefined) refs.add(`${epicNum}.${c[col.id]}`)
+    if (col.depends >= 0 && (c[col.depends] ?? '') !== '') deps.push({ no, value: c[col.depends]! })
     const eta = c[col.eta] ?? ''
     if (eta !== '' && !ETA_FORMAT.test(eta)) add(no, 'eta', `ETA not YYYY-MM-DD HH:MM <timezone>: "${eta}"`)
   }
+  const seenNums = new Set<string>()
+  for (const e of epics.filter(x => x.hasTable)) {
+    if (e.num === undefined) add(e.no, 'epic-number', 'epic heading without a number: expected "## <N>. <name>"')
+    else if (seenNums.has(e.num)) add(e.no, 'epic-unique', `duplicate epic number ${e.num}`)
+    if (e.num !== undefined) seenNums.add(e.num)
+  }
+  for (const d of deps)
+    for (const ref of d.value.split(',').map(x => x.trim())) {
+      if (!/^\d+\..+$/.test(ref)) add(d.no, 'depends', `Depends entry not an <epic>.<task> reference: "${ref}"`)
+      else if (!refs.has(ref)) add(d.no, 'depends', `Depends reference ${ref} matches no row`)
+    }
   if (items > 0) add(firstItem, 'checklist', `${items} checklist items instead of table rows`)
   findings.sort((a, b) => a.line - b.line)
   return { canonical: findings.length === 0, issues: [...new Set(findings.map(f => f.message))], findings }

@@ -201,11 +201,16 @@ function lintBoard(text2) {
   let firstItem = 0;
   const seenIds = /* @__PURE__ */ new Set();
   let prev = [];
+  const epics = [];
+  const refs = /* @__PURE__ */ new Set();
+  const deps = [];
   const raw = text2.split("\n");
   raw.forEach((line, i) => {
     if (line.startsWith("|") && (/ {2,}\|/.test(line) || /\| {2,}/.test(line))) add(i + 1, "padded-cell", "two or more spaces next to a pipe: cells must not be padded");
   });
   for (const { text: line, no } of joinRowsNumbered(raw)) {
+    const heading = /^##\s+(.*)$/.exec(line);
+    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1].trim())?.[1], hasTable: false });
     if (/^- \[( |x|X)\]/.test(line)) {
       items += 1;
       firstItem ||= no;
@@ -220,6 +225,7 @@ function lintBoard(text2) {
     }
     if (/^(#|id)$/i.test(c[0] ?? "")) {
       col = columnsOf(c);
+      if (col && epics.length > 0) epics[epics.length - 1].hasTable = true;
       canonicalTable = col !== void 0 && c.join("|") === CANON_HEADER.join("|");
       if (col && !canonicalTable) add(no, "header", `non-canonical header: | ${c.join(" | ")} |`);
       continue;
@@ -230,9 +236,23 @@ function lintBoard(text2) {
     }
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? "")) continue;
     if (!FORMAT_STATUSES.includes(c[col.status] ?? "")) add(no, "status", `status outside the vocabulary: "${c[col.status]}"`);
+    const epicNum = epics[epics.length - 1]?.num;
+    if (epicNum !== void 0) refs.add(`${epicNum}.${c[col.id]}`);
+    if (col.depends >= 0 && (c[col.depends] ?? "") !== "") deps.push({ no, value: c[col.depends] });
     const eta = c[col.eta] ?? "";
     if (eta !== "" && !ETA_FORMAT.test(eta)) add(no, "eta", `ETA not YYYY-MM-DD HH:MM <timezone>: "${eta}"`);
   }
+  const seenNums = /* @__PURE__ */ new Set();
+  for (const e of epics.filter((x) => x.hasTable)) {
+    if (e.num === void 0) add(e.no, "epic-number", 'epic heading without a number: expected "## <N>. <name>"');
+    else if (seenNums.has(e.num)) add(e.no, "epic-unique", `duplicate epic number ${e.num}`);
+    if (e.num !== void 0) seenNums.add(e.num);
+  }
+  for (const d of deps)
+    for (const ref of d.value.split(",").map((x) => x.trim())) {
+      if (!/^\d+\..+$/.test(ref)) add(d.no, "depends", `Depends entry not an <epic>.<task> reference: "${ref}"`);
+      else if (!refs.has(ref)) add(d.no, "depends", `Depends reference ${ref} matches no row`);
+    }
   if (items > 0) add(firstItem, "checklist", `${items} checklist items instead of table rows`);
   findings.sort((a, b) => a.line - b.line);
   return { canonical: findings.length === 0, issues: [...new Set(findings.map((f) => f.message))], findings };

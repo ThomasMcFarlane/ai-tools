@@ -17,6 +17,8 @@ Statuses (full text in [FORMAT.md](../../../mods/tasks-board/FORMAT.md)):
 - `parked`: the owner deliberately paused or held the work. Nobody works on it and nothing is needed from the owner until the owner un-parks it. No ETA. Notes say who parked it, when, and the resume condition.
 - `done`: merged or verified; Notes hold the evidence.
 
+Epic headings are numbered `## <N>. <name>`; numbers are stable (never renumbered or reused). Reference a task as `<epic>.<task>` (for example `3.579` or `2.PZ-001`) everywhere you name it: Depends cells (comma-separated references), Notes, commit messages, PR titles and bodies, chat and reports.
+
 Update the row as work goes, the moment the state changes, not at the end of the session:
 
 - Pick-up: `in_progress`, Owner, Branch, ETA. PR open: `in_review` plus link. Blocked: status plus what on (row ID or the exact owner question). Finished: `done` plus evidence.
@@ -34,7 +36,7 @@ Update the row as work goes, the moment the state changes, not at the end of the
 
 ## Canonical board format
 
-New boards, and boards the mod rewrites, use the "epic tables" format described in [FORMAT.md](../../../mods/tasks-board/FORMAT.md): one `##` heading per epic, one table per epic, header `| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |`, status one of `todo`, `in_progress`, `in_review`, `blocked`, `blocked_on_owner`, `parked`, `done`.
+New boards, and boards the mod rewrites, use the "epic tables" format described in [FORMAT.md](../../../mods/tasks-board/FORMAT.md): one numbered `## <N>. <name>` heading per epic, one table per epic, header `| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |`, status one of `todo`, `in_progress`, `in_review`, `blocked`, `blocked_on_owner`, `parked`, `done`.
 
 The parser also reads other layouts (numeric or prefixed ids, `Picked up by`, `Workstream`, free-text statuses such as `done (merged #12)`, multi-line rows, checklists with `- [ ]`). It keys tables by header names, so a table needs an id column (`#` or `ID`), a task or title column and a status column. `Branch` is parsed but never shown.
 
@@ -95,11 +97,11 @@ Turn it off for good with `"autofix": false` in the options, or for the session 
 
 ## CI
 
-Check boards in CI with the shared format check, which applies the same rules as the mod (canonical header, status vocabulary, ETA format, duplicate ids, checklist items, padded cells):
+Check boards in CI with the shared format check, which applies the same rules as the mod (canonical header, numbered unique epics, `<epic>.<task>` Depends, status vocabulary, ETA format, duplicate ids, checklist items, padded cells):
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1
+- uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v2
   with:
     path: TASKS.md
     format: canonical # or lenient while migrating

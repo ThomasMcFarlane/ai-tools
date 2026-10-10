@@ -569,6 +569,8 @@ export const register: Register = (on, options) => {
       if (isClipped) fields.unshift(['Task    ', f.title])
       if (t.id.length > numW - 2) fields.unshift(['Id      ', t.id])
       if (t.wtPath) fields.unshift(['Worktree ', t.wtPath])
+      const epicNum = epicLabel(t.epic).num
+      if (epicNum !== '') fields.unshift(['Ref     ', `${epicNum}.${t.id}`])
       if (f.depends !== '') fields.push(['Depends ', f.depends])
       fields.push(['ETA    ', t.eta || '—'], ['', shown])
       return fields.flatMap(([label, text]) =>
