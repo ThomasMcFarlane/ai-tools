@@ -189,7 +189,7 @@ test('every cell of a row carries the hover style', async ($, on) => {
   }
   rows.forEach(collect)
   expect(leaves.length).toBeGreaterThan(5)
-  expect(leaves.filter(l => l.hover?.backgroundColor !== '#d0d0d0' || l.hover.inverse !== undefined)).toEqual([])
+  expect(leaves.filter(l => l.hover?.backgroundColor !== '#1c1c1c' || l.hover.inverse !== true)).toEqual([])
   await ui.unmount()
 })
 
