@@ -30,21 +30,24 @@ export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
     must actively give input.
   - done: merged or verified; Notes hold the evidence (PR, commit, check). Never use it for cancelled work.
   - dropped: terminal. The work was cancelled and never done. Notes must start "Dropped: <reason>."
+  - superseded: terminal. Another task replaced this one. Notes must start "Superseded by <epic>.<task>." naming the replacing row, e.g. "Superseded by 3.12."
   When converting an old or free-text status, only rows that need the owner's input become blocked_on_owner; every
   other blocked row becomes blocked, except work the owner paused or held, which becomes parked.
 
 Legacy statuses (convert as below; unknown text becomes todo):
 | Legacy value | Canonical status | Notes rule |
 |---|---|---|
-| dropped, cancelled, canceled, wontfix, won't fix, abandoned, obsolete, struck-through row marked cancelled | dropped | Start with "Dropped: <reason>." Never map cancelled work to done. |
+| dropped, cancelled, canceled, rejected, declined, wontfix, won't fix, abandoned, obsolete, struck-through row marked cancelled | dropped | Start with "Dropped: <reason>." Never map cancelled work to done. |
 | deferred, on hold, later, postponed, backlog, when the row shows the owner paused it (owner decision, owner paused) | parked | Say who parked it, when, and the resume condition. |
 | the same values without that owner evidence | todo | Start with "Deferred: <reason>.", keeping the reason from the old row. |
-| done, complete, closed, merged, shipped, resolved, ... with free text (done (merged #12)); rejected, declined, superseded, n/a | done | Keep or add the evidence. |
+| done, complete, closed, merged, shipped, resolved, ... with free text (done (merged #12)) | done | Keep or add the evidence. |
+| superseded | superseded | Start with "Superseded by <epic>.<task>." |
+| n/a, na, not applicable | decide from the row's context which status it really is (done, dropped, superseded, ...); never map it blindly | Say why in Notes. |
 | in progress, doing, partly, review, in PR | in_progress (in_review when a PR is open) | Link the PR; ETA required. |
 | blocked ..., waiting on ... | blocked (blocked_on_owner only when the owner must give input) | Say what it waits on. |
 | Owner column "owner" | todo, Owner empty | None. |
 | anything else (open, not started, empty) | todo | None. |
-Do not write "Previous status: <old>." in Notes: the "Dropped:" or "Deferred:" prefix carries the meaning.
+Do not write "Previous status: <old>." in Notes: the "Dropped:", "Superseded by" or "Deferred:" prefix carries the meaning.
 - Branch is the git branch doing the row's work, when it can be determined (named in the row's notes or owner, or a
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one.

@@ -34,6 +34,9 @@
   - `done`: merged or verified; Notes hold the evidence (PR, commit, check). Never use it for cancelled work.
   - `dropped`: terminal. The work was cancelled and never done. Notes must start `Dropped: <reason>.` The pane hides
     it like `done` and does not count it open.
+  - `superseded`: terminal. Another task replaced this one. Notes must start `Superseded by <epic>.<task>.` naming
+    the replacing row (for example `Superseded by 3.12.`); the check fails if that row does not exist. The pane hides
+    it like `done` and does not count it open.
 - Branch is the git branch doing the row's work, when it can be determined (named in the row's notes or owner, or a
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one. The board pane does not display it.
@@ -56,18 +59,19 @@ canonical check rejects any status outside the list above.
 
 | Legacy value | Canonical status | Notes rule |
 |---|---|---|
-| `dropped`, `cancelled`, `canceled`, `wontfix`, `won't fix`, `abandoned`, `obsolete`, a struck-through row marked cancelled | `dropped` | Start with `Dropped: <reason>.` Never map cancelled work to `done`. |
+| `dropped`, `cancelled`, `canceled`, `rejected`, `declined`, `wontfix`, `won't fix`, `abandoned`, `obsolete`, a struck-through row marked cancelled | `dropped` | Start with `Dropped: <reason>.` Never map cancelled work to `done`. |
 | `deferred`, `on hold`, `later`, `postponed`, `backlog`, when the row shows the owner paused it (owner decision, owner paused, a configured owner name pausing it) | `parked` | Say who parked it, when, and the resume condition. |
 | the same values without that owner evidence | `todo` | Start with `Deferred: <reason>.`, keeping the reason from the old row. |
 | `done`, `complete`, `closed`, `merged`, `shipped`, `released`, `resolved`, `fixed`, `deployed`, `published`, and similar, with free text after (`done (merged #12)`, `merged via PR #35`) | `done` | Keep or add the evidence (PR, commit, check). |
-| `rejected`, `declined`, `superseded`, `not applicable` / `n/a` | `done` | Say what closed it. |
+| `superseded` | `superseded` | Start with `Superseded by <epic>.<task>.` naming the replacing row. |
+| `n/a`, `na`, `not applicable` | not mapped automatically: decide from the row's context which status it really is (`done`, `dropped`, `superseded`, ...) | Say why in Notes. The check rejects `n/a` as an unknown status. |
 | `in progress`, `doing`, `partly`, `review`, `in PR`, `PR #n open` | `in_progress` (or `in_review` when a PR is open) | Link the PR; ETA is required. |
 | `blocked ...`, `waiting on ...` | `blocked`, or `blocked_on_owner` only when the owner must give input | Say what it waits on. |
 | `parked` | `parked` | As above. |
 | Owner column `owner` (a bare placeholder) | `todo`, unassigned | Leave Owner empty. |
 | anything else (`open`, `not started`, empty) | `todo` | None. |
 
-Do not add `Previous status: <old>.` to Notes: the `Dropped:` or `Deferred:` prefix carries the meaning.
+Do not add `Previous status: <old>.` to Notes: the `Dropped:`, `Superseded by` or `Deferred:` prefix carries the meaning.
 
 ## Keeping the board current
 

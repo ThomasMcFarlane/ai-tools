@@ -34,6 +34,12 @@ describe('check', () => {
     expect(check(H + '| A-1 | t | parked | | | | | Parked by owner |\n').failed).toBe(false);
   });
 
+  it('superseded needs a Superseded by prefix naming an existing row', () => {
+    const r = (n: string) => '## 1. E\n\n' + H + `| A-1 | t | superseded | | | | | ${n} |\n| A-2 | t | todo | | | | | |\n`;
+    expect(check(r('Superseded by 1.A-2.')).failed).toBe(false);
+    expect(check(r('Superseded by 1.A-7.')).failed).toBe(true);
+    expect(check(r('replaced')).failed).toBe(true);
+  });
   it('dropped needs a Dropped: prefix', () => {
     expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | Dropped: not needed. |\n').failed).toBe(false);
     expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | not needed |\n').failed).toBe(true);

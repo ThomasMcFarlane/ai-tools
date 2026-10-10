@@ -34,7 +34,7 @@ var normaliseStatus = (s, ownerPaused2 = false) => {
   if (DONE_WORDS.includes(k.split("_")[0]) || DONE_PHRASES.some((p) => k === p || k.startsWith(`${p}_`))) return "done";
   return "todo";
 };
-var DONE_PHRASES = ["not_applicable", "n/a", "client_side_done", "root_cause_fixed", "runtime_validated", "re_landed"];
+var DONE_PHRASES = ["client_side_done", "root_cause_fixed", "runtime_validated", "re_landed"];
 var DONE_WORDS = ["rejected", "declined", "deployed", "configured", "done", "complete", "completed", "closed", "merged", "recorded", "published", "accepted", "fixed", "shipped", "released", "resolved", "superseded", "implemented", "dropped", "cancelled", "canceled", "wontfix", "abandoned", "obsolete", "won't"];
 var cells = (line) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
 function joinRowsNumbered(lines) {
@@ -197,7 +197,7 @@ function latestUpdate(notes) {
   return notes.slice(ds[best].index, ds[best + 1]?.index);
 }
 var ACTIVE_MS = 30 * 60 * 1e3;
-var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "parked", "done", "dropped"];
+var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "parked", "done", "dropped", "superseded"];
 var CANON_HEADER = ["ID", "Task", "Status", "Owner", "Branch", "Depends", "ETA", "Notes"];
 var ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/;
 function lintBoard(text2) {
@@ -212,6 +212,7 @@ function lintBoard(text2) {
   const epics = [];
   const refs = /* @__PURE__ */ new Set();
   const deps = [];
+  const superseders = [];
   const raw = text2.split("\n");
   raw.forEach((line, i) => {
     if (line.startsWith("|") && (/ {2,}\|/.test(line) || /\| {2,}/.test(line))) add(i + 1, "padded-cell", "two or more spaces next to a pipe: cells must not be padded");
@@ -245,6 +246,11 @@ function lintBoard(text2) {
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? "")) continue;
     if (!FORMAT_STATUSES.includes(c[col.status] ?? "")) add(no, "status", `status "${c[col.status]}" is not one of ${FORMAT_STATUSES.join(", ")}; see FORMAT.md, Legacy statuses`);
     else if (c[col.status] === "dropped" && !/^Dropped: \S/.test(c.slice(col.notes).join(" | "))) add(no, "dropped", 'dropped row needs Notes starting "Dropped: <reason>."');
+    else if (c[col.status] === "superseded") {
+      const ref = /^Superseded by (\d+\.[^\s,;]*[^\s,;.])/.exec(c.slice(col.notes).join(" | "))?.[1];
+      if (ref === void 0) add(no, "superseded", 'superseded row needs Notes starting "Superseded by <epic>.<task>."');
+      else superseders.push({ no, ref });
+    }
     const epicNum = epics[epics.length - 1]?.num;
     if (epicNum !== void 0) refs.add(`${epicNum}.${c[col.id]}`);
     if (col.depends >= 0 && (c[col.depends] ?? "") !== "") deps.push({ no, value: c[col.depends] });
@@ -262,6 +268,7 @@ function lintBoard(text2) {
       if (!/^\d+\..+$/.test(ref)) add(d.no, "depends", `Depends entry not an <epic>.<task> reference: "${ref}"`);
       else if (!refs.has(ref)) add(d.no, "depends", `Depends reference ${ref} matches no row`);
     }
+  for (const s of superseders) if (!refs.has(s.ref)) add(s.no, "superseded", `Superseded by reference ${s.ref} matches no row`);
   if (items > 0) add(firstItem, "checklist", `${items} checklist items instead of table rows`);
   findings.sort((a, b) => a.line - b.line);
   return { canonical: findings.length === 0, issues: [...new Set(findings.map((f) => f.message))], findings };
