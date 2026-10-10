@@ -131,6 +131,7 @@ export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): 
   const canonical = /\|\s*blocked_on_owner\s*\|/.test(text) || lintBoard(text).canonical
   const tasks: TasksBoardTask[] = []
   let epic = ''
+  let parent = '' // the current `##` heading, inherited by its `###` sub-sections
   let col: Cols | undefined
   let section = 0
   let item = 0
@@ -142,10 +143,13 @@ export function parseBoard(text: string, opts: { ownerNames?: string[] } = {}): 
   }
   let prev: string[] = []
   for (const line of joinRows(text.split('\n'))) {
-    const h = /^#{2,3}\s+(.*)$/.exec(line)
+    const h = /^(#{2,3})\s+(.*)$/.exec(line)
     if (h) {
       flush()
-      epic = h[1]!.trim().replace(/^Active:\s*/, '').replace(/(?:,\s*|\s*\()\d{4}-\d{2}-\d{2}\)?$/, '')
+      const name = h[2]!.trim().replace(/^Active:\s*/, '').replace(/(?:,\s*|\s*\()\d{4}-\d{2}-\d{2}\)?$/, '')
+      if (h[1] === '##') parent = epic = name
+      // A `###` under a numbered `##` keeps the parent's number, so epicLabel still finds it.
+      else epic = /^\d+\.\s+\S/.test(parent) ? `${parent} › ${name}` : name
       section += 1
       item = 0
       continue

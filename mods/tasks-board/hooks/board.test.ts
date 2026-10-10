@@ -307,6 +307,20 @@ test('state stays small for a multi-megabyte board', () => {
 })
 
 describe('epic grouping', () => {
+  test('### sub-sections inherit the numbered parent epic', () => {
+    const H = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+    const row = (id: string) => `| ${id} | t | todo | | | | | |\n`
+    const board = `# Tasks\n\n## 3. Backlog\n\n### Git hosting\n\n${H}${row('G-1')}\n### Security\n\n${H}${row('S-1')}\n### Plain\n\n${H}${row('P-1')}\n## Loose\n\n### Sub\n\n${H}${row('L-1')}`
+    const tasks = parseBoard(board)
+    expect(tasks.map(t => t.id)).toEqual(['G-1', 'S-1', 'P-1', 'L-1'])
+    expect(tasks.map(t => epicLabel(t.epic))).toEqual([
+      { num: '3', name: 'Backlog › Git hosting' },
+      { num: '3', name: 'Backlog › Security' },
+      { num: '3', name: 'Backlog › Plain' },
+      { num: '', name: 'Sub' },
+    ])
+    expect(groupByEpic(tasks, tasks, () => 0).map(g => g.epic)).toEqual(['3. Backlog › Git hosting', '3. Backlog › Security', '3. Backlog › Plain', 'Sub'])
+  })
   test('epic heading with a task number splits into number and name', () => {
     expect(epicLabel('Task 443: comprehensive code mode')).toEqual({ num: '443', name: 'comprehensive code mode' })
     expect(epicLabel('3. Code mode')).toEqual({ num: '3', name: 'Code mode' })
