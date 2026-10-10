@@ -102,6 +102,7 @@ function parseBoard(text2, opts = {}) {
   const canonical = /\|\s*blocked_on_owner\s*\|/.test(text2) || lintBoard(text2).canonical;
   const tasks2 = [];
   let epic = "";
+  let parent = "";
   let col;
   let section = 0;
   let item = 0;
@@ -113,10 +114,12 @@ function parseBoard(text2, opts = {}) {
   };
   let prev = [];
   for (const line of joinRows(text2.split("\n"))) {
-    const h = /^#{2,3}\s+(.*)$/.exec(line);
+    const h = /^(#{2,3})\s+(.*)$/.exec(line);
     if (h) {
       flush();
-      epic = h[1].trim().replace(/^Active:\s*/, "").replace(/(?:,\s*|\s*\()\d{4}-\d{2}-\d{2}\)?$/, "");
+      const name = h[2].trim().replace(/^Active:\s*/, "").replace(/(?:,\s*|\s*\()\d{4}-\d{2}-\d{2}\)?$/, "");
+      if (h[1] === "##") parent = epic = name;
+      else epic = /^\d+\.\s+\S/.test(parent) ? `${parent} \u203A ${name}` : name;
       section += 1;
       item = 0;
       continue;
