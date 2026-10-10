@@ -178,18 +178,18 @@ test('every cell of a row carries the hover style', async ($, on) => {
   }
   walk(await ui.drawn())
   expect(rows.length).toBeGreaterThan(0)
-  const leaves: { type?: string; hover?: { inverse?: boolean } }[] = []
+  const leaves: { type?: string; hover?: { backgroundColor?: string; inverse?: boolean } }[] = []
   const collect = (n: unknown) => {
     if (Array.isArray(n)) n.forEach(collect)
     else if (n && typeof n === 'object') {
-      const o = n as { type?: string; hover?: { inverse?: boolean } }
+      const o = n as { type?: string; hover?: { backgroundColor?: string; inverse?: boolean } }
       if (o.type === 'Text' || o.type === 'Button') leaves.push(o)
       else Object.values(n).forEach(collect)
     }
   }
   rows.forEach(collect)
   expect(leaves.length).toBeGreaterThan(5)
-  expect(leaves.filter(l => l.hover?.inverse !== true)).toEqual([])
+  expect(leaves.filter(l => l.hover?.backgroundColor !== '#d0d0d0' || l.hover.inverse !== undefined)).toEqual([])
   await ui.unmount()
 })
 

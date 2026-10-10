@@ -261,6 +261,58 @@ test('every Button has a label or one string child, on an mc3-like board', { opt
   expect(reported).toEqual([])
 })
 
+test('number cells keep their colour and hover with the row background', { options: { autofix: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const head = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|'
+  const text = `# Tasks\n\n## Live\n\n${head}\n| F1 | ${long(8)} | in_progress | agent-a | | | | n |\n| 12a | short | todo | | | F1 | | n |\n| 7 | renumbered | blocked_on_owner | | | | 2026-10-10 14:00 ICT | n |\n| 8 | ${long(12)} | done | | | | | n |\n\n## Archive — era\n\n${head}\n| 1 | old | done | | | | | n |\n| 2 | older | done | | | | | n |\n`
+  const reported: string[] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => ({
+    value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', (_$, e) => {
+    reported.push(String(e.text))
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({
+    plugin: 'tasks-board',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'tasks-board',
+    props: { title: 'Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+    viewport: { columns: 100, rows: 60, isFullscreen: true },
+  })
+  const hovers: { type?: string; hover?: unknown }[] = []
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) n.forEach(walk)
+    else if (n && typeof n === 'object') {
+      const o = n as { type?: string; hover?: unknown }
+      if (o.hover !== undefined) hovers.push(o)
+      Object.values(n).forEach(walk)
+    }
+  }
+  walk(await ui.drawn())
+  const full = { backgroundColor: '#d0d0d0', color: '#1c1c1c', dimColor: false }
+  // coloured number and spinner cells (Text) keep their own colour: background only; every Button carries the full row style
+  expect(hovers.filter(h => JSON.stringify(h.hover) === JSON.stringify({ backgroundColor: '#d0d0d0' })).length).toBeGreaterThan(0)
+  for (const h of hovers) expect([full, { backgroundColor: '#d0d0d0' }]).toContainEqual(h.hover)
+  for (const h of hovers) if (h.type === 'Button') expect(h.hover).toEqual(full)
+  expect(badButtons(await ui.drawn())).toEqual([])
+  expect(reported).toEqual([])
+  await ui.unmount()
+})
+
 test('an open epic keeps its task rows outside its own Box, so hovering a task does not light the epic', { options: { autofix: false } }, async ($, on) => {
   const dir = '/work/repo'
   const text = `# Tasks\n\n## Epic\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | one | todo | | |\n| 2 | two | todo | | |\n`
