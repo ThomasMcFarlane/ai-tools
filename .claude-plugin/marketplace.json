@@ -1,11 +1,18 @@
 {
   "name": "ai-tools",
-  "owner": { "name": "Thomas McFarlane" },
+  "owner": {
+    "name": "Thomas McFarlane"
+  },
   "plugins": [
     {
       "name": "tasks-board",
       "source": "./mods/tasks-board",
       "description": "Docked right-hand pane showing a project's TASKS.md board."
+    },
+    {
+      "name": "plan-view",
+      "source": "./mods/plan-view",
+      "description": "Docked right-hand pane showing the plan Claude writes in plan mode as formatted markdown."
     }
   ]
 }

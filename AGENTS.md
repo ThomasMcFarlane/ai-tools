@@ -11,7 +11,8 @@ ai-tools/
 │   ├── gh-watcher/    # @ai-tools/gh-watcher: GitHub Actions status/wait/watch CLI
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check: TASKS.md format check CLI
 ├── mods/
-│   └── tasks-board/   # Claude Code plugin (docked TASKS.md pane); checked with `claude plugin validate`, excluded from eslint/tsc/vitest
+│   ├── tasks-board/   # Claude Code plugin (docked TASKS.md pane); checked with `claude plugin validate`, excluded from eslint/tsc/vitest
+│   └── plan-view/     # Claude Code plugin (docked markdown view of Claude's plan files); same checks
 ├── actions/
 │   └── tasks-board-check/  # composite GitHub Action with a committed bundled dist/
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
