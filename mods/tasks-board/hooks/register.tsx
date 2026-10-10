@@ -551,8 +551,8 @@ export const register: Register = (on, options) => {
     const HV = { backgroundColor: ROW_HOVER_BG, color: ROW_HOVER_FG, dimColor: false } as const
     const HV_NUM = { backgroundColor: ROW_HOVER_BG } as const // number cells keep their own colour
     const bar = () => <Text dimColor hover={HV}> │ </Text>
-    // Every plain cell is its own label-only Button with the row's onPress. A label carries no colour, so
-    // the number cell, when coloured or spinning, is a Button with Text children and no label.
+    // A Button holds only a label (the engine refuses children), so every plain cell is its own Button
+    // with the row's onPress. A Button takes no colour: cells that carry one stay Text, and are not pressable.
     const cellButton = (k: string, label: string, onPress: () => unknown) => <Button key={k} label={label} plain hover={HV} onPress={onPress} />
     // Child rows carry CHILD_BG on the row's Box, not on each Text, so the focus and pointer inversion
     // of the Button covers separators and padding uniformly (explicit Text colours would resist it).
@@ -582,14 +582,16 @@ export const register: Register = (on, options) => {
         ),
       )
     }
+    // A coloured or spinning number cell stays Text (a Button takes no colour and no children), so it is not
+    // pressable; its hover changes only the background and keeps its colour.
     const numCell = (k: string, text: string, onPress: () => unknown, color?: string, isOn?: boolean, accent?: string) =>
       color === undefined && !isOn ? (
         cellButton(k, text, onPress)
       ) : (
-        <Button key={k} plain hover={HV_NUM} onPress={onPress}>
-          {isOn && <Text color={accent}>{spin}</Text>}
-          <Text color={color} bold={color !== undefined}>{text}</Text>
-        </Button>
+        <>
+          {isOn && <Text color={accent} hover={HV_NUM}>{spin}</Text>}
+          {color === undefined ? cellButton(k, text, onPress) : <Text color={color} bold hover={HV_NUM}>{text}</Text>}
+        </>
       )
     const plainBar = () => <Text dimColor> │ </Text> // no hover: the details block is not interactive
     const row = (t: TasksBoardTask, numColor?: string, indent = 0, accent?: string) => {
