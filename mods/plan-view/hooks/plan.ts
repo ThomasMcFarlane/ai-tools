@@ -13,7 +13,8 @@ export const isPlanPath = (path: string, known: string): boolean => path !== '' 
 /** The `.md` paths a reply mentions (bare, in backticks, in links, `file:` links), as written, in order, deduped. */
 export const mdMentions = (text: string): string[] => {
   const found = text.replace(/file:(\/\/)?/g, '').match(/[\w@%+.~/-]+\.md(?!\w)/g) ?? []
-  return [...new Set(found.map(m => m.replace(/^\.\//, '')))]
+  // The tasks-board mod already shows TASKS.md, so never offer it.
+  return [...new Set(found.map(m => m.replace(/^\.\//, '')))].filter(m => !/(^|\/)tasks\.md$/i.test(m))
 }
 
 /** The text to draw, cut at the Markdown cap, and whether it was cut. */

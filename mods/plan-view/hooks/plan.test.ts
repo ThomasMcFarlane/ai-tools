@@ -17,6 +17,10 @@ describe('plan helpers', () => {
     expect(mdMentions(t)).toEqual(['docs/a.md', 'b.md', '/abs/c.md', '~/d.md', 'e.md'])
     expect(mdMentions('a.mdx x.markdown')).toEqual([])
   })
+  test('never offers TASKS.md, the tasks board shows it', () => {
+    expect(mdMentions('see TASKS.md and docs/spec.md')).toEqual(['docs/spec.md'])
+    expect(mdMentions('`/repo/tasks.md` and ./Tasks.MD')).toEqual([])
+  })
   test('cuts at the Markdown cap', () => {
     expect(clip('a').isCut).toBe(false)
     expect(clip('a'.repeat(MARKDOWN_MAX + 1))).toMatchObject({ isCut: true })
