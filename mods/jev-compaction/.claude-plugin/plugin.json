@@ -1,0 +1,127 @@
+{
+  "name": "jev-compaction",
+  "version": "0.1.0",
+  "author": {
+    "name": "Thomas McFarlane"
+  },
+  "description": "Periodic Jev-guided compaction of long sessions: prunes stale tool calls and results and shortens old message text to keep a 1M-context session in a 256k-400k band.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "triggerTokens": {
+      "type": "number",
+      "title": "Trigger (tokens)",
+      "description": "Windows over 300k tokens: start a periodic compaction when the context reaches this many tokens.",
+      "default": 400000,
+      "required": false
+    },
+    "targetTokens": {
+      "type": "number",
+      "title": "Target (tokens)",
+      "description": "Windows over 300k tokens: a periodic compaction is applied when it brings the context to this size or less.",
+      "default": 256000,
+      "required": false
+    },
+    "hardTokens": {
+      "type": "number",
+      "title": "Hard limit (tokens)",
+      "description": "Windows over 300k tokens: at this size a compaction that cannot free enough falls back to the built-in summary.",
+      "default": 500000,
+      "required": false
+    },
+    "triggerPercent": {
+      "type": "number",
+      "title": "Trigger (percent)",
+      "description": "Smaller windows: start a periodic compaction at this percentage of the window.",
+      "default": 60,
+      "required": false
+    },
+    "targetPercent": {
+      "type": "number",
+      "title": "Target (percent)",
+      "description": "Smaller windows: apply a periodic compaction that reaches this percentage or less.",
+      "default": 40,
+      "required": false
+    },
+    "hardPercent": {
+      "type": "number",
+      "title": "Hard limit (percent)",
+      "description": "Smaller windows: the hard limit as a percentage of the window.",
+      "default": 85,
+      "required": false
+    },
+    "minFreedTokens": {
+      "type": "number",
+      "title": "Minimum tokens freed",
+      "description": "A compaction that misses the target is still applied when it frees at least this many estimated tokens.",
+      "default": 20000,
+      "required": false
+    },
+    "regrowthTokens": {
+      "type": "number",
+      "title": "Regrowth guard (tokens)",
+      "description": "After a deferred or below-target attempt, wait until the context has grown by this many tokens before trying again.",
+      "default": 25000,
+      "required": false
+    },
+    "keepThreshold": {
+      "type": "number",
+      "title": "Keep threshold",
+      "description": "Minimum Jev probability for a tool call, result or message text to be kept verbatim.",
+      "default": 0.5,
+      "required": false
+    },
+    "abridgeThreshold": {
+      "type": "number",
+      "title": "Abridge threshold",
+      "description": "Assistant text below the keep threshold but at or above this is abridged; below it, replaced by a one-line stub.",
+      "default": 0.2,
+      "required": false
+    },
+    "preserveRecentMessages": {
+      "type": "number",
+      "title": "Newest messages kept",
+      "description": "The newest messages are never touched (the first message is always kept).",
+      "default": 6,
+      "required": false
+    },
+    "maxStateTokens": {
+      "type": "number",
+      "title": "Jev state ceiling (tokens)",
+      "description": "Estimated token ceiling of the conversation state sent to Jev.",
+      "default": 25000,
+      "required": false
+    },
+    "maxRequestTokens": {
+      "type": "number",
+      "title": "Jev request ceiling (tokens)",
+      "description": "Estimated token ceiling of state plus one batch of questions.",
+      "default": 30000,
+      "required": false
+    },
+    "truncateHeadChars": {
+      "type": "number",
+      "title": "Truncated result head (characters)",
+      "description": "Characters of a truncated tool result that are kept.",
+      "default": 300,
+      "required": false
+    },
+    "model": {
+      "type": "string",
+      "title": "Jev model",
+      "description": "Model name sent to Jev. Default jev-latest.",
+      "required": false
+    },
+    "keyFile": {
+      "type": "string",
+      "title": "Key file",
+      "description": "Path of a file with KEY=value lines holding AIS_SESSION_COMPACTION_JEV_API_KEY or TYPESAFE_API_KEY. Default: $HOME/.config/ai-tools/jev-compaction.env.",
+      "required": false
+    },
+    "goal": {
+      "type": "string",
+      "title": "Goal",
+      "description": "Ongoing task description given to Jev; default the last user prompts.",
+      "required": false
+    }
+  }
+}
