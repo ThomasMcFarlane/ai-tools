@@ -335,6 +335,7 @@ async function gather(messages: readonly Message[], ask: JevAsker, opts: Options
   }
   const g: Gathered = { calls, texts, questions, scores, fresh, stateTokens: 0, stateStage: '', requests: 0, abandoned: 0, failed: 0, reused: questions.length - toAsk.length }
   if (toAsk.length === 0) return g
+  if (toAsk.length < (run.minQuestions ?? 0)) return g
   const fitted = fitState(messages, calls, opts)
   g.stateTokens = fitted.tokens
   g.stateStage = fitted.stage

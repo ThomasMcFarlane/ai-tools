@@ -91,6 +91,20 @@
       "default": 4,
       "required": false
     },
+    "prescoreEveryTokens": {
+      "type": "number",
+      "title": "Pre-scoring interval (tokens)",
+      "description": "Pre-score again only after the context has grown by this many tokens since the last pre-score.",
+      "default": 20000,
+      "required": false
+    },
+    "prescoreMinQuestions": {
+      "type": "number",
+      "title": "Pre-scoring minimum questions",
+      "description": "Pre-score only when at least this many questions (about one batch) are unscored.",
+      "default": 60,
+      "required": false
+    },
     "jevTimeoutMs": {
       "type": "number",
       "title": "Jev request timeout (ms)",

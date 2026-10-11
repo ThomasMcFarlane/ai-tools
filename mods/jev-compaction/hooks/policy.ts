@@ -13,6 +13,8 @@ export type Config = {
   regrowTokens: number
   prescoreMarginTokens: number
   prescoreBatches: number
+  prescoreEveryTokens: number
+  prescoreMinQuestions: number
   jevTimeoutMs: number
   jevTotalMs: number
   model: string
@@ -39,6 +41,8 @@ export const DEFAULTS: Config = {
   regrowTokens: 50_000,
   prescoreMarginTokens: 100_000,
   prescoreBatches: 4,
+  prescoreEveryTokens: 20_000,
+  prescoreMinQuestions: 60,
   jevTimeoutMs: 8_000,
   jevTotalMs: 20_000,
   model: 'jev-latest',

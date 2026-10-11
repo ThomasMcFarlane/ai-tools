@@ -90,6 +90,8 @@ export type RunOptions = {
   stop?: () => boolean
   /** Ask at most this many batches (pre-scoring); the rest is left for later. */
   maxBatches?: number
+  /** Ask nothing unless at least this many questions are unscored (pre-scoring: one batch's worth). */
+  minQuestions?: number
   /** Reuse every remembered score whatever its distance from a threshold. */
   reuseAll?: boolean
 }

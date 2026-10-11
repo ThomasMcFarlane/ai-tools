@@ -72,6 +72,8 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('command.register', () => ({ value: undefined as never }))
+  on('session.start', () => ({ cwd: '/work' }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
   return { requests, toasts, logs, compactCalls, usage, clock }
 }
 
@@ -315,19 +317,49 @@ test('with an image in a user message no user text is abridged', async ($, on) =
   expect(r.messages.some((m) => m.handle === 'long')).toBe(true)
 })
 
-test('pre-scoring: a finished turn within 100k of the trigger scores part of the backlog and remembers it', async ($, on) => {
-  const { requests, usage, logs, compactCalls } = await boot($, on, { p: 0.9, rows: transcript() })
+test('pre-scoring: a finished turn within 100k of the trigger scores part of the backlog off the critical path, and remembers it', async ($, on) => {
+  const { requests, usage, logs, compactCalls, clock } = await boot($, on, { p: 0.9, rows: transcript(40) })
   usage.tokens = 250_000
   await $.turn.complete(reply())
+  await clock.advance(10)
   expect(requests.length).toBe(0)
   usage.tokens = 320_000
   await $.turn.complete(reply())
+  expect(requests.length).toBe(0)
+  await clock.advance(10)
   expect(requests.length).toBeGreaterThan(0)
   expect(logs.join('\n')).toMatch(/pre-scored \d+ items/)
   expect(compactCalls.length).toBe(0)
-  const asked = requests.length
+})
+
+test('pre-scoring is throttled: five turns at 350k with a new tool pair each make at most one request', async ($, on) => {
+  const rows = transcript(40)
+  const { requests, usage, clock } = await boot($, on, { p: 0.9, rows, hang: false })
+  usage.tokens = 350_000
+  for (let i = 0; i < 5; i++) {
+    rows.splice(rows.length - 6, 0,
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: `n${i}`, tool: 'Read', input: { file_path: `/new/${i}.ts` }, text: 'x'.repeat(2000) }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `n${i}`, text: 'x'.repeat(2000), isError: false }] })
+    await $.turn.complete(reply())
+    await clock.advance(10)
+  }
+  expect(requests.length).toBeLessThanOrEqual(1)
+  expect(requests.length).toBe(1)
+})
+
+test('pre-scoring waits until about a batch of questions is unscored', async ($, on) => {
+  const { requests, usage, clock } = await boot($, on, { p: 0.9, rows: transcript(5) })
+  usage.tokens = 350_000
   await $.turn.complete(reply())
-  expect(requests.length).toBe(asked)
+  await clock.advance(10)
+  expect(requests).toEqual([])
+})
+
+test('/jev-compact now says it is unavailable in a headless session', async ($, on) => {
+  await boot($, on)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: false } as never)
+  const { text } = await $.command.run({ command: 'jev-compact', args: 'now' } as never)
+  expect(text).toMatch(/not available in a non-interactive/)
 })
 
 test('a turn that did not end in an answer neither compacts nor pre-scores', async ($, on) => {
@@ -342,7 +374,6 @@ test('a turn that did not end in an answer neither compacts nor pre-scores', asy
 
 test('a session that is not interactive is left alone', async ($, on) => {
   const { compactCalls, usage } = await boot($, on)
-  on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: false } as never)
   usage.tokens = 450_000
   await $.turn.complete(reply())

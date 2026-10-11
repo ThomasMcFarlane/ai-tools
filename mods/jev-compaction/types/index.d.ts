@@ -19,6 +19,8 @@ declare module 'claude-code' {
       stats: JevCompactionStats
       // context tokens of the last attempt that did not reach the target; 0 when none
       guard: number
+      // whether the session is interactive, kept so a hot reload knows
+      interactive: boolean
     }
   }
 }

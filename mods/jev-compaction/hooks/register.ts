@@ -9,6 +9,7 @@ import type { CompactResult, Protect } from './types'
 
 const SCORES = { plugin: 'jev-compaction', key: 'scores' } as const
 const STATS = { plugin: 'jev-compaction', key: 'stats' } as const
+const INTERACTIVE = { plugin: 'jev-compaction', key: 'interactive' } as const
 const GUARD = { plugin: 'jev-compaction', key: 'guard' } as const
 // How long after `/jev-compact now` the next /compact still counts as that request.
 const NOW_VALID_MS = 60_000
@@ -31,7 +32,10 @@ let compacting = false
 let cachedKey: string | undefined
 let isNow = false
 let nowAt = 0
-let interactive = true
+// Whether the session is interactive: undefined until known (a hot reload re-reads it from $.state).
+let interactive: boolean | undefined
+let prescoreAt = 0
+let prescoring = false
 // Set by `/jev-compact now`: $.session.compact() is refused inside a command, and from a timer the engine skips this
 // plugin's compaction hook (the built-in summary would run), so the next turn.complete does it.
 let nowPending = false
@@ -193,7 +197,9 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
 
 // `session.measure` fires while the turn still runs, where `$.session.compact()` rejects; `turn.complete` is after it.
 async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Next<'turn.complete'>) {
-  if ((e as { agentId?: string }).agentId !== undefined || e.reason !== 'answer' || !interactive) return next(e)
+  if ((e as { agentId?: string }).agentId !== undefined || e.reason !== 'answer') return next(e)
+  interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
+  if (!interactive) return next(e)
   if (compacting) return next(e)
   compacting = true
   try {
@@ -216,8 +222,15 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
         lastApplied = undefined
         await $.session.compact()
         await $.state.set(GUARD, guardAfter(tokens, lastApplied))
-      } else if (tokens >= t.trigger - config.prescoreMarginTokens && tokens < t.trigger) {
-        await prescoreSome($)
+      } else if (tokens >= t.trigger - config.prescoreMarginTokens && tokens < t.trigger && tokens >= prescoreAt + config.prescoreEveryTokens && !prescoring) {
+        // Off the critical path: the turn is not held open while Jev answers.
+        prescoreAt = tokens
+        prescoring = true
+        $.clock.after(0, () => {
+          void prescoreSome($).finally(() => {
+            prescoring = false
+          })
+        })
       }
     }
   } catch (err) {
@@ -232,13 +245,14 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
 async function prescoreSome($: EngineInterface) {
   const key = await resolveKey($)
   if (!key) return
+  if (compacting) return
   const messages = await $.session.messages()
   if (messages.length >= TRANSCRIPT_CAP) return
   const { value: memory = {} } = await $.state.get(SCORES)
   const started = Date.now()
   const ask = asker($, key, config.jevTimeoutMs, started, config.jevTotalMs)
   try {
-    const { scores, requests } = await prescore(messages, ask, config, memory, { protect: await protection($), maxBatches: config.prescoreBatches })
+    const { scores, requests } = await prescore(messages, ask, config, memory, { protect: await protection($), maxBatches: config.prescoreBatches, minQuestions: config.prescoreMinQuestions })
     if (Object.keys(scores).length > 0) {
       await remember($, memory, scores)
       await bump($, { requests })
@@ -256,6 +270,8 @@ async function onCommand($: EngineInterface, args: string) {
     return { text: `jev-compaction: ${s.applied} applied, ${s.deferred} deferred, ${s.fallbacks} built-in fallbacks; ~${s.freedTokens} tokens freed; ${s.requests} Jev requests` }
   }
   if (word === 'now') {
+    interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
+    if (!interactive) return { text: 'jev-compaction: /jev-compact now is not available in a non-interactive (headless) session.' }
     nowPending = true
     return { text: 'jev-compaction: will compact when your next turn ends (the host does not allow it from inside a command).' }
   }
@@ -265,9 +281,13 @@ async function onCommand($: EngineInterface, args: string) {
 export const register: Register = (on, options) => {
   config = resolveConfig(options)
   compacting = isNow = nowPending = false
+  interactive = undefined
+  prescoreAt = 0
+  prescoring = false
   cachedKey = undefined
   on('session.start', async ($, e, next) => {
     interactive = (e as { isInteractive?: boolean }).isInteractive !== false
+    await $.state.set(INTERACTIVE, interactive)
     try {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now) or show totals (stats)', argumentHint: 'now | stats' })
     } catch (err) {

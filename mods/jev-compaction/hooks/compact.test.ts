@@ -380,9 +380,16 @@ describe('partial failures, pre-scoring and notes', () => {
 describe('a history too big for one state', () => {
   test('the oldest part is judged and the newest unpinned part stays, instead of failing', async () => {
     const messages = [user('start'), ...Array.from({ length: 120 }, (_, i) => call(`k${i}`, long(300, 'x'), { file_path: `/src/${'long/'.repeat(8)}f${i}.ts` })).flat(), ...tail()]
+    const states: string[] = []
     const jev = fakeJev({}, 0.05)
-    const { stats, messages: out } = await compact(messages, jev.ask, { maxStateTokens: 2500, maxRequestTokens: 3200 })
+    const ask: JevAsker = (state, q) => {
+      states.push(JSON.stringify(state))
+      return jev.ask(state, q)
+    }
+    const { stats, messages: out } = await compact(messages, ask, { maxStateTokens: 2500, maxRequestTokens: 3200 })
     expect(stats.stateStage).toBe('newest old messages left out')
+    expect(states.at(-1)).toMatch(/\[\d+ messages left out\]/)
+    expect(states.at(-1)).not.toContain('the whole conversation')
     expect(stats.callsDropped).toBeGreaterThan(0)
     expect(stats.callsDropped).toBeLessThan(120)
     expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id).slice(-3)).toEqual(['k119', 'k118', 'k117'].reverse())

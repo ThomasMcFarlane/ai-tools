@@ -7,7 +7,7 @@ const NOTE =
 export const hasNote = (text: string) => NOTE.test(text)
 
 export const STATE_CONTEXT =
-  'A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, the full output of that call, or the full text of one message (named by its history index `i`) still needs to stay in the history verbatim. Whatever is not kept is deleted or shortened permanently, but the assistant can always re-run a tool or re-read a file.'
+  'A coding assistant conversation is being compacted to free context. `history` is the conversation so far, oldest first (an entry like `[N messages left out]` stands for messages not shown); tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, the full output of that call, or the full text of one message (named by its history index `i`) still needs to stay in the history verbatim. Whatever is not kept is deleted or shortened permanently, but the assistant can always re-run a tool or re-read a file.'
 
 type HistoryToolCall = { id: string; tool: string; input: string; result: string }
 type HistoryEntry = {
@@ -273,8 +273,11 @@ export function fitState(
   if (fits()) return fitted(history, tokens, 'old calls merged')
 
   // Last resort: show the oldest part and the pinned ends only; what is not shown cannot be judged and stays.
-  // Folded runs lose their newest call lines one at a time.
-  while (!fits()) {
+  // Folded runs lose their newest call lines one at a time. A placeholder entry says that messages are missing.
+  const PLACEHOLDER_TOKENS = 20
+  let leftOut = 0
+  let firstAt = Infinity
+  while (tokens + PLACEHOLDER_TOKENS > options.maxStateTokens) {
     let last = -1
     for (let i = history.length - 1; i >= 0; i--) {
       if (!pinned(history[i]!)) {
@@ -288,13 +291,25 @@ export function fitState(
     if (lines && lines.length > 1) {
       const line = (lines as string[]).pop() as string
       tokens -= estimateTokens(line) + 1
+      leftOut++
     } else {
       tokens -= perEntry[last] ?? 0
       history.splice(last, 1)
       perEntry.splice(last, 1)
+      firstAt = Math.min(firstAt, last)
+      leftOut++
     }
   }
-  if (fits()) return fitted(history, tokens, 'newest old messages left out')
+  if (tokens + PLACEHOLDER_TOKENS <= options.maxStateTokens) {
+    const at = Number.isFinite(firstAt) ? firstAt : history.findIndex((e) => !pinned(e))
+    const note: HistoryEntry = { i: history[Math.max(0, at)]?.i ?? 0, role: 'assistant', text: `[${leftOut} messages left out]` }
+    history.splice(Math.max(0, at), 0, note)
+    tokens += entryTokens(note)
+    const result = fitted(history, tokens, 'newest old messages left out')
+    result.visibleTexts.delete(note.i)
+    for (const e of history) if (e !== note && e.text.length > 0 && !collapsed.has(e.i)) result.visibleTexts.add(e.i)
+    return result
+  }
 
   throw new Error(`history too large for Jev (~${tokens} tokens after truncation, limit ${options.maxStateTokens})`)
 }
