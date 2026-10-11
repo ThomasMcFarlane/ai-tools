@@ -14,6 +14,8 @@ type Setup = {
   core?: () => unknown
   // the main conversation in API form, as `$.session.messages({ as: 'api' })` answers
   api?: unknown[]
+  // the main conversation as rows
+  rows?: unknown[]
   // never answer a fetch
   hang?: boolean
 }
@@ -47,7 +49,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const clock = mock.clock(on)
   const usage = { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }
   on('session.usage', () => ({ value: { startedAt: 0, context: { ...usage }, rateLimits: [] } }))
-  on('session.messages', () => ({ value: (setup.api ?? []) as never }))
+  on('session.messages', (_$: any, e: any) => ({ value: ((e.as === 'api' ? setup.api : setup.rows) ?? []) as never }))
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
   on('http.fetch', (_$: any, e: any) => {
     if (setup.hang) return new Promise(() => undefined) as never
@@ -273,11 +275,13 @@ test('a Jev request that never answers times out: soft defers, auto and manual f
   expect(requests).toEqual([])
 })
 
-test('/compact with instructions and a transcript that may be cut go to the built-in summary untouched', async ($, on) => {
+test('/compact with instructions goes to the built-in summary; a possibly cut transcript defers the soft compaction and leaves auto and manual to it', async ($, on) => {
   const { requests } = await boot($, on, { p: 0 })
   expect(isBuiltin(await compact($, 'manual', { instructions: 'keep the plan' }))).toBe(true)
   const many = Array.from({ length: 4096 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'x', toolUses: [] }))
-  expect(isBuiltin(await compact($, 'plugin', { messages: many }))).toBe(true)
+  expect((await compact($, 'plugin', { messages: many })).skip).toMatch(/over 4096 messages/)
+  expect(isBuiltin(await compact($, 'auto', { messages: many }))).toBe(true)
+  expect(isBuiltin(await compact($, 'manual', { messages: many }))).toBe(true)
   expect(requests).toEqual([])
 })
 
@@ -290,4 +294,57 @@ test('a tool result with an image is never rebuilt, its Bash neighbour is droppe
   expect(r.messages!.some((m) => m.handle === 'a0')).toBe(true)
   expect(r.messages!.some((m) => m.handle === 'u0')).toBe(true)
   expect(r.messages!.some((m) => m.handle === 'u1')).toBe(false)
+})
+
+const userMedia = [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image', source: {} }] }]
+const withLongUser = () => {
+  const t = transcript()
+  t.splice(1, 0, { role: 'user', text: 'u'.repeat(3000), toolUses: [], handle: 'long' }, { role: 'assistant', text: 'ack', toolUses: [], handle: 'ack' })
+  return t
+}
+
+test('without media a long user text is abridged; with media in any user message it is left alone', async ($, on) => {
+  await boot($, on, { p: 0 })
+  const plain = await $.session.compact({ trigger: 'plugin', messages: withLongUser() } as never)
+  expect((plain as { messages: Message[] }).messages.some((m) => m.handle === 'long')).toBe(false)
+})
+
+test('with an image in a user message no user text is abridged', async ($, on) => {
+  await boot($, on, { p: 0, api: userMedia })
+  const r = (await $.session.compact({ trigger: 'plugin', messages: withLongUser() } as never)) as { messages: Message[] }
+  expect(r.messages.some((m) => m.handle === 'long')).toBe(true)
+})
+
+test('pre-scoring: a finished turn within 100k of the trigger scores part of the backlog and remembers it', async ($, on) => {
+  const { requests, usage, logs, compactCalls } = await boot($, on, { p: 0.9, rows: transcript() })
+  usage.tokens = 250_000
+  await $.turn.complete(reply())
+  expect(requests.length).toBe(0)
+  usage.tokens = 320_000
+  await $.turn.complete(reply())
+  expect(requests.length).toBeGreaterThan(0)
+  expect(logs.join('\n')).toMatch(/pre-scored \d+ items/)
+  expect(compactCalls.length).toBe(0)
+  const asked = requests.length
+  await $.turn.complete(reply())
+  expect(requests.length).toBe(asked)
+})
+
+test('a turn that did not end in an answer neither compacts nor pre-scores', async ($, on) => {
+  const { compactCalls, requests, usage } = await boot($, on, { rows: transcript() })
+  usage.tokens = 450_000
+  await $.turn.complete({ ...(reply() as object), reason: 'aborted', isAborted: true } as never)
+  usage.tokens = 320_000
+  await $.turn.complete({ ...(reply() as object), reason: 'error' } as never)
+  expect(compactCalls.length).toBe(0)
+  expect(requests).toEqual([])
+})
+
+test('a session that is not interactive is left alone', async ($, on) => {
+  const { compactCalls, usage } = await boot($, on)
+  on('session.start', () => ({ cwd: '/work' }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: false } as never)
+  usage.tokens = 450_000
+  await $.turn.complete(reply())
+  expect(compactCalls.length).toBe(0)
 })

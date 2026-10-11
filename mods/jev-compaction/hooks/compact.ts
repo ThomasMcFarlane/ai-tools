@@ -1,5 +1,5 @@
 // Ported from fast-jev-compaction (MIT): batching, decisions and rebuilding, extended to message text.
-import { collectToolCalls, estimateTokens, fitState, isPinned, MARKER } from './state'
+import { collectToolCalls, estimateTokens, fitState, hasNote, isPinned } from './state'
 import type {
   CompactResult,
   CompactStats,
@@ -83,7 +83,7 @@ export const textKey = (role: string, text: string) => `t:${role}:${hash(text)}`
 export function collectTexts(messages: readonly Message[], preserve: number, protect?: Protect): TextCandidate[] {
   const out: TextCandidate[] = []
   messages.forEach((m, index) => {
-    if (isPinned(index, messages.length, preserve) || protect?.indexes.has(index) || m.text.includes(MARKER)) return
+    if (isPinned(index, messages.length, preserve) || protect?.indexes.has(index) || (m.role === 'user' && protect?.noUserText) || hasNote(m.text)) return
     if (m.text.length > (m.role === 'assistant' ? ASSISTANT_TEXT_MIN : USER_TEXT_MIN)) out.push({ index, role: m.role, chars: m.text.length })
   })
   return out
@@ -96,12 +96,14 @@ export function questionsFor(calls: readonly ToolCall[], texts: readonly TextCan
     const at = [options.keepThreshold]
     out.push({
       name: `call_${call.id}`,
+      callId: call.id,
       key: callKey(call),
       thresholds: at,
       instructions: `Tool call ${call.id} (${call.tool}) should stay in the history: knowing this call was made, with its input, still matters for what the assistant does next`,
     })
     out.push({
       name: `result_${call.id}`,
+      callId: call.id,
       key: resultKey(call),
       thresholds: at,
       instructions: `The full output of tool call ${call.id} (${call.tool}, ${call.resultChars} chars) should stay in the history verbatim: the assistant still needs its contents and re-running the tool would not do`,
@@ -124,8 +126,8 @@ export function questionsFor(calls: readonly ToolCall[], texts: readonly TextCan
 }
 
 /** A remembered score is reused unless it lies within the margin of a threshold. */
-export function reusable(score: number | undefined, thresholds: readonly number[]): score is number {
-  return typeof score === 'number' && thresholds.every((t) => Math.abs(score - t) >= REASK_MARGIN)
+export function reusable(score: number | undefined, thresholds: readonly number[], margin = REASK_MARGIN): score is number {
+  return typeof score === 'number' && thresholds.every((t) => Math.abs(score - t) >= margin)
 }
 
 /** Splits the questions into batches that, with the (always complete) state, fit one request. */
@@ -169,7 +171,7 @@ const MUTATING = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
 export const isMutating = (tool: string) => MUTATING.has(tool) || (tool.startsWith('mcp__') && /write|edit|create|delete|update/i.test(tool))
 
 export function abridgeText(text: string, head: number, tail: number): string {
-  if (text.includes(MARKER)) return text
+  if (hasNote(text)) return text
   const omitted = text.length - head - tail
   if (omitted <= ABRIDGE_SLACK) return text
   const signals = signalLines(text.slice(head, text.length - tail))
@@ -203,7 +205,7 @@ export function signalLines(middle: string, maxChars = SIGNAL_MAX_CHARS): string
 export const stubText = (chars: number) => `[earlier assistant message omitted by jev-compaction: ${chars} chars]`
 
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
-  if (text.length <= headChars + 120 || text.includes(MARKER)) return text
+  if (text.length <= headChars + 120 || hasNote(text)) return text
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : ''
   const signals = signalLines(text.slice(headChars))
   const out = `${head}${signals ? `${signals}\n` : ''}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
@@ -211,7 +213,7 @@ function truncatedResultText(text: string, isError: boolean, headChars: number):
 }
 
 function newText(message: Message, action: TextAction | undefined): string {
-  if (message.text.includes(MARKER)) return message.text
+  if (hasNote(message.text)) return message.text
   if (action === 'stub') return stubText(message.text.length)
   if (action === 'abridge') {
     return message.role === 'user'
@@ -300,10 +302,96 @@ export function messageChars(message: Message): number {
 
 const totalChars = (messages: readonly Message[]) => messages.reduce((sum, m) => sum + messageChars(m), 0)
 
+type Gathered = {
+  calls: ToolCall[]
+  texts: TextCandidate[]
+  questions: Question[]
+  scores: Map<string, number>
+  fresh: Scores
+  stateTokens: number
+  stateStage: string
+  requests: number
+  abandoned: number
+  failed: number
+  reused: number
+}
+
+/**
+ * Asks Jev what has no usable remembered score. A batch that fails or times out is dropped like an abandoned
+ * one (its items stay as they are) and the scores of the others are kept; only a run in which every batch
+ * failed throws, as nothing was learned.
+ */
+async function gather(messages: readonly Message[], ask: JevAsker, opts: Options, memory: Scores, run: RunOptions): Promise<Gathered> {
+  const calls = collectToolCalls(messages, opts.preserveRecentMessages, run.protect)
+  const texts = collectTexts(messages, opts.preserveRecentMessages, run.protect)
+  const questions = questionsFor(calls, texts, messages, opts)
+  const scores = new Map<string, number>()
+  const fresh: Scores = {}
+  const toAsk: Question[] = []
+  for (const q of questions) {
+    const remembered = memory[q.key]
+    if (reusable(remembered, q.thresholds, run.reuseAll ? 0 : REASK_MARGIN)) scores.set(q.name, remembered)
+    else toAsk.push(q)
+  }
+  const g: Gathered = { calls, texts, questions, scores, fresh, stateTokens: 0, stateStage: '', requests: 0, abandoned: 0, failed: 0, reused: questions.length - toAsk.length }
+  if (toAsk.length === 0) return g
+  const fitted = fitState(messages, calls, opts)
+  g.stateTokens = fitted.tokens
+  g.stateStage = fitted.stage
+  // A text the state no longer shows cannot be judged and stays as it is.
+  const askable = toAsk.filter(
+    (q) => (q.textIndex === undefined || fitted.visibleTexts.has(q.textIndex)) && (q.callId === undefined || fitted.visibleCalls.has(q.callId)),
+  )
+  const batches = batchQuestions(askable, fitted.tokens, opts).slice(0, run.maxBatches ?? Infinity)
+  let firstError: unknown
+  for (let at = 0; at < batches.length; at += MAX_PARALLEL_REQUESTS) {
+    if (at > 0 && run.stop?.()) {
+      g.abandoned += batches.slice(at).reduce((n, b) => n + b.length, 0)
+      break
+    }
+    const round = batches.slice(at, at + MAX_PARALLEL_REQUESTS)
+    g.requests += round.length
+    const answered = await Promise.all(
+      round.map((batch) =>
+        ask(fitted.state, Object.fromEntries(batch.map((q) => [q.name, { type: 'noul' as const, instructions: q.instructions }]))).then(
+          (answers) => ({ answers }),
+          (error: unknown) => ({ error }),
+        ),
+      ),
+    )
+    for (const [i, result] of answered.entries()) {
+      const batch = round[i] ?? []
+      if ('error' in result) {
+        firstError ??= result.error
+        g.failed += batch.length
+        continue
+      }
+      for (const q of batch) {
+        const p = result.answers[q.name]
+        if (p === undefined) {
+          firstError ??= new Error(`Invalid Jev answer for ${q.name}`)
+          g.failed++
+          continue
+        }
+        scores.set(q.name, p)
+        fresh[q.key] = p
+      }
+    }
+  }
+  if (firstError !== undefined && Object.keys(fresh).length === 0) throw firstError
+  return g
+}
+
+/** Scores up to `maxBatches` unscored candidates and returns what Jev answered, to be remembered; changes nothing. */
+export async function prescore(messages: readonly Message[], ask: JevAsker, options: Partial<Options>, memory: Scores, run: RunOptions): Promise<{ scores: Scores; requests: number; pending: number }> {
+  const g = await gather(messages, ask, resolveOptions(options), memory, { ...run, reuseAll: true })
+  return { scores: g.fresh, requests: g.requests, pending: g.questions.length - g.reused - Object.keys(g.fresh).length }
+}
+
 /**
  * Asks Jev, for every tool call and every long text outside the pinned first and newest messages,
  * whether it must stay, then rebuilds the transcript. Remembered scores (`memory`) are reused unless
- * near a threshold. Throws when Jev fails or the history cannot be fitted; the caller decides.
+ * near a threshold. Throws when nothing could be scored or the history cannot be fitted; the caller decides.
  */
 export async function compact(
   messages: readonly Message[],
@@ -313,53 +401,7 @@ export async function compact(
   run: RunOptions = {},
 ): Promise<CompactResult> {
   const opts = resolveOptions(options)
-  const calls = collectToolCalls(messages, opts.preserveRecentMessages, run.protect)
-  const texts = collectTexts(messages, opts.preserveRecentMessages, run.protect)
-  const questions = questionsFor(calls, texts, messages, opts)
-  const scores = new Map<string, number>()
-  const fresh: Scores = {}
-  const toAsk: Question[] = []
-  for (const q of questions) {
-    const remembered = memory[q.key]
-    if (reusable(remembered, q.thresholds)) scores.set(q.name, remembered)
-    else toAsk.push(q)
-  }
-
-  let stateTokens = 0
-  let stateStage = ''
-  let requests = 0
-  let abandoned = 0
-  if (toAsk.length > 0) {
-    const fitted = fitState(messages, calls, opts)
-    stateTokens = fitted.tokens
-    stateStage = fitted.stage
-    // A text the state no longer shows cannot be judged and stays as it is.
-    const askable = toAsk.filter((q) => q.textIndex === undefined || fitted.visibleTexts.has(q.textIndex))
-    const batches = batchQuestions(askable, fitted.tokens, opts)
-    for (let at = 0; at < batches.length; at += MAX_PARALLEL_REQUESTS) {
-      if (run.stop?.()) {
-        abandoned = batches.slice(at).reduce((n, b) => n + b.length, 0)
-        break
-      }
-      requests += Math.min(MAX_PARALLEL_REQUESTS, batches.length - at)
-      const answered = await Promise.all(
-        batches.slice(at, at + MAX_PARALLEL_REQUESTS).map((batch) =>
-          ask(
-            fitted.state,
-            Object.fromEntries(batch.map((q) => [q.name, { type: 'noul' as const, instructions: q.instructions }])),
-          ),
-        ),
-      )
-      for (const [i, answers] of answered.entries()) {
-        for (const q of batches[at + i] ?? []) {
-          const p = answers[q.name]
-          if (p === undefined) throw new Error(`Invalid Jev answer for ${q.name}`)
-          scores.set(q.name, p)
-          fresh[q.key] = p
-        }
-      }
-    }
-  }
+  const { calls, texts, scores, fresh, stateTokens, stateStage, requests, abandoned, failed, reused } = await gather(messages, ask, opts, memory, run)
 
   const score = (name: string) => scores.get(name) ?? 1
   const tools = new Map<string, ToolAction>()
@@ -396,8 +438,9 @@ export async function compact(
     stateTokens,
     stateStage,
     requests,
-    reused: questions.length - toAsk.length,
-    abandoned,
+    reused,
+    abandoned: abandoned + failed,
+    failed,
     ...stats,
   }
   return { messages: out, stats: result, scores: fresh }

@@ -77,6 +77,20 @@
       "default": 50000,
       "required": false
     },
+    "prescoreMarginTokens": {
+      "type": "number",
+      "title": "Pre-scoring margin (tokens)",
+      "description": "From this far below the trigger on, each finished turn asks Jev about part of the backlog, so the compaction at the trigger mostly reuses scores.",
+      "default": 100000,
+      "required": false
+    },
+    "prescoreBatches": {
+      "type": "number",
+      "title": "Pre-scoring batches per turn",
+      "description": "At most this many Jev requests are made per turn ahead of time.",
+      "default": 4,
+      "required": false
+    },
     "jevTimeoutMs": {
       "type": "number",
       "title": "Jev request timeout (ms)",

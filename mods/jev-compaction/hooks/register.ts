@@ -1,6 +1,6 @@
 import type { EngineInterface, Next, Register, SessionCompactInput, TurnCompleteInput } from 'claude-code'
 
-import { compact } from './compact'
+import { compact, prescore } from './compact'
 import { jevAsker } from './jev'
 import { DEFAULT_KEY_FILE, keyFromFile, redact } from './key'
 import { DEFAULTS, estimateAfter, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
@@ -15,8 +15,6 @@ const NOW_VALID_MS = 60_000
 const MAX_SCORES = 3000
 // `$.session.messages()` and so, it appears, a compaction's transcript are the newest 4096 only.
 const TRANSCRIPT_CAP = 4096
-// Left of the hook's own time budget for everything but the Jev requests.
-const BUDGET_RESERVE_MS = 1500
 const NO_STATS = { applied: 0, deferred: 0, fallbacks: 0, freedTokens: 0, requests: 0 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
@@ -24,7 +22,7 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 function summary(r: CompactResult): string {
   const s = r.stats
-  return `tools kept ${s.toolsKept}, truncated ${s.resultsTruncated}, dropped ${s.callsDropped}; texts kept ${s.textsKept}, abridged ${s.textsAbridged}, stubbed ${s.textsStubbed}; ${s.requests} Jev request(s)`
+  return `tools kept ${s.toolsKept}, truncated ${s.resultsTruncated}, dropped ${s.callsDropped}; texts kept ${s.textsKept}, abridged ${s.textsAbridged}, stubbed ${s.textsStubbed}; ${s.requests} Jev request(s)${s.abandoned > 0 ? `; ${s.abandoned} items unscored` : ''}`
 }
 
 let config: Config = DEFAULTS
@@ -33,6 +31,7 @@ let compacting = false
 let cachedKey: string | undefined
 let isNow = false
 let nowAt = 0
+let interactive = true
 // Set by `/jev-compact now`: $.session.compact() is refused inside a command, and from a timer the engine skips this
 // plugin's compaction hook (the built-in summary would run), so the next turn.complete does it.
 let nowPending = false
@@ -76,56 +75,65 @@ async function remember($: EngineInterface, memory: Record<string, number>, fres
   await $.state.set(SCORES, merged)
 }
 
-/** The main conversation's tool results and user messages that hold images or documents. */
-async function protection($: EngineInterface, messages: SessionCompactInput['messages']): Promise<Protect> {
+/**
+ * Tool results of the main conversation that hold images or documents, and whether any user message does.
+ * The Messages API form is normalised and cannot be matched to the rows reliably, so with media in a user
+ * message no user text is abridged at all.
+ */
+async function protection($: EngineInterface): Promise<Protect> {
   const api = await $.session.messages({ as: 'api' })
   const ids = new Set<string>()
-  const withMedia = new Set<string>()
+  let noUserText = false
   for (const m of api) {
-    let media = false
     for (const block of m.content) {
       if (block.type === 'tool_result') {
         const inner = block['content']
         if (Array.isArray(inner) && inner.some((b) => (b as { type?: string } | null)?.type !== 'text')) ids.add(String(block['tool_use_id']))
-      } else if (block.type === 'image' || block.type === 'document') media = true
+      } else if ((block.type === 'image' || block.type === 'document') && m.role === 'user') noUserText = true
     }
-    if (media && m.role === 'user') withMedia.add(m.content.map((b) => (b.type === 'text' ? String(b['text']) : '')).join(''))
   }
-  const indexes = new Set<number>()
-  messages.forEach((m, i) => {
-    if (m.role === 'user' && m.text !== '' && withMedia.has(m.text)) indexes.add(i)
-  })
-  return { ids, indexes }
+  return { ids, indexes: new Set(), noUserText }
 }
 
-/** One Jev request, abandoned with an error after `ms`: `$.http.fetch` has no timeout of its own. */
+/**
+ * One Jev request, abandoned with an error after `ms`: `$.http.fetch` has no timeout and cannot be cancelled, so
+ * the request is only left behind. The timeout is a `$.clock.after` timer, not a `$.clock.sleep`: a clock wait counts
+ * against the hook's 10 s budget, a `$` call in flight does not.
+ */
 async function fetchWithin($: EngineInterface, url: string, init: { method?: string; headers?: Record<string, string>; body?: string } | undefined, ms: number) {
-  const stop = new AbortController()
-  const timer = $.clock.sleep(ms, { signal: stop.signal }).then(() => {
-    throw new Error(`Jev request timed out after ${ms} ms`)
+  let timer: { cancel: () => void } | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = $.clock.after(ms, () => reject(new Error(`Jev request timed out after ${ms} ms`)))
   })
-  timer.catch(() => undefined)
+  late.catch(() => undefined)
   try {
-    return await Promise.race([$.http.fetch(url, init), timer])
+    return await Promise.race([$.http.fetch(url, init), late])
   } finally {
-    stop.abort()
+    timer?.cancel()
   }
 }
 
-async function attempt($: EngineInterface, e: SessionCompactInput, key: string, tokens: number | undefined, window: number, budgetMs: number) {
-  const { value: memory = {} } = await $.state.get(SCORES)
-  const protect = await protection($, e.messages)
-  const started = Date.now()
-  const ask = jevAsker(
+function asker($: EngineInterface, key: string, timeoutMs: number, started: number, budgetMs: number) {
+  return jevAsker(
     async (url, init) => {
       const left = Math.max(1000, budgetMs - (Date.now() - started))
-      const r = await fetchWithin($, url, init, Math.min(config.jevTimeoutMs, left))
+      const r = await fetchWithin($, url, init, Math.min(timeoutMs, left))
       return { status: r.status, ok: r.ok, text: r.text }
     },
     key,
     config.model,
   )
-  const result = await compact(e.messages, ask, config, memory, { protect, stop: () => Date.now() - started >= budgetMs })
+}
+
+async function attempt($: EngineInterface, e: SessionCompactInput, key: string, tokens: number | undefined, window: number) {
+  const { value: memory = {} } = await $.state.get(SCORES)
+  const protect = await protection($)
+  const started = Date.now()
+  const budgetMs = config.jevTotalMs
+  const ask = asker($, key, config.jevTimeoutMs, started, budgetMs)
+  // No round starts that could not finish inside the total time.
+  const stop = () => Date.now() - started > budgetMs - config.jevTimeoutMs
+  const result = await compact(e.messages, ask, config, memory, { protect, stop })
   await remember($, memory, result.scores)
   const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / 3.5)
   const tokensAfter = estimateAfter(tokensBefore, result.stats.charsBefore, result.stats.charsAfter)
@@ -133,11 +141,14 @@ async function attempt($: EngineInterface, e: SessionCompactInput, key: string, 
 }
 
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
-  if (e.agentId !== undefined || e.trigger === 'precompute') return next(e)
-  // The user asked for something specific, or the list may be cut: leave it to the built-in summary.
-  if (e.instructions || e.messages.length >= TRANSCRIPT_CAP) return next(e)
+  if (e.agentId !== undefined || e.trigger === 'precompute' || !Array.isArray(e.messages)) return next(e)
   const now = isNow && Date.now() - nowAt < NOW_VALID_MS && (e.trigger === 'plugin' || e.trigger === 'manual')
   isNow = false
+  // The user asked for something specific: that is the built-in summary's job.
+  if (e.instructions) return next(e)
+  // The list may be cut. A soft compaction waits (the engine compacts at its own limit); only auto and manual, which
+  // must produce something, fall back.
+  if (e.messages.length >= TRANSCRIPT_CAP) return e.trigger === 'plugin' || now ? { skip: 'jev-compaction: transcript over 4096 messages' } : next(e)
   let key: string | undefined
   let verdict: Verdict
   let usage: { tokens?: number; window: number } | undefined
@@ -146,9 +157,12 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
     usage = (await $.session.usage()).context
     key = await resolveKey($)
     if (!key) throw new Error('no Jev API key (environment or key file)')
-    const budgetMs = Math.max(1000, Math.min(config.jevTotalMs, next.budget.remainingMs - BUDGET_RESERVE_MS))
-    done = await attempt($, e, key, usage.tokens, usage.window, budgetMs)
+    done = await attempt($, e, key, usage.tokens, usage.window)
     verdict = judge({ trigger: e.trigger, isNow: now, ...done, minFreedTokens: config.minFreedTokens })
+    // Part of the backlog is still unscored at the hard limit: keep what was learned and go on next time.
+    if (verdict.act === 'next' && e.trigger === 'plugin' && done.result.stats.abandoned > 0) {
+      verdict = { act: 'skip', reason: `${verdict.reason}; ${done.result.stats.abandoned} items still unscored` }
+    }
   } catch (err) {
     const text = redact(message(err), key)
     if (/\((401|403)\)/.test(text)) cachedKey = undefined
@@ -179,7 +193,7 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
 
 // `session.measure` fires while the turn still runs, where `$.session.compact()` rejects; `turn.complete` is after it.
 async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Next<'turn.complete'>) {
-  if ((e as { agentId?: string }).agentId !== undefined) return next(e)
+  if ((e as { agentId?: string }).agentId !== undefined || e.reason !== 'answer' || !interactive) return next(e)
   if (compacting) return next(e)
   compacting = true
   try {
@@ -202,6 +216,8 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
         lastApplied = undefined
         await $.session.compact()
         await $.state.set(GUARD, guardAfter(tokens, lastApplied))
+      } else if (tokens >= t.trigger - config.prescoreMarginTokens && tokens < t.trigger) {
+        await prescoreSome($)
       }
     }
   } catch (err) {
@@ -210,6 +226,27 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
     compacting = false
   }
   return next(e)
+}
+
+// Scores part of the backlog ahead of time, so that the compaction at the trigger mostly reuses scores.
+async function prescoreSome($: EngineInterface) {
+  const key = await resolveKey($)
+  if (!key) return
+  const messages = await $.session.messages()
+  if (messages.length >= TRANSCRIPT_CAP) return
+  const { value: memory = {} } = await $.state.get(SCORES)
+  const started = Date.now()
+  const ask = asker($, key, config.jevTimeoutMs, started, config.jevTotalMs)
+  try {
+    const { scores, requests } = await prescore(messages, ask, config, memory, { protect: await protection($), maxBatches: config.prescoreBatches })
+    if (Object.keys(scores).length > 0) {
+      await remember($, memory, scores)
+      await bump($, { requests })
+      $.ui.log(`jev-compaction: pre-scored ${Object.keys(scores).length} items in ${requests} request(s)`)
+    }
+  } catch (err) {
+    $.ui.log(`jev-compaction: pre-scoring skipped: ${redact(message(err), key)}`)
+  }
 }
 
 async function onCommand($: EngineInterface, args: string) {
@@ -230,6 +267,7 @@ export const register: Register = (on, options) => {
   compacting = isNow = nowPending = false
   cachedKey = undefined
   on('session.start', async ($, e, next) => {
+    interactive = (e as { isInteractive?: boolean }).isInteractive !== false
     try {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now) or show totals (stats)', argumentHint: 'now | stats' })
     } catch (err) {

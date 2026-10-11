@@ -1,7 +1,10 @@
 // Ported from fast-jev-compaction (MIT), extended to judge message text.
 import type { Message, Options, Protect, ToolCall } from './types'
 
-export const MARKER = 'jev-compaction'
+/** The notes this mod leaves in cut text; an item that carries one is never judged or cut again. */
+const NOTE =
+  /\[jev-compaction truncated \d+ chars|\[… \d+ chars omitted by jev-compaction …\]|\[earlier assistant message omitted by jev-compaction:|\[jev-compaction dropped /
+export const hasNote = (text: string) => NOTE.test(text)
 
 export const STATE_CONTEXT =
   'A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, the full output of that call, or the full text of one message (named by its history index `i`) still needs to stay in the history verbatim. Whatever is not kept is deleted or shortened permanently, but the assistant can always re-run a tool or re-read a file.'
@@ -20,6 +23,8 @@ export type FittedState = {
   stage: string
   /** Messages whose text the state still shows, so a question about it can be judged. */
   visibleTexts: Set<number>
+  /** Tool calls (`t1`, ...) the state still lists. */
+  visibleCalls: Set<string>
 }
 
 const INPUT_CHARS = [1000, 200, 60] as const
@@ -57,7 +62,7 @@ export function collectToolCalls(messages: readonly Message[], preserve: number,
   const guarded = new Set<number>(protect?.indexes)
   messages.forEach((message, index) => {
     for (const r of message.toolResults ?? []) {
-      results.set(r.tool_use_id, { index, chars: r.text.length, isError: r.isError, marked: r.text.includes(MARKER) })
+      results.set(r.tool_use_id, { index, chars: r.text.length, isError: r.isError, marked: hasNote(r.text) })
       if (protect?.ids.has(r.tool_use_id)) guarded.add(index)
     }
   })
@@ -179,6 +184,9 @@ export function fitState(
     tokens,
     stage,
     visibleTexts: new Set(history.filter((e) => e.text.length > 0 && !collapsed.has(e.i)).map((e) => e.i)),
+    visibleCalls: new Set(
+      history.flatMap((e) => (e.tool_calls ?? []).map((c) => (typeof c === 'string' ? (c.split(' ')[0] ?? '') : c.id))),
+    ),
   })
 
   let history: HistoryEntry[] = []
@@ -263,6 +271,30 @@ export function fitState(
   perEntry = history.map(entryTokens)
   tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0)
   if (fits()) return fitted(history, tokens, 'old calls merged')
+
+  // Last resort: show the oldest part and the pinned ends only; what is not shown cannot be judged and stays.
+  // Folded runs lose their newest call lines one at a time.
+  while (!fits()) {
+    let last = -1
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (!pinned(history[i]!)) {
+        last = i
+        break
+      }
+    }
+    if (last < 0) break
+    const entry = history[last]!
+    const lines = entry.tool_calls
+    if (lines && lines.length > 1) {
+      const line = (lines as string[]).pop() as string
+      tokens -= estimateTokens(line) + 1
+    } else {
+      tokens -= perEntry[last] ?? 0
+      history.splice(last, 1)
+      perEntry.splice(last, 1)
+    }
+  }
+  if (fits()) return fitted(history, tokens, 'newest old messages left out')
 
   throw new Error(`history too large for Jev (~${tokens} tokens after truncation, limit ${options.maxStateTokens})`)
 }

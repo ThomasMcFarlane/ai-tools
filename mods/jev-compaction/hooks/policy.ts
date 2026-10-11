@@ -11,6 +11,8 @@ export type Config = {
   softMinFreedTokens: number
   softMinFreedPercent: number
   regrowTokens: number
+  prescoreMarginTokens: number
+  prescoreBatches: number
   jevTimeoutMs: number
   jevTotalMs: number
   model: string
@@ -35,6 +37,8 @@ export const DEFAULTS: Config = {
   softMinFreedTokens: 100_000,
   softMinFreedPercent: 25,
   regrowTokens: 50_000,
+  prescoreMarginTokens: 100_000,
+  prescoreBatches: 4,
   jevTimeoutMs: 8_000,
   jevTotalMs: 20_000,
   model: 'jev-latest',

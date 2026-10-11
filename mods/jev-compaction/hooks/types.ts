@@ -44,6 +44,8 @@ export type Question = {
   thresholds: number[]
   /** For a text question, the message index (it must be visible in the state). */
   textIndex?: number
+  /** For a tool question, the call id (`t3`); it must be listed in the state. */
+  callId?: string
 }
 
 /** Jev's keep probabilities remembered by fingerprint. */
@@ -65,6 +67,7 @@ export type CompactStats = {
   textsAbridged: number
   textsStubbed: number
   abandoned: number
+  failed: number
   pinned: number
   stateTokens: number
   stateStage: string
@@ -85,11 +88,20 @@ export type RunOptions = {
   protect?: Protect
   /** Checked before each round of requests; true abandons the remaining batches (their items stay). */
   stop?: () => boolean
+  /** Ask at most this many batches (pre-scoring); the rest is left for later. */
+  maxBatches?: number
+  /** Reuse every remembered score whatever its distance from a threshold. */
+  reuseAll?: boolean
 }
 
 export type JevAsker = (state: object, questions: Record<string, { type: 'noul'; instructions: string }>) => Promise<Record<string, number>>
 
 /** Messages that hold non-text content (images, documents) and must not be rebuilt. */
-export type Protect = { ids: ReadonlySet<string>; indexes: ReadonlySet<number> }
+export type Protect = {
+  ids: ReadonlySet<string>
+  indexes: ReadonlySet<number>
+  /** The session holds images or documents in user messages: no user text is abridged. */
+  noUserText?: boolean
+}
 
 export type ApplyCounts = { truncated: number; dropped: number; abridged: number; stubbed: number }

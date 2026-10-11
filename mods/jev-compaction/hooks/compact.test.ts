@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { applyDecisions, callKey, compact, hash, resultKey, signalLines, textKey } from './compact'
+import { applyDecisions, callKey, collectTexts, compact, hash, prescore, resultKey, signalLines, textKey } from './compact'
 import type { JevAsker, Message, Scores } from './types'
 
 const long = (n: number, ch = 'x') => ch.repeat(n)
@@ -298,5 +298,94 @@ describe('safety of the rebuild', () => {
     const { messages: out, stats } = await compact(messages, fakeJev({ text_m1: 0.3 }).ask)
     expect(out[1]).toBe(messages[1])
     expect(stats).toMatchObject({ textsAbridged: 0, textsKept: 1 })
+  })
+})
+
+describe('partial failures, pre-scoring and notes', () => {
+  const body = (n: number) => 'abcdefghij'.repeat(n / 10)
+  // Enough calls that the questions need several batches.
+  const many = (n = 24) => [user('start'), ...Array.from({ length: n }, (_, i) => call(`k${i}`, long(2000, 'x'), { file_path: `/src/f${i}.ts` })).flat(), ...tail()]
+  const small = { maxStateTokens: 4000, maxRequestTokens: 4500 }
+
+  // Answers the first batch, fails the others.
+  const flaky = (failFrom: number) => {
+    let n = 0
+    const ask: JevAsker = async (_s, questions) => {
+      if (n++ >= failFrom) throw new Error('Jev request timed out after 8000 ms')
+      return Object.fromEntries(Object.keys(questions).map((name) => [name, 0.05]))
+    }
+    return ask
+  }
+
+  test('a failed batch is left unscored while the answered ones count and their scores are returned', async () => {
+    const messages = many()
+    const { stats, scores, messages: out } = await compact(messages, flaky(1), small)
+    expect(stats.requests).toBeGreaterThan(1)
+    expect(stats.failed).toBeGreaterThan(0)
+    expect(stats.abandoned).toBe(stats.failed)
+    expect(Object.keys(scores).length).toBeGreaterThan(0)
+    expect(stats.callsDropped).toBeGreaterThan(0)
+    expect(stats.callsDropped).toBeLessThan(24)
+    expect(pairsIntact(out)).toBe(true)
+  })
+
+  test('when every batch fails nothing was learned and compact throws', async () => {
+    await expect(compact(many(), flaky(0), small)).rejects.toThrow(/timed out/)
+  })
+
+  test('the stop check abandons later rounds but never the first', async () => {
+    const jev = fakeJev({}, 0.05)
+    const { stats } = await compact(many(80), jev.ask, { ...small }, {}, { stop: () => true })
+    expect(stats.requests).toBeGreaterThan(0)
+    expect(stats.requests).toBeLessThanOrEqual(4)
+    expect(stats.abandoned).toBeGreaterThan(0)
+  })
+
+  test('pre-scoring asks at most maxBatches, reuses every remembered score and changes nothing', async () => {
+    const messages = many()
+    const jev = fakeJev({}, 0.05)
+    const first = await prescore(messages, jev.ask, small, {}, { maxBatches: 1 })
+    expect(jev.requests()).toBe(1)
+    expect(Object.keys(first.scores).length).toBeGreaterThan(0)
+    expect(first.pending).toBeGreaterThan(0)
+    const again = await prescore(messages, jev.ask, small, { ...first.scores }, { maxBatches: 1 })
+    expect(Object.keys(again.scores).filter((k) => k in first.scores)).toEqual([])
+    // a remembered score right at a threshold is not asked again by pre-scoring
+    const keys = Object.keys(first.scores)
+    const near = Object.fromEntries(keys.map((k) => [k, 0.5]))
+    const before = jev.requests()
+    await prescore(messages, jev.ask, small, { ...near, ...again.scores }, { maxBatches: 1 })
+    expect(Object.keys((await prescore(messages, jev.ask, small, near, { maxBatches: 1 })).scores).filter((k) => keys.includes(k))).toEqual([])
+    expect(jev.requests()).toBeGreaterThan(before)
+  })
+
+  test('only the mod notes pin an item: a path that contains the name does not', async () => {
+    const path = '/home/u/.worktrees/jev-compaction/src/a.ts'
+    const messages = [user('start'), assistant(`I edited ${path} ` + body(1000)), user('ok'), ...call('p', `${path}\n` + long(2000), { file_path: path }), ...tail()]
+    expect(collectTexts(messages, 6).map((t) => t.index)).toEqual([1])
+    const jev = fakeJev({}, 0.05)
+    await compact(messages, jev.ask)
+    expect(jev.asked.sort()).toEqual(['call_t1', 'result_t1', 'text_m1'])
+  })
+
+  test('with media in a user message no user text is judged', async () => {
+    const messages = [user('start'), assistant('ok'), user(body(3000)), assistant(body(1500)), ...tail()]
+    const jev = fakeJev({}, 0)
+    const { messages: out } = await compact(messages, jev.ask, {}, {}, { protect: { ids: new Set(), indexes: new Set(), noUserText: true } })
+    expect(jev.asked).toEqual(['text_m3'])
+    expect(out[2]).toBe(messages[2])
+  })
+})
+
+describe('a history too big for one state', () => {
+  test('the oldest part is judged and the newest unpinned part stays, instead of failing', async () => {
+    const messages = [user('start'), ...Array.from({ length: 120 }, (_, i) => call(`k${i}`, long(300, 'x'), { file_path: `/src/${'long/'.repeat(8)}f${i}.ts` })).flat(), ...tail()]
+    const jev = fakeJev({}, 0.05)
+    const { stats, messages: out } = await compact(messages, jev.ask, { maxStateTokens: 2500, maxRequestTokens: 3200 })
+    expect(stats.stateStage).toBe('newest old messages left out')
+    expect(stats.callsDropped).toBeGreaterThan(0)
+    expect(stats.callsDropped).toBeLessThan(120)
+    expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id).slice(-3)).toEqual(['k119', 'k118', 'k117'].reverse())
+    expect(pairsIntact(out)).toBe(true)
   })
 })
