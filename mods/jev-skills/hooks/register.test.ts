@@ -256,8 +256,24 @@ test('/clear resets the shortlist state', async ($, on) => {
   await submit($, 'Please review the pull request for the billing module')
   await listing($)
   await $.session.end({ reason: 'clear', sessionId: 's', resume: { kind: 'none' } } as never)
-  expect((await command($, 'why')).text).toMatch(/of 5 skills/)
+  expect((await command($, 'why')).text).toMatch(/of 0 skills/)
   expect((await submit($, 'Fill in the PDF form for the audit please')).context ?? []).toEqual([])
+})
+
+test('a first listing kept in full is never shortlisted later, even by a full re-send', async ($, on) => {
+  const { requests } = await boot($, on, { p: { review: 0.9 } })
+  await submit($, 'hi')
+  expect((await listing($)).text).toBe(LISTING)
+  await submit($, 'Please review the pull request for the billing module')
+  expect((await listing($)).text).toBe(LISTING)
+  expect((await listing($, {}, '- extra: later')).text).toBe('- extra: later')
+  expect(requests).toEqual([])
+})
+
+test('the hidden-name index is ordered by Jev score, best first', async ($, on) => {
+  await boot($, on, { p: { review: 0.9, notes: 0.2, pdf: 0.1, 'plugin-a:charts': 0.25, deploy: 0.05 } })
+  await submit($, 'Please review the pull request for the billing module')
+  expect((await listing($)).text).toContain('(names only): plugin-a:charts, notes, pdf, deploy.')
 })
 
 test('a full listing again (a compaction or resume) is shortlisted afresh', async ($, on) => {

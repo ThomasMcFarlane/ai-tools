@@ -73,7 +73,7 @@ async function bump($: EngineInterface, change: Partial<typeof NO_STATS>) {
   await $.state.set(STATS, next)
 }
 
-type Judged = { picks: Skill[]; requests: number; unscored: number }
+type Judged = { picks: Skill[]; requests: number; unscored: number; scores: ReadonlyMap<string, number> }
 
 /** Scores `candidates` for the prompt and records the judgement; throws when Jev cannot answer. */
 async function judge($: EngineInterface, at: 'listing' | 'prompt', candidates: readonly Skill[], prompt: string, earlier: readonly string[]): Promise<Judged> {
@@ -92,7 +92,7 @@ async function judge($: EngineInterface, at: 'listing' | 'prompt', candidates: r
     const picks = selectPicks(scores, candidates, config.minScore, config.maxPicks)
     await $.state.set(FAILS, { count: 0, until: 0 })
     await $.state.set(LAST, { at, prompt: prompt.slice(0, 120), top: topScores(scores), picks: picks.map((s) => s.name), requests, unscored })
-    return { picks, requests, unscored }
+    return { picks, requests, unscored, scores }
   } catch (err) {
     throw new Error(redact(message(err), key))
   }
@@ -122,7 +122,9 @@ async function onListing($: EngineInterface, e: { text: string; agentId?: string
   const roster = { ...known, ...Object.fromEntries(listed.map((s) => [s.name, s.description])) }
   await $.state.set(ROSTER, roster)
   const seen = new Set(listed.map((s) => s.name))
-  if (replaced && !Object.keys(known).every((n) => seen.has(n))) {
+  // Shortlist only the process's first listing, or a full re-send once shortlisting is under way; a kept-in-full listing stays so.
+  const first = Object.keys(known).length === 0
+  if (!first && (!replaced || !Object.keys(known).every((n) => seen.has(n)))) {
     // A delta or a partial repeat: it goes through as it is, at the tail, so the model sees its skills.
     const { value: shown = [] } = await $.state.get(SHOWN)
     await $.state.set(SHOWN, [...new Set([...shown, ...seen])])
@@ -135,9 +137,11 @@ async function onListing($: EngineInterface, e: { text: string; agentId?: string
   if (skipPrompt(prompt) || (await pausedNow($))) return next(e as never)
   try {
     const all = toSkills(roster)
-    const { picks, requests } = await judge($, 'listing', all, prompt, recent.slice(0, -1))
+    const { picks, requests, scores } = await judge($, 'listing', all, prompt, recent.slice(0, -1))
     const chosen = new Set(picks.map((s) => s.name))
-    const text = formatListing(picks, all.filter((s) => !chosen.has(s.name)).map((s) => s.name))
+    // Best score first, so the name index's cut-off drops the least relevant; fixed here for the whole process.
+    const hidden = all.filter((s) => !chosen.has(s.name)).sort((a, b) => (scores.get(b.name) ?? -1) - (scores.get(a.name) ?? -1))
+    const text = formatListing(picks, hidden.map((s) => s.name))
     await $.state.set(SHOWN, [...chosen])
     await $.state.set(REPLACED, true)
     await bump($, { listings: 1, requests, tokensBefore: estimateTokens(e.text), tokensAfter: estimateTokens(text) })
@@ -224,6 +228,7 @@ export const register: Register = (on, options) => {
       await $.state.set(REPLACED, false)
       await $.state.set(SHOWN, [])
       await $.state.set(RECENT, [])
+      await $.state.set(ROSTER, {})
     }
     return next(e)
   })
