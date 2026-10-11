@@ -170,7 +170,7 @@
     "keyFile": {
       "type": "string",
       "title": "Key file",
-      "description": "Path of a file with KEY=value lines holding AIS_SESSION_COMPACTION_JEV_API_KEY or TYPESAFE_API_KEY. Default: $HOME/.config/ai-tools/jev-compaction.env.",
+      "description": "Path of a file with KEY=value lines holding JEV_COMPACTION_API_KEY or TYPESAFE_API_KEY. Default: $HOME/.config/ai-tools/jev-compaction.env.",
       "required": false
     },
     "goal": {

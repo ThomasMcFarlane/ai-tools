@@ -23,13 +23,13 @@ No summary is written: the conversation stays real messages, only shorter.
 
 The key is never logged or shown. It is looked for, when a compaction first needs it, in:
 
-1. the environment variable `AIS_SESSION_COMPACTION_JEV_API_KEY`,
+1. the environment variable `JEV_COMPACTION_API_KEY`,
 2. the environment variable `TYPESAFE_API_KEY`,
-3. a key file: the `keyFile` option, default `$HOME/.config/ai-tools/jev-compaction.env`, with `KEY=value` lines and `#` comments. `AIS_SESSION_COMPACTION_JEV_API_KEY` is taken first, else `TYPESAFE_API_KEY`; an empty value counts as missing.
+3. a key file: the `keyFile` option, default `$HOME/.config/ai-tools/jev-compaction.env`, with `KEY=value` lines and `#` comments. `JEV_COMPACTION_API_KEY` is taken first, else `TYPESAFE_API_KEY`; an empty value counts as missing.
 
 ```
 # ~/.config/ai-tools/jev-compaction.env
-AIS_SESSION_COMPACTION_JEV_API_KEY=your-key-here
+JEV_COMPACTION_API_KEY=your-key-here
 ```
 
 Without a key a compaction is deferred (periodic) or left to the built-in summary (`auto`, `/compact`).

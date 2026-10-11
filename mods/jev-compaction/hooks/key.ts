@@ -20,7 +20,7 @@ export function parseEnvFile(text: string): Record<string, string> {
 /** The key from file contents: the session variable first, else `TYPESAFE_API_KEY`; empty counts as missing. */
 export function keyFromFile(text: string): string | undefined {
   const vars = parseEnvFile(text)
-  return vars['AIS_SESSION_COMPACTION_JEV_API_KEY'] || vars['TYPESAFE_API_KEY'] || undefined
+  return vars['JEV_COMPACTION_API_KEY'] || vars['TYPESAFE_API_KEY'] || undefined
 }
 
 /** Removes the key from a message that is about to be shown. */

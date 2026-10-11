@@ -40,7 +40,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const toasts: string[] = []
   const logs: string[] = []
   const compactCalls: any[] = []
-  mock.env(on, setup.env ?? { AIS_SESSION_COMPACTION_JEV_API_KEY: KEY, HOME: '/home/u' })
+  mock.env(on, setup.env ?? { JEV_COMPACTION_API_KEY: KEY, HOME: '/home/u' })
   on('fs.read', (_$: any, e: any) => {
     const text = (setup.files ?? {})[e.path]
     if (text === undefined) throw new Error('ENOENT')
@@ -174,7 +174,7 @@ test('a Jev error defers a soft compaction, falls back otherwise, and the key st
 test('the key file is read lazily: comment lines, TYPESAFE_API_KEY fallback, empty value ignored', async ($, on) => {
   const { requests } = await boot($, on, {
     env: { HOME: '/home/u' },
-    files: { '/home/u/.config/ai-tools/jev-compaction.env': '# keys\nAIS_SESSION_COMPACTION_JEV_API_KEY=\nTYPESAFE_API_KEY=file-key\n' },
+    files: { '/home/u/.config/ai-tools/jev-compaction.env': '# keys\nJEV_COMPACTION_API_KEY=\nTYPESAFE_API_KEY=file-key\n' },
     p: 0,
   })
   await compact($, 'plugin')
@@ -191,7 +191,7 @@ test('an environment key wins over the key file; TYPESAFE_API_KEY is the second 
 })
 
 test('keyFile option names another file', { options: { keyFile: '/etc/example/jev.env' } }, async ($, on) => {
-  const { requests } = await boot($, on, { env: {}, files: { '/etc/example/jev.env': 'export AIS_SESSION_COMPACTION_JEV_API_KEY="quoted"' } })
+  const { requests } = await boot($, on, { env: {}, files: { '/etc/example/jev.env': 'export JEV_COMPACTION_API_KEY="quoted"' } })
   await compact($, 'plugin')
   expect(requests[0]!.headers['authorization']).toBe('Bearer quoted')
 })

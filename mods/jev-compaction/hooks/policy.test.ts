@@ -108,17 +108,17 @@ describe('policy levels', () => {
 
 describe('key file', () => {
   test('parses KEY=value lines, comments, export and quotes', () => {
-    const text = '# a comment\n\nexport TYPESAFE_API_KEY="k-two"\nAIS_SESSION_COMPACTION_JEV_API_KEY = k-one # trailing\nOTHER=x\nnot a line\n'
-    expect(parseEnvFile(text)).toEqual({ TYPESAFE_API_KEY: 'k-two', AIS_SESSION_COMPACTION_JEV_API_KEY: 'k-one', OTHER: 'x' })
+    const text = '# a comment\n\nexport TYPESAFE_API_KEY="k-two"\nJEV_COMPACTION_API_KEY = k-one # trailing\nOTHER=x\nnot a line\n'
+    expect(parseEnvFile(text)).toEqual({ TYPESAFE_API_KEY: 'k-two', JEV_COMPACTION_API_KEY: 'k-one', OTHER: 'x' })
     expect(keyFromFile(text)).toBe('k-one')
   })
   test('falls back to TYPESAFE_API_KEY', () => {
     expect(keyFromFile('TYPESAFE_API_KEY=k-two\n')).toBe('k-two')
   })
   test('an empty value counts as missing, so the next variable is used', () => {
-    expect(keyFromFile('AIS_SESSION_COMPACTION_JEV_API_KEY=\nTYPESAFE_API_KEY=k-two')).toBe('k-two')
-    expect(keyFromFile('AIS_SESSION_COMPACTION_JEV_API_KEY=""\nTYPESAFE_API_KEY=')).toBeUndefined()
-    expect(keyFromFile('# AIS_SESSION_COMPACTION_JEV_API_KEY=commented\n')).toBeUndefined()
+    expect(keyFromFile('JEV_COMPACTION_API_KEY=\nTYPESAFE_API_KEY=k-two')).toBe('k-two')
+    expect(keyFromFile('JEV_COMPACTION_API_KEY=""\nTYPESAFE_API_KEY=')).toBeUndefined()
+    expect(keyFromFile('# JEV_COMPACTION_API_KEY=commented\n')).toBeUndefined()
   })
   test('redacts the key from a message', () => {
     expect(redact('bad key k-one in text', 'k-one')).toBe('bad key *** in text')

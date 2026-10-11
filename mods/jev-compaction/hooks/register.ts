@@ -42,10 +42,10 @@ let nowPending = false
 // Estimated tokens after the compaction this hook last applied; read by the trigger that asked for it.
 let lastApplied: number | undefined
 
-/** Environment `AIS_SESSION_COMPACTION_JEV_API_KEY`, then `TYPESAFE_API_KEY`, then the key file. */
+/** Environment `JEV_COMPACTION_API_KEY`, then `TYPESAFE_API_KEY`, then the key file. */
 async function resolveKey($: EngineInterface): Promise<string | undefined> {
   if (cachedKey) return cachedKey
-  const fromEnv = (await $.env.get('AIS_SESSION_COMPACTION_JEV_API_KEY')) || (await $.env.get('TYPESAFE_API_KEY'))
+  const fromEnv = (await $.env.get('JEV_COMPACTION_API_KEY')) || (await $.env.get('TYPESAFE_API_KEY'))
   if (fromEnv) return (cachedKey = fromEnv)
   let path = config.keyFile
   if (!path) {
