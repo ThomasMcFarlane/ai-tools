@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { callKey, compact, hash, resultKey, textKey } from './compact'
+import { callKey, compact, hash, resultKey, signalLines, textKey } from './compact'
 import type { JevAsker, Message, Scores } from './types'
 
 const long = (n: number, ch = 'x') => ch.repeat(n)
@@ -183,5 +183,43 @@ describe('score memory', () => {
   test('hash differs for different text', () => {
     expect(hash('a')).not.toBe(hash('b'))
     expect(callKey({ tool: 'Read', input: { a: 1, b: 2 } })).toBe(callKey({ tool: 'Read', input: { b: 2, a: 1 } }))
+  })
+})
+
+describe('failure lines survive compaction', () => {
+  const log = Array.from({ length: 600 }, (_, i) => `line ${i} ok`)
+  log[300] = 'FAIL  tests/example.test.ts > adds > src/example.ts:88'
+  const logText = log.join('\n')
+
+  test('a truncated tool result keeps the FAIL line with one line of context, after the head and before the note', async () => {
+    const messages = [user('start'), ...call('a', logText), ...tail()]
+    const { messages: out } = await compact(messages, fakeJev({ call_t1: 0.9, result_t1: 0.1 }).ask)
+    const text = out.flatMap((m) => m.toolResults ?? [])[0]!.text
+    expect(text.startsWith(logText.slice(0, 300))).toBe(true)
+    const fail = text.indexOf('FAIL  tests/example.test.ts > adds > src/example.ts:88')
+    expect(fail).toBeGreaterThan(300)
+    expect(text).toContain('line 299 ok\nFAIL  tests/example.test.ts > adds > src/example.ts:88\nline 301 ok')
+    expect(text).toContain('line 301 ok')
+    expect(text).not.toContain('line 302 ok')
+    expect(fail).toBeLessThan(text.indexOf('[jev-compaction truncated'))
+  })
+
+  test('abridged assistant and user text keep failure lines in the omitted middle', async () => {
+    const filler = (n: number) => Array.from({ length: n }, (_, i) => `row ${i} fine`).join('\n')
+    const a = `${filler(100)}\nTypeError: cannot read x\n${filler(100)}`
+    const u = `${filler(150)}\nexit code 2\n${filler(150)}`
+    const messages = [user('start'), assistant(a), user('ok'), assistant('ok'), user(u), ...tail()]
+    const { messages: out } = await compact(messages, fakeJev({ text_m1: 0.3, text_m4: 0.1 }).ask)
+    expect(out[1]!.text).toContain('TypeError: cannot read x')
+    expect(out[1]!.text.indexOf('TypeError')).toBeLessThan(out[1]!.text.indexOf('omitted by jev-compaction'))
+    expect(out[4]!.text).toContain('exit code 2')
+  })
+
+  test('signal lines are capped at 1500 characters in original order', () => {
+    const noisy = Array.from({ length: 400 }, (_, i) => `error number ${i}`).join('\n')
+    const kept = signalLines(noisy)
+    expect(kept.length).toBeLessThanOrEqual(1500)
+    expect(kept.startsWith('error number 0\n')).toBe(true)
+    expect(signalLines('all fine\nnothing here')).toBe('')
   })
 })

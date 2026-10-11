@@ -6,6 +6,7 @@ Each compaction asks Jev which parts of the history still matter and then:
 
 - **prunes tool calls**: a result Jev no longer needs is truncated to its first 300 characters plus a note; a call and its result that Jev no longer needs are both dropped. Calls and results are paired by `tool_use_id`, so a `tool_use` never loses its `tool_result` or the other way round.
 - **shortens old text**: an assistant message longer than 400 characters is kept, abridged (first 600 and last 300 characters plus a `[… N chars omitted by jev-compaction …]` note) or replaced by a one-line stub, by Jev's probability. User text is never stubbed or dropped; only user text longer than 2000 characters may be abridged (first 1200 and last 600 characters).
+- keeps failure lines: whenever a result is truncated or text abridged, lines in the cut part that match error words (`error`, `fail`, `exception`, `traceback`, `panic`, `denied`, `warning`, `expected`, `not found`, `exit code N`, `status 4xx/5xx` and similar), with one line of context either side, stay after the head (at most 1500 characters, original order).
 - always leaves the first message and the newest six messages untouched.
 
 No summary is written: the conversation stays real messages, only shorter.

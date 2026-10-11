@@ -158,7 +158,31 @@ export function decideText(role: 'user' | 'assistant', p: number, options: Pick<
 export function abridgeText(text: string, head: number, tail: number): string {
   const omitted = text.length - head - tail
   if (omitted <= 80) return text
-  return `${text.slice(0, head)}\n[… ${omitted} chars omitted by jev-compaction …]\n${text.slice(-tail)}`
+  const signals = signalLines(text.slice(head, text.length - tail))
+  return `${text.slice(0, head)}\n${signals ? `${signals}\n` : ''}[… ${omitted} chars omitted by jev-compaction …]\n${text.slice(-tail)}`
+}
+
+export const SIGNAL_LINES =
+  /\b(error|errors|fail|failed|failure|failing|exception|traceback|panic|fatal|denied|refused|warning|warn|assert\w*|expected|received|not found|cannot|unable|segfault|exit code [1-9]|status [45]\d\d)\b/i
+export const SIGNAL_MAX_CHARS = 1500
+
+/** Lines of the dropped middle that look like failures, with one line of context either side, in order. */
+export function signalLines(middle: string, maxChars = SIGNAL_MAX_CHARS): string {
+  const lines = middle.split('\n')
+  const keep = new Set<number>()
+  lines.forEach((line, i) => {
+    if (!SIGNAL_LINES.test(line)) return
+    for (const j of [i - 1, i, i + 1]) if (j >= 0 && j < lines.length) keep.add(j)
+  })
+  const out: string[] = []
+  let used = 0
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    const line = lines[i] as string
+    if (used + line.length + 1 > maxChars) break
+    out.push(line)
+    used += line.length + 1
+  }
+  return out.join('\n')
 }
 
 export const stubText = (chars: number) => `[earlier assistant message omitted by jev-compaction: ${chars} chars]`
@@ -166,7 +190,8 @@ export const stubText = (chars: number) => `[earlier assistant message omitted b
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
   if (text.length <= headChars + 120) return text
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : ''
-  return `${head}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
+  const signals = signalLines(text.slice(headChars))
+  return `${head}${signals ? `${signals}\n` : ''}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
 }
 
 function newText(message: Message, action: TextAction | undefined): string {
