@@ -1,12 +1,15 @@
 // Ported from fast-jev-compaction (MIT): batching, decisions and rebuilding, extended to message text.
-import { collectToolCalls, estimateTokens, fitState, isPinned } from './state'
+import { collectToolCalls, estimateTokens, fitState, isPinned, MARKER } from './state'
 import type {
   CompactResult,
   CompactStats,
   JevAsker,
   Message,
   Options,
+  ApplyCounts,
+  Protect,
   Question,
+  RunOptions,
   Scores,
   TextAction,
   TextCandidate,
@@ -29,9 +32,12 @@ export const REASK_MARGIN = 0.15
 export const ASSISTANT_TEXT_MIN = 400
 export const ASSISTANT_HEAD = 600
 export const ASSISTANT_TAIL = 300
-export const USER_TEXT_MIN = 2000
 export const USER_HEAD = 1200
 export const USER_TAIL = 600
+/** An abridge must save at least this much more than its note costs, so it never grows the text. */
+const ABRIDGE_SLACK = 200
+export const ASSISTANT_ABRIDGE_MIN = ASSISTANT_HEAD + ASSISTANT_TAIL + ABRIDGE_SLACK
+export const USER_TEXT_MIN = USER_HEAD + USER_TAIL + ABRIDGE_SLACK
 const REQUEST_OVERHEAD_TOKENS = 20
 const MAX_PARALLEL_REQUESTS = 4
 
@@ -73,11 +79,11 @@ export const callKey = (call: Pick<ToolCall, 'tool' | 'input'>) => `c:${call.too
 export const resultKey = (call: Pick<ToolCall, 'tool' | 'input' | 'resultChars'>) => `r:${call.tool}:${hash(stable(call.input))}:${call.resultChars}`
 export const textKey = (role: string, text: string) => `t:${role}:${hash(text)}`
 
-/** Unpinned messages whose text is long enough to be judged. */
-export function collectTexts(messages: readonly Message[], preserve: number): TextCandidate[] {
+/** Unpinned, unprotected, not-yet-compacted messages whose text is long enough to be judged. */
+export function collectTexts(messages: readonly Message[], preserve: number, protect?: Protect): TextCandidate[] {
   const out: TextCandidate[] = []
   messages.forEach((m, index) => {
-    if (isPinned(index, messages.length, preserve)) return
+    if (isPinned(index, messages.length, preserve) || protect?.indexes.has(index) || m.text.includes(MARKER)) return
     if (m.text.length > (m.role === 'assistant' ? ASSISTANT_TEXT_MIN : USER_TEXT_MIN)) out.push({ index, role: m.role, chars: m.text.length })
   })
   return out
@@ -149,17 +155,26 @@ export function decideTool(call: Pick<ToolCall, 'pinned'>, keepCall: number, kee
 }
 
 /** Assistant text may be abridged or stubbed; user text is never stubbed, only abridged. */
-export function decideText(role: 'user' | 'assistant', p: number, options: Pick<Options, 'keepThreshold' | 'abridgeThreshold'>): TextAction {
+export function decideText(role: 'user' | 'assistant', p: number, options: Pick<Options, 'keepThreshold' | 'abridgeThreshold'>, chars: number): TextAction {
   if (p >= options.keepThreshold) return 'keep'
-  if (role === 'user') return 'abridge'
-  return p >= options.abridgeThreshold ? 'abridge' : 'stub'
+  const canAbridge = chars > (role === 'user' ? USER_TEXT_MIN : ASSISTANT_ABRIDGE_MIN)
+  if (role === 'user') return canAbridge ? 'abridge' : 'keep'
+  if (p >= options.abridgeThreshold) return canAbridge ? 'abridge' : 'keep'
+  return 'stub'
 }
 
+const MUTATING = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
+
+/** Tools that change state: their calls are never dropped, only their results truncated. */
+export const isMutating = (tool: string) => MUTATING.has(tool) || (tool.startsWith('mcp__') && /write|edit|create|delete|update/i.test(tool))
+
 export function abridgeText(text: string, head: number, tail: number): string {
+  if (text.includes(MARKER)) return text
   const omitted = text.length - head - tail
-  if (omitted <= 80) return text
+  if (omitted <= ABRIDGE_SLACK) return text
   const signals = signalLines(text.slice(head, text.length - tail))
-  return `${text.slice(0, head)}\n${signals ? `${signals}\n` : ''}[… ${omitted} chars omitted by jev-compaction …]\n${text.slice(-tail)}`
+  const out = `${text.slice(0, head)}\n${signals ? `${signals}\n` : ''}[… ${omitted} chars omitted by jev-compaction …]\n${text.slice(-tail)}`
+  return out.length < text.length ? out : text
 }
 
 export const SIGNAL_LINES =
@@ -188,13 +203,15 @@ export function signalLines(middle: string, maxChars = SIGNAL_MAX_CHARS): string
 export const stubText = (chars: number) => `[earlier assistant message omitted by jev-compaction: ${chars} chars]`
 
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
-  if (text.length <= headChars + 120) return text
+  if (text.length <= headChars + 120 || text.includes(MARKER)) return text
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : ''
   const signals = signalLines(text.slice(headChars))
-  return `${head}${signals ? `${signals}\n` : ''}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
+  const out = `${head}${signals ? `${signals}\n` : ''}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
+  return out.length < text.length ? out : text
 }
 
 function newText(message: Message, action: TextAction | undefined): string {
+  if (message.text.includes(MARKER)) return message.text
   if (action === 'stub') return stubText(message.text.length)
   if (action === 'abridge') {
     return message.role === 'user'
@@ -204,40 +221,55 @@ function newText(message: Message, action: TextAction | undefined): string {
   return message.text
 }
 
+const droppedNote = (tool: string, input: Record<string, unknown>) => {
+  let head = ''
+  try {
+    head = (JSON.stringify(input) ?? '').slice(0, 80)
+  } catch {
+    head = '[unserializable input]'
+  }
+  return `[jev-compaction dropped ${tool} call: ${head}; re-run if needed]`
+}
+
 /**
- * Rebuilds the conversation. A dropped call disappears with its result, a dropped result keeps a
- * bounded head and a note, text is abridged or stubbed. Messages left with no content are removed;
- * untouched messages (and unchanged tool blocks) are returned as the same objects.
+ * Rebuilds the conversation. A dropped call leaves a one-line note in its assistant message and
+ * takes its result with it; a dropped result keeps a bounded head, the failure lines and a note;
+ * text is abridged or stubbed. Only messages whose content changes are rebuilt (the assistant-side
+ * echo of a result is left alone); the rest, and every unchanged tool block, are the same objects.
  */
 export function applyDecisions(
   messages: readonly Message[],
   tools: ReadonlyMap<string, ToolAction>,
   texts: ReadonlyMap<number, TextAction>,
   headChars: number,
+  counts?: ApplyCounts,
 ): Message[] {
   const out: Message[] = []
   messages.forEach((message, index) => {
-    const text = newText(message, texts.get(index))
     const dropped = (id: string) => tools.get(id) === 'drop_call'
-    const toolUses = message.toolUses
-      .filter((t) => !dropped(t.tool_use_id))
-      .map((t) => {
-        if (tools.get(t.tool_use_id) !== 'drop_result') return t
-        const cut = truncatedResultText(t.text ?? '', t.isError ?? false, headChars)
-        if (cut === (t.text ?? '')) return t
-        return { tool_use_id: t.tool_use_id, tool: t.tool, input: t.input, text: cut, ...(t.isError ? { isError: true as const } : {}) }
-      })
+    let text = newText(message, texts.get(index))
+    if (text !== message.text && text.length < message.text.length) {
+      if (texts.get(index) === 'stub') counts && counts.stubbed++
+      else counts && counts.abridged++
+    } else text = message.text
+    const gone = message.toolUses.filter((t) => dropped(t.tool_use_id))
+    if (gone.length > 0) {
+      text = [text, ...gone.map((t) => droppedNote(t.tool, t.input))].filter((x) => x !== '').join('\n')
+      if (counts) counts.dropped += gone.length
+    }
+    const toolUses = message.toolUses.filter((t) => !dropped(t.tool_use_id))
     const toolResults = (message.toolResults ?? [])
       .filter((r) => !dropped(r.tool_use_id))
       .map((r) => {
         if (tools.get(r.tool_use_id) !== 'drop_result') return r
         const cut = truncatedResultText(r.text, r.isError, headChars)
-        return cut === r.text ? r : { tool_use_id: r.tool_use_id, text: cut, isError: r.isError }
+        if (cut === r.text) return r
+        if (counts) counts.truncated++
+        return { tool_use_id: r.tool_use_id, text: cut, isError: r.isError }
       })
     const unchanged =
       text === message.text &&
       toolUses.length === message.toolUses.length &&
-      toolUses.every((t, i) => t === message.toolUses[i]) &&
       toolResults.length === (message.toolResults ?? []).length &&
       toolResults.every((r, i) => r === message.toolResults?.[i])
     if (unchanged) {
@@ -278,10 +310,11 @@ export async function compact(
   ask: JevAsker,
   options: Partial<Options> = {},
   memory: Scores = {},
+  run: RunOptions = {},
 ): Promise<CompactResult> {
   const opts = resolveOptions(options)
-  const calls = collectToolCalls(messages, opts.preserveRecentMessages)
-  const texts = collectTexts(messages, opts.preserveRecentMessages)
+  const calls = collectToolCalls(messages, opts.preserveRecentMessages, run.protect)
+  const texts = collectTexts(messages, opts.preserveRecentMessages, run.protect)
   const questions = questionsFor(calls, texts, messages, opts)
   const scores = new Map<string, number>()
   const fresh: Scores = {}
@@ -295,6 +328,7 @@ export async function compact(
   let stateTokens = 0
   let stateStage = ''
   let requests = 0
+  let abandoned = 0
   if (toAsk.length > 0) {
     const fitted = fitState(messages, calls, opts)
     stateTokens = fitted.tokens
@@ -302,8 +336,12 @@ export async function compact(
     // A text the state no longer shows cannot be judged and stays as it is.
     const askable = toAsk.filter((q) => q.textIndex === undefined || fitted.visibleTexts.has(q.textIndex))
     const batches = batchQuestions(askable, fitted.tokens, opts)
-    requests = batches.length
     for (let at = 0; at < batches.length; at += MAX_PARALLEL_REQUESTS) {
+      if (run.stop?.()) {
+        abandoned = batches.slice(at).reduce((n, b) => n + b.length, 0)
+        break
+      }
+      requests += Math.min(MAX_PARALLEL_REQUESTS, batches.length - at)
       const answered = await Promise.all(
         batches.slice(at, at + MAX_PARALLEL_REQUESTS).map((batch) =>
           ask(
@@ -325,25 +363,29 @@ export async function compact(
 
   const score = (name: string) => scores.get(name) ?? 1
   const tools = new Map<string, ToolAction>()
-  const stats = { toolsKept: 0, resultsTruncated: 0, callsDropped: 0, textsKept: 0, textsAbridged: 0, textsStubbed: 0 }
   for (const call of calls) {
     if (call.pinned) continue
-    const action = decideTool(call, score(`call_${call.id}`), score(`result_${call.id}`), opts.keepThreshold)
-    if (action === 'keep') stats.toolsKept++
-    else if (action === 'drop_result') stats.resultsTruncated++
-    else stats.callsDropped++
+    let action = decideTool(call, score(`call_${call.id}`), score(`result_${call.id}`), opts.keepThreshold)
+    if (action === 'drop_call' && isMutating(call.tool)) action = 'drop_result'
     if (action !== 'keep') tools.set(call.tool_use_id, action)
   }
   const textActions = new Map<number, TextAction>()
   for (const t of texts) {
-    const action = decideText(t.role, score(`text_m${t.index}`), opts)
-    if (action === 'keep') stats.textsKept++
-    else if (action === 'abridge') stats.textsAbridged++
-    else stats.textsStubbed++
+    const action = decideText(t.role, score(`text_m${t.index}`), opts, t.chars)
     if (action !== 'keep') textActions.set(t.index, action)
   }
 
-  const out = applyDecisions(messages, tools, textActions, opts.truncateHeadChars)
+  const counts: ApplyCounts = { truncated: 0, dropped: 0, abridged: 0, stubbed: 0 }
+  const out = applyDecisions(messages, tools, textActions, opts.truncateHeadChars, counts)
+  const candidates = calls.filter((c) => !c.pinned).length
+  const stats = {
+    toolsKept: candidates - counts.truncated - counts.dropped,
+    resultsTruncated: counts.truncated,
+    callsDropped: counts.dropped,
+    textsKept: texts.length - counts.abridged - counts.stubbed,
+    textsAbridged: counts.abridged,
+    textsStubbed: counts.stubbed,
+  }
   const result: CompactStats = {
     messagesBefore: messages.length,
     messagesAfter: out.length,
@@ -355,6 +397,7 @@ export async function compact(
     stateStage,
     requests,
     reused: questions.length - toAsk.length,
+    abandoned,
     ...stats,
   }
   return { messages: out, stats: result, scores: fresh }

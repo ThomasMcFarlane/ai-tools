@@ -52,15 +52,43 @@
     "minFreedTokens": {
       "type": "number",
       "title": "Minimum tokens freed",
-      "description": "A compaction that misses the target is still applied when it frees at least this many estimated tokens.",
+      "description": "A manual or automatic compaction must free at least this many estimated tokens, else the built-in summary is used.",
       "default": 20000,
       "required": false
     },
-    "regrowthTokens": {
+    "softMinFreedTokens": {
+      "type": "number",
+      "title": "Periodic minimum freed (tokens)",
+      "description": "Windows over 300k tokens: a periodic compaction that misses the target is applied only if it frees this many tokens (a rewrite costs a prompt-cache miss).",
+      "default": 100000,
+      "required": false
+    },
+    "softMinFreedPercent": {
+      "type": "number",
+      "title": "Periodic minimum freed (percent)",
+      "description": "Smaller windows: the same minimum as a percentage of the window.",
+      "default": 25,
+      "required": false
+    },
+    "regrowTokens": {
       "type": "number",
       "title": "Regrowth guard (tokens)",
-      "description": "After a deferred or below-target attempt, wait until the context has grown by this many tokens before trying again.",
-      "default": 25000,
+      "description": "After an attempt, wait until the context has grown by this many tokens beyond it before trying again.",
+      "default": 50000,
+      "required": false
+    },
+    "jevTimeoutMs": {
+      "type": "number",
+      "title": "Jev request timeout (ms)",
+      "description": "One Jev request is abandoned after this long; the compaction then defers or falls back.",
+      "default": 8000,
+      "required": false
+    },
+    "jevTotalMs": {
+      "type": "number",
+      "title": "Jev total time (ms)",
+      "description": "Remaining Jev batches are abandoned (their items are kept) once a compaction has spent this long; also held below the hook's time budget.",
+      "default": 20000,
       "required": false
     },
     "keepThreshold": {

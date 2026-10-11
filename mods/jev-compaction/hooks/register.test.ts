@@ -12,6 +12,10 @@ type Setup = {
   status?: number
   // what the engine's own compaction answers
   core?: () => unknown
+  // the main conversation in API form, as `$.session.messages({ as: 'api' })` answers
+  api?: unknown[]
+  // never answer a fetch
+  hang?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -40,10 +44,13 @@ async function boot($: any, on: any, setup: Setup = {}) {
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  on('session.usage', () => ({
-    value: { startedAt: 0, context: { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }, rateLimits: [] },
-  }))
+  const clock = mock.clock(on)
+  const usage = { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }
+  on('session.usage', () => ({ value: { startedAt: 0, context: { ...usage }, rateLimits: [] } }))
+  on('session.messages', () => ({ value: (setup.api ?? []) as never }))
+  on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
   on('http.fetch', (_$: any, e: any) => {
+    if (setup.hang) return new Promise(() => undefined) as never
     const body = JSON.parse(e.init.body)
     requests.push({ url: e.url, headers: e.init.headers, body })
     const answers = Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: setup.p ?? 0 }]))
@@ -54,7 +61,6 @@ async function boot($: any, on: any, setup: Setup = {}) {
     compactCalls.push(e)
     return (setup.core?.() as { messages: Message[] } | undefined) ?? { messages: [BUILTIN] }
   })
-  on('session.measure', (_$: any, e: any) => ({ changed: e.changed }))
   on('ui.toast', (_$: any, e: any) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -64,7 +70,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('command.register', () => ({ value: undefined as never }))
-  return { requests, toasts, logs, compactCalls }
+  return { requests, toasts, logs, compactCalls, usage, clock }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -84,9 +90,10 @@ test('soft compaction is applied when Jev frees enough, with the documented requ
   const { requests, toasts, logs } = await boot($, on, { p: 0 })
   const r = await compact($, 'plugin')
   expect(isBuiltin(r)).toBe(false)
-  expect(r.messages!.length).toBeLessThan(10)
+  expect(r.messages!.length).toBe(19)
+  expect(r.messages!.filter((m) => m.text.startsWith('[jev-compaction dropped Read call')).length).toBe(12)
   expect(r.messages![0]!.handle).toBe('h0')
-  expect(r.messages!.slice(-6).every((m) => m.handle === undefined)).toBe(true)
+  expect(r.messages!.filter((m) => m.text.includes('jev-compaction')).every((m) => m.handle === undefined)).toBe(true)
   expect(requests.length).toBeGreaterThan(0)
   const request = requests[0]!
   expect(request.url).toBe('https://api.typesafe.ai/v1/systemone')
@@ -193,39 +200,94 @@ test('/jev-compact stats reports the session totals', async ($, on) => {
   expect((await $.command.run({ command: 'jev-compact', args: '' } as never)).text).toMatch(/Usage/)
 })
 
-test('periodic trigger: compacts at the trigger, not below, and waits for regrowth after an attempt', async ($, on) => {
-  const { compactCalls } = await boot($, on, { core: () => ({ skip: 'deferred by test' }) })
-  const measure = (tokens: number) =>
-    $.session.measure({ context: { tokens, window: 1_000_000, percent: tokens / 10_000 }, rateLimits: [], changed: ['context'] })
-  await measure(399_000)
+const reply = () => ({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' }) as never
+
+test('periodic trigger: compacts at the trigger, not below, and waits for 50000 tokens of regrowth after an attempt', async ($, on) => {
+  const { compactCalls, usage } = await boot($, on, { core: () => ({ skip: 'deferred by test' }) })
+  const turn = async (tokens: number) => {
+    usage.tokens = tokens
+    await $.turn.complete(reply())
+  }
+  await turn(399_000)
   expect(compactCalls.length).toBe(0)
-  await measure(410_000)
+  await turn(410_000)
   expect(compactCalls.length).toBe(1)
-  await measure(434_000)
+  await turn(459_000)
   expect(compactCalls.length).toBe(1)
-  await measure(435_000)
+  await turn(460_000)
   expect(compactCalls.length).toBe(2)
-  await measure(300_000)
-  await measure(405_000)
+  await turn(300_000)
+  await turn(405_000)
+  expect(compactCalls.length).toBe(2)
+  await turn(255_000)
+  await turn(405_000)
   expect(compactCalls.length).toBe(3)
 })
 
 test('periodic trigger on a small window uses percentages', async ($, on) => {
-  const { compactCalls } = await boot($, on, { window: 200_000 })
-  const measure = (tokens: number) =>
-    $.session.measure({ context: { tokens, window: 200_000, percent: tokens / 2000 }, rateLimits: [], changed: ['context'] })
-  await measure(119_000)
+  const { compactCalls, usage } = await boot($, on, { window: 200_000 })
+  usage.window = 200_000
+  usage.tokens = 119_000
+  await $.turn.complete(reply())
   expect(compactCalls.length).toBe(0)
-  await measure(120_000)
+  usage.tokens = 120_000
+  await $.turn.complete(reply())
   expect(compactCalls.length).toBe(1)
 })
 
-test('/jev-compact now compacts from a later event and reports a deferral', async ($, on) => {
-  const { compactCalls, toasts } = await boot($, on, { core: () => ({ skip: 'nothing to do' }) })
-  const clock = mock.clock(on)
+test('/jev-compact now compacts at the end of the next turn, below the trigger, and never falls back to the built-in summary', async ($, on) => {
+  const { compactCalls, usage } = await boot($, on, { p: 1 })
+  usage.tokens = 100_000
+  await $.turn.complete(reply())
+  expect(compactCalls.length).toBe(0)
   const { text } = await $.command.run({ command: 'jev-compact', args: 'now' } as never)
-  expect(text).toContain('compacting now')
-  await clock.advance(200)
+  expect(text).toContain('next turn ends')
+  expect(compactCalls.length).toBe(0)
+  await $.turn.complete(reply())
   expect(compactCalls.length).toBe(1)
-  expect(toasts.join('\n')).toContain('nothing to do')
+  // Jev keeps everything: a plain /compact would fall back, the one asked for by `now` defers.
+  expect((await compact($, 'manual')).skip).toMatch(/deferred/)
+  expect(isBuiltin(await compact($, 'manual'))).toBe(true)
+  const before = compactCalls.length
+  await $.turn.complete(reply())
+  expect(compactCalls.length).toBe(before)
+})
+
+const settle = async (clock: { advance: (ms: number) => Promise<void> }, done: () => boolean) => {
+  for (let i = 0; i < 40 && !done(); i++) await clock.advance(100)
+}
+
+test('a Jev request that never answers times out: soft defers, auto and manual fall back', { options: { jevTimeoutMs: 50 } }, async ($, on) => {
+  const { clock, requests } = await boot($, on, { hang: true })
+  for (const [trigger, check] of [
+    ['plugin', (r: { messages?: Message[]; skip?: string }) => expect(r.skip).toMatch(/timed out after 50 ms/)],
+    ['auto', (r: { messages?: Message[] }) => expect(isBuiltin(r)).toBe(true)],
+    ['manual', (r: { messages?: Message[] }) => expect(isBuiltin(r)).toBe(true)],
+  ] as const) {
+    let result: { messages?: Message[]; skip?: string } | undefined
+    const pending = compact($, trigger).then((r) => (result = r))
+    await settle(clock, () => result !== undefined)
+    await pending
+    check(result!)
+  }
+  expect(requests).toEqual([])
+})
+
+test('/compact with instructions and a transcript that may be cut go to the built-in summary untouched', async ($, on) => {
+  const { requests } = await boot($, on, { p: 0 })
+  expect(isBuiltin(await compact($, 'manual', { instructions: 'keep the plan' }))).toBe(true)
+  const many = Array.from({ length: 4096 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'x', toolUses: [] }))
+  expect(isBuiltin(await compact($, 'plugin', { messages: many }))).toBe(true)
+  expect(requests).toEqual([])
+})
+
+test('a tool result with an image is never rebuilt, its Bash neighbour is dropped', async ($, on) => {
+  const api = [
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c0', content: [{ type: 'text', text: 'see' }, { type: 'image', source: {} }] }] },
+  ]
+  await boot($, on, { p: 0, api })
+  const r = await compact($, 'plugin')
+  expect(r.messages!.some((m) => m.handle === 'a0')).toBe(true)
+  expect(r.messages!.some((m) => m.handle === 'u0')).toBe(true)
+  expect(r.messages!.some((m) => m.handle === 'u1')).toBe(false)
 })

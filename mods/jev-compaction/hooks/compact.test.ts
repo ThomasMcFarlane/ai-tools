@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { callKey, compact, hash, resultKey, signalLines, textKey } from './compact'
+import { applyDecisions, callKey, compact, hash, resultKey, signalLines, textKey } from './compact'
 import type { JevAsker, Message, Scores } from './types'
 
 const long = (n: number, ch = 'x') => ch.repeat(n)
@@ -56,7 +56,9 @@ describe('tool pruning', () => {
     expect(results[1]?.text).toContain('jev-compaction truncated 1700 chars')
     expect(results[1]?.text.startsWith(long(300, 'r'))).toBe(true)
     expect(out.flatMap((m) => m.toolUses).map((t) => t.tool_use_id)).toEqual(['k', 'r'])
-    expect(out.length).toBe(messages.length - 2)
+    expect(out.length).toBe(messages.length - 1)
+    const note = out.find((m) => m.text.includes('dropped Read call'))
+    expect(note?.text).toBe('[jev-compaction dropped Read call: {"file_path":"/src/d.ts"}; re-run if needed]')
   })
 
   test('two noul questions are asked per candidate call', async () => {
@@ -80,9 +82,10 @@ describe('tool pruning', () => {
     const { messages: out } = await compact(messages, fakeJev({ call_t1: 0.9, result_t1: 0.1 }).ask)
     expect(out[0]).toBe(messages[0])
     const rebuilt = out.filter((m) => !messages.includes(m))
-    expect(rebuilt.length).toBe(2)
+    expect(rebuilt.length).toBe(1)
+    expect(rebuilt[0]?.toolResults?.[0]?.tool_use_id).toBe('a')
     expect(rebuilt.every((m) => m.handle === undefined)).toBe(true)
-    expect(out.filter((m) => messages.includes(m)).length).toBe(messages.length - 2)
+    expect(out.filter((m) => messages.includes(m)).length).toBe(messages.length - 1)
   })
 })
 
@@ -221,5 +224,79 @@ describe('failure lines survive compaction', () => {
     expect(kept.length).toBeLessThanOrEqual(1500)
     expect(kept.startsWith('error number 0\n')).toBe(true)
     expect(signalLines('all fine\nnothing here')).toBe('')
+  })
+})
+
+describe('safety of the rebuild', () => {
+  const body = (n: number) => 'abcdefghij'.repeat(n / 10)
+
+  test('a truncated result leaves the assistant message with its echo untouched', async () => {
+    const messages = [user('start'), ...call('a', long(2000)), ...tail()]
+    const { messages: out } = await compact(messages, fakeJev({ call_t1: 0.9, result_t1: 0.1 }).ask)
+    expect(out[1]).toBe(messages[1])
+    expect(out[2]).not.toBe(messages[2])
+  })
+
+  test('calls of mutating tools are never dropped, only their results truncated', async () => {
+    const mk = (id: string, tool: string): Message[] => [
+      assistant('', { toolUses: [{ tool_use_id: id, tool, input: { path: id }, text: long(2000) }] }),
+      user('', { toolResults: [{ tool_use_id: id, text: long(2000), isError: false }] }),
+    ]
+    const messages = [user('start'), ...mk('e', 'Edit'), ...mk('w', 'mcp__files__write_file'), ...mk('b', 'Bash'), ...mk('m', 'mcp__files__read_file'), ...tail()]
+    const { messages: out, stats } = await compact(messages, fakeJev({}, 0).ask)
+    const uses = out.flatMap((m) => m.toolUses.map((t) => t.tool_use_id))
+    expect(uses).toEqual(['e', 'w'])
+    expect(stats).toMatchObject({ callsDropped: 2, resultsTruncated: 2 })
+    expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id)).toEqual(['e', 'w'])
+    expect(out.some((m) => m.text.includes('dropped Bash call: {"path":"b"}'))).toBe(true)
+    expect(out.some((m) => m.text.includes('dropped mcp__files__read_file call'))).toBe(true)
+    expect(out.some((m) => m.text.includes('dropped Edit call'))).toBe(false)
+  })
+
+  test('a message that holds non-text content is never rebuilt, and neither are its neighbours in the pair', async () => {
+    const shot = assistant('', { toolUses: [{ tool_use_id: 'img', tool: 'Read', input: { f: 'shot.png' }, text: 'image' }, { tool_use_id: 'sh', tool: 'Bash', input: { command: 'ls' }, text: long(2000) }] })
+    const both = user('', { handle: 'both', toolResults: [{ tool_use_id: 'img', text: 'image', isError: false }, { tool_use_id: 'sh', text: long(2000), isError: false }] })
+    const messages = [user('start'), shot, both, ...call('x', long(2000)), ...tail()]
+    const jev = fakeJev({}, 0)
+    const { messages: out } = await compact(messages, jev.ask, {}, {}, { protect: { ids: new Set(['img']), indexes: new Set() } })
+    expect(out[1]).toBe(shot)
+    expect(out[2]).toBe(both)
+    expect(jev.asked.sort()).toEqual(['call_t3', 'result_t3'])
+    expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id)).toEqual(['img', 'sh'])
+  })
+
+  test('a user text message marked as holding media is not judged', async () => {
+    const messages = [user('start'), assistant('ok'), user(body(3000)), ...tail()]
+    const jev = fakeJev({}, 0)
+    const { messages: out } = await compact(messages, jev.ask, {}, {}, { protect: { ids: new Set(), indexes: new Set([2]) } })
+    expect(jev.asked).toEqual([])
+    expect(out[2]).toBe(messages[2])
+  })
+
+  test('applying the same decisions twice changes nothing more', async () => {
+    const messages = [user('start'), ...call('a', long(2000)), assistant(body(2000)), user('ok'), assistant(body(1500)), user(body(3000)), ...tail()]
+    const tools = new Map<string, 'drop_result'>([['a', 'drop_result']])
+    const texts = new Map<number, 'abridge' | 'stub'>([[3, 'abridge'], [5, 'stub'], [6, 'abridge']])
+    const once = applyDecisions(messages, tools, texts, 300)
+    const twice = applyDecisions(once, tools, texts, 300)
+    expect(twice).toEqual(once)
+    expect(twice.every((m, i) => m === once[i])).toBe(true)
+    expect(once[3]?.text).toContain('jev-compaction')
+  })
+
+  test('already compacted items are not asked about again', async () => {
+    const messages = [user('start'), ...call('a', long(2000)), assistant(body(2000)), user('ok'), ...tail()]
+    const first = await compact(messages, fakeJev({ call_t1: 0.9, result_t1: 0.1, text_m3: 0.1 }).ask)
+    const jev = fakeJev({}, 0)
+    const second = await compact(first.messages, jev.ask)
+    expect(jev.asked).toEqual([])
+    expect(second.messages).toEqual(first.messages)
+  })
+
+  test('an abridge that cannot save space leaves the text and is not counted', async () => {
+    const messages = [user('start'), assistant(body(1000)), user('ok'), ...tail()]
+    const { messages: out, stats } = await compact(messages, fakeJev({ text_m1: 0.3 }).ask)
+    expect(out[1]).toBe(messages[1])
+    expect(stats).toMatchObject({ textsAbridged: 0, textsKept: 1 })
   })
 })

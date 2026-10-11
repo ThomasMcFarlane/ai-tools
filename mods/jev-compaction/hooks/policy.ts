@@ -8,7 +8,11 @@ export type Config = {
   targetPercent: number
   hardPercent: number
   minFreedTokens: number
-  regrowthTokens: number
+  softMinFreedTokens: number
+  softMinFreedPercent: number
+  regrowTokens: number
+  jevTimeoutMs: number
+  jevTotalMs: number
   model: string
   keyFile: string
   goal: string
@@ -28,7 +32,11 @@ export const DEFAULTS: Config = {
   targetPercent: 40,
   hardPercent: 85,
   minFreedTokens: 20_000,
-  regrowthTokens: 25_000,
+  softMinFreedTokens: 100_000,
+  softMinFreedPercent: 25,
+  regrowTokens: 50_000,
+  jevTimeoutMs: 8_000,
+  jevTotalMs: 20_000,
   model: 'jev-latest',
   keyFile: '',
   goal: '',
@@ -54,18 +62,18 @@ export function resolveConfig(options: Readonly<Record<string, unknown>>): Confi
   return out as Config
 }
 
-export type Thresholds = { trigger: number; target: number; hard: number }
+export type Thresholds = { trigger: number; target: number; hard: number; softMinFreed: number }
 
 export function thresholdsFor(config: Config, window: number): Thresholds {
-  if (window > LARGE_WINDOW) return { trigger: config.triggerTokens, target: config.targetTokens, hard: config.hardTokens }
+  if (window > LARGE_WINDOW) return { trigger: config.triggerTokens, target: config.targetTokens, hard: config.hardTokens, softMinFreed: config.softMinFreedTokens }
   const of = (percent: number) => Math.round((window * percent) / 100)
-  return { trigger: of(config.triggerPercent), target: of(config.targetPercent), hard: of(config.hardPercent) }
+  return { trigger: of(config.triggerPercent), target: of(config.targetPercent), hard: of(config.hardPercent), softMinFreed: of(config.softMinFreedPercent) }
 }
 
 /** Soft compaction starts once the context passes the trigger, and again only after it regrew. */
-export function shouldTrigger(tokens: number, t: Thresholds, guard: number, regrowth: number): boolean {
+export function shouldTrigger(tokens: number, t: Thresholds, guard: number, regrow: number): boolean {
   if (tokens < t.trigger) return false
-  return guard <= 0 || tokens >= guard + regrowth
+  return guard <= 0 || tokens >= guard + regrow
 }
 
 /** Why the compaction was refused (the text of the deferral or fallback). */
@@ -91,19 +99,28 @@ export function judge(j: Judgement): Verdict {
     return j.isNow ? { act: 'skip', reason } : { act: 'next', reason }
   }
   if (j.trigger === 'auto') {
-    return j.tokensAfter < j.thresholds.hard
+    return j.tokensAfter < j.thresholds.hard && enough
       ? { act: 'apply' }
-      : { act: 'next', reason: `still ~${j.tokensAfter} tokens after pruning (hard limit ${j.thresholds.hard})` }
+      : { act: 'next', reason: `~${j.tokensAfter} tokens after pruning, freeing ~${freed} (hard limit ${j.thresholds.hard}, minimum ${j.minFreedTokens})` }
   }
-  if (j.tokensAfter <= j.thresholds.target || enough) return { act: 'apply' }
-  const reason = `frees only ~${freed} tokens, ~${j.tokensAfter} left (target ${j.thresholds.target})`
+  // Soft: a rewrite breaks the prompt cache, so it must pay for itself.
+  if (j.tokensAfter <= j.thresholds.target || freed >= j.thresholds.softMinFreed) return { act: 'apply' }
+  const reason = `frees only ~${freed} tokens (minimum ${j.thresholds.softMinFreed}), ~${j.tokensAfter} left (target ${j.thresholds.target})`
   return j.tokensBefore >= j.thresholds.hard ? { act: 'next', reason } : { act: 'skip', reason }
 }
 
 /** What a failure (Jev error, missing key, unfittable state) does at each level. */
-export function failure(trigger: SessionCompactTrigger, reason: string): Verdict {
-  return trigger === 'plugin' ? { act: 'skip', reason } : { act: 'next', reason }
+export function failure(trigger: SessionCompactTrigger, reason: string, tokensBefore?: number, hard?: number): Verdict {
+  if (trigger !== 'plugin') return { act: 'next', reason }
+  return tokensBefore !== undefined && hard !== undefined && tokensBefore >= hard ? { act: 'next', reason } : { act: 'skip', reason }
 }
 
+/** The guard after an attempt: where the context stood, or where an applied compaction left it. */
+export const guardAfter = (tokens: number, appliedTokensAfter: number | undefined) => appliedTokensAfter ?? tokens
+
+/**
+ * Tokens after a compaction: the characters removed at 3.5 per token come off the measured total. The plain
+ * ratio of characters would also shrink the system prompt and tool schemas, which no compaction touches.
+ */
 export const estimateAfter = (tokensBefore: number, charsBefore: number, charsAfter: number) =>
-  charsBefore <= 0 ? tokensBefore : Math.round((tokensBefore * charsAfter) / charsBefore)
+  Math.max(0, Math.round(tokensBefore - Math.min(tokensBefore, Math.max(0, charsBefore - charsAfter) / 3.5)))

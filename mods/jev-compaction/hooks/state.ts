@@ -1,5 +1,7 @@
 // Ported from fast-jev-compaction (MIT), extended to judge message text.
-import type { Message, Options, ToolCall } from './types'
+import type { Message, Options, Protect, ToolCall } from './types'
+
+export const MARKER = 'jev-compaction'
 
 export const STATE_CONTEXT =
   'A coding assistant conversation is being compacted to free context. `history` is the whole conversation so far, oldest first; tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, the full output of that call, or the full text of one message (named by its history index `i`) still needs to stay in the history verbatim. Whatever is not kept is deleted or shortened permanently, but the assistant can always re-run a tool or re-read a file.'
@@ -45,11 +47,19 @@ export function isPinned(index: number, total: number, preserveRecentMessages: n
   return index === 0 || index >= total - preserveRecentMessages
 }
 
-/** Pairs every tool_use with its tool_result by `tool_use_id`; calls without a result are no candidates. */
-export function collectToolCalls(messages: readonly Message[], preserve: number): ToolCall[] {
-  const results = new Map<string, { index: number; chars: number; isError: boolean }>()
+/**
+ * Pairs every tool_use with its tool_result by `tool_use_id`; calls without a result are no
+ * candidates. A call is pinned (never judged, never touched) when it sits in the first or newest
+ * messages, in a message holding non-text content, or already carries a jev-compaction marker.
+ */
+export function collectToolCalls(messages: readonly Message[], preserve: number, protect?: Protect): ToolCall[] {
+  const results = new Map<string, { index: number; chars: number; isError: boolean; marked: boolean }>()
+  const guarded = new Set<number>(protect?.indexes)
   messages.forEach((message, index) => {
-    for (const r of message.toolResults ?? []) results.set(r.tool_use_id, { index, chars: r.text.length, isError: r.isError })
+    for (const r of message.toolResults ?? []) {
+      results.set(r.tool_use_id, { index, chars: r.text.length, isError: r.isError, marked: r.text.includes(MARKER) })
+      if (protect?.ids.has(r.tool_use_id)) guarded.add(index)
+    }
   })
   const calls: ToolCall[] = []
   messages.forEach((message, callIndex) => {
@@ -65,7 +75,12 @@ export function collectToolCalls(messages: readonly Message[], preserve: number)
         resultIndex: found.index,
         resultChars: found.chars,
         isError: found.isError,
-        pinned: isPinned(callIndex, messages.length, preserve) || isPinned(found.index, messages.length, preserve),
+        pinned:
+          isPinned(callIndex, messages.length, preserve) ||
+          isPinned(found.index, messages.length, preserve) ||
+          guarded.has(callIndex) ||
+          guarded.has(found.index) ||
+          found.marked,
       })
     }
   })

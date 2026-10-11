@@ -64,6 +64,7 @@ export type CompactStats = {
   textsKept: number
   textsAbridged: number
   textsStubbed: number
+  abandoned: number
   pinned: number
   stateTokens: number
   stateStage: string
@@ -79,4 +80,16 @@ export type CompactResult = {
 }
 
 /** Anything that can answer noul questions: the probability per question name. */
+/** Options of one run that are not userConfig. */
+export type RunOptions = {
+  protect?: Protect
+  /** Checked before each round of requests; true abandons the remaining batches (their items stay). */
+  stop?: () => boolean
+}
+
 export type JevAsker = (state: object, questions: Record<string, { type: 'noul'; instructions: string }>) => Promise<Record<string, number>>
+
+/** Messages that hold non-text content (images, documents) and must not be rebuilt. */
+export type Protect = { ids: ReadonlySet<string>; indexes: ReadonlySet<number> }
+
+export type ApplyCounts = { truncated: number; dropped: number; abridged: number; stubbed: number }
