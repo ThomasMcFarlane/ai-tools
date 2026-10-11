@@ -1,0 +1,72 @@
+{
+  "name": "jev-skills",
+  "version": "0.1.0",
+  "author": {
+    "name": "Thomas McFarlane"
+  },
+  "description": "Replaces the built-in skill listing with a Jev-picked shortlist of the skills each prompt needs, and adds further picks to later prompts without touching the cached history.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Shortlist skills with Jev. /jev-skills on and off change this for the running session.",
+      "default": true,
+      "required": false
+    },
+    "maxPicks": {
+      "type": "number",
+      "title": "Maximum picks",
+      "description": "At most this many skills are shortlisted for the session listing and again for each later prompt.",
+      "default": 5,
+      "required": false
+    },
+    "minScore": {
+      "type": "number",
+      "title": "Minimum score",
+      "description": "Minimum Jev probability (0 to 1) for a skill to be shortlisted.",
+      "default": 0.3,
+      "required": false
+    },
+    "recentPrompts": {
+      "type": "number",
+      "title": "Recent prompts",
+      "description": "How many of your earlier prompts Jev sees beside the current one.",
+      "default": 3,
+      "required": false
+    },
+    "jevTimeoutMs": {
+      "type": "number",
+      "title": "Jev request timeout (ms)",
+      "description": "A Jev request is abandoned after this long and the built-in listing is left alone. Held under the hook's 10 s budget.",
+      "default": 6000,
+      "required": false
+    },
+    "maxRequestTokens": {
+      "type": "number",
+      "title": "Jev request ceiling (tokens)",
+      "description": "Estimated token ceiling of one Jev request (Jev accepts 32k). More skills than fit are split into batches.",
+      "default": 28000,
+      "required": false
+    },
+    "maxBatches": {
+      "type": "number",
+      "title": "Maximum Jev requests per prompt",
+      "description": "Skills that would need more requests than this are cut to the best keyword matches first.",
+      "default": 3,
+      "required": false
+    },
+    "model": {
+      "type": "string",
+      "title": "Jev model",
+      "description": "Model name sent to Jev. Default jev-latest.",
+      "required": false
+    },
+    "keyFile": {
+      "type": "string",
+      "title": "Key file",
+      "description": "Path of a file with KEY=value lines holding JEV_COMPACTION_API_KEY or TYPESAFE_API_KEY. Default: $HOME/.config/ai-tools/jev-compaction.env.",
+      "required": false
+    }
+  }
+}

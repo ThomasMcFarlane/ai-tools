@@ -18,6 +18,11 @@
       "name": "jev-compaction",
       "source": "./mods/jev-compaction",
       "description": "Periodic Jev-guided compaction of long sessions: prunes stale tool calls and old message text without a built-in summary."
+    },
+    {
+      "name": "jev-skills",
+      "source": "./mods/jev-skills",
+      "description": "Replaces the built-in skill listing with a Jev-picked shortlist per prompt, in a way that keeps the prompt cache valid."
     }
   ]
 }
