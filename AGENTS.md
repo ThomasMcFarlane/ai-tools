@@ -12,7 +12,8 @@ ai-tools/
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check: TASKS.md format check CLI
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin (docked TASKS.md pane); checked with `claude plugin validate`, excluded from eslint/tsc/vitest
-│   └── plan-view/     # Claude Code plugin (docked markdown view of Claude's plan files); same checks
+│   ├── plan-view/     # Claude Code plugin (docked markdown view of Claude's plan files); same checks
+│   └── jev-compaction/  # Claude Code plugin (periodic Jev-guided compaction of long sessions); same checks
 ├── actions/
 │   └── tasks-board-check/  # composite GitHub Action with a committed bundled dist/
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)

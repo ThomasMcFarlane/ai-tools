@@ -13,6 +13,11 @@
       "name": "plan-view",
       "source": "./mods/plan-view",
       "description": "Docked right-hand pane showing the plan Claude writes in plan mode as formatted markdown."
+    },
+    {
+      "name": "jev-compaction",
+      "source": "./mods/jev-compaction",
+      "description": "Periodic Jev-guided compaction of long sessions: prunes stale tool calls and old message text without a built-in summary."
     }
   ]
 }
