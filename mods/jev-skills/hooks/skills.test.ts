@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { keyFromFile, redact } from './key'
-import { DEFAULTS, buildState, estimateTokens, formatAddition, formatListing, parseListing, planBatches, resolveConfig, scoreSkills, selectPicks, skipPrompt } from './skills'
+import { DEFAULTS, buildState, hiddenNames, estimateTokens, formatAddition, formatListing, parseListing, planBatches, resolveConfig, scoreSkills, selectPicks, skipPrompt } from './skills'
 import type { Skill } from './skills'
 
 const LISTING = `The following skills are available for use with the Skill tool:
@@ -19,10 +19,23 @@ describe('listing', () => {
       { name: 'anthropic-skills:pdf', description: '' },
     ])
   })
+  test('an alias in parentheses is dropped from the name; continuation lines extend the description', () => {
+    expect(parseListing('- 01-cinematic (seedance-cinematic): Cinematic shots\n  with more detail\n- plain\n\ntrailing text')).toEqual([
+      { name: '01-cinematic', description: 'Cinematic shots with more detail' },
+      { name: 'plain', description: '' },
+    ])
+  })
+  test('hidden names are capped by tokens', () => {
+    const names = Array.from({ length: 2000 }, (_, i) => `skill-number-${i}`)
+    const r = hiddenNames(names, 100)
+    expect(estimateTokens(r.text)).toBeLessThan(160)
+    expect(r.omitted).toBeGreaterThan(1900)
+  })
   test('a shortlist keeps the engine header and always ends with the other-skills line', () => {
     const text = formatListing([{ name: 'review', description: 'Review a PR' }, { name: 'bare', description: '' }])
     expect(text).toContain('available for use with the Skill tool:\n\n- review: Review a PR\n- bare\n\nOther installed skills')
     expect(text).toMatch(/exact name/)
+    expect(formatListing([{ name: 'a', description: '' }], ['b', 'c'])).toContain('Other skills (names only): b, c.')
     expect(formatListing([])).toMatch(/^The following skills[^\n]*\n\nOther installed skills/)
   })
   test('an addition lists only the given skills', () => {

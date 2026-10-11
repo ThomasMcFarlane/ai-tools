@@ -8,6 +8,7 @@ export type Config = {
   minScore: number
   recentPrompts: number
   jevTimeoutMs: number
+  promptTimeoutMs: number
   maxRequestTokens: number
   maxBatches: number
   model: string
@@ -20,6 +21,7 @@ export const DEFAULTS: Config = {
   minScore: 0.3,
   recentPrompts: 3,
   jevTimeoutMs: 6000,
+  promptTimeoutMs: 3000,
   maxRequestTokens: 28_000,
   maxBatches: 3,
   model: 'jev-latest',
@@ -59,19 +61,46 @@ export const OTHER_SKILLS =
   'Other installed skills are not listed here to save context. If a task needs one that is not listed, call the Skill tool with its exact name; the user can also run any skill as /<name>.'
 const DESCRIPTION_CHARS = 300
 
-/** The `- name: description` lines of the engine's listing; a line may carry the name alone (budget-trimmed). */
+/**
+ * The `- name: description` lines of the engine's listing. A line may carry the name alone (budget-trimmed), an alias in
+ * parentheses after the name (dropped), and a description that continues on the following non-blank lines.
+ */
 export function parseListing(text: string): Skill[] {
   const out: Skill[] = []
+  let open = false
   for (const line of text.split(/\r?\n/)) {
-    const match = /^- ([^\s:][^\s]*?)(?::\s+(.*))?\s*$/.exec(line)
-    if (match) out.push({ name: match[1] as string, description: (match[2] ?? '').trim() })
+    const match = /^- (\S+?)(?: \([^)]*\))?(?::\s+(.*))?\s*$/.exec(line)
+    if (match) {
+      out.push({ name: match[1] as string, description: (match[2] ?? '').trim() })
+      open = true
+    } else if (open && line.trim() !== '' && line !== LISTING_HEADER) {
+      const last = out[out.length - 1] as Skill
+      last.description = `${last.description} ${line.trim()}`.trim()
+    } else open = false
   }
   return out
 }
 
-export function formatListing(picks: readonly Skill[]): string {
+const HIDDEN_NAME_TOKENS = 1000
+
+/** Comma-separated names that fit the token budget, and how many were left out. */
+export function hiddenNames(names: readonly string[], budget = HIDDEN_NAME_TOKENS): { text: string; omitted: number } {
+  const kept: string[] = []
+  let used = 0
+  for (const n of names) {
+    const cost = estimateTokens(n) + 1
+    if (used + cost > budget) break
+    kept.push(n)
+    used += cost
+  }
+  return { text: kept.join(', '), omitted: names.length - kept.length }
+}
+
+export function formatListing(picks: readonly Skill[], hidden: readonly string[] = []): string {
   const lines = picks.map((s) => (s.description ? `- ${s.name}: ${s.description}` : `- ${s.name}`))
-  return [LISTING_HEADER, '', ...lines, ...(lines.length > 0 ? [''] : []), OTHER_SKILLS].join('\n')
+  const names = hiddenNames(hidden)
+  const index = names.text ? [`Other skills (names only): ${names.text}${names.omitted > 0 ? `, and ${names.omitted} more` : ''}.`] : []
+  return [LISTING_HEADER, '', ...lines, ...(lines.length > 0 ? [''] : []), OTHER_SKILLS, ...index].join('\n')
 }
 
 /** Context for a later prompt: skills picked for it that the model has not been shown yet. */

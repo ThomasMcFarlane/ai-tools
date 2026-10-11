@@ -38,8 +38,15 @@
     "jevTimeoutMs": {
       "type": "number",
       "title": "Jev request timeout (ms)",
-      "description": "A Jev request is abandoned after this long and the built-in listing is left alone. Held under the hook's 10 s budget.",
+      "description": "The first Jev request of a session is abandoned after this long and the built-in listing is left alone. Held under the hook's 10 s budget.",
       "default": 6000,
+      "required": false
+    },
+    "promptTimeoutMs": {
+      "type": "number",
+      "title": "Later-prompt Jev timeout (ms)",
+      "description": "Timeout for Jev requests on later prompts, which sit in the way of your turn. After two failures in a row the mod stops judging for 30 minutes.",
+      "default": 3000,
       "required": false
     },
     "maxRequestTokens": {

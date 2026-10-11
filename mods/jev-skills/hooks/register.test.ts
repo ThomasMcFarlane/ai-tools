@@ -47,6 +47,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('prompt.submit', (_$: any, e: any) => ({ text: e.text, context: e.context }))
   on('session.compact', () => ({ messages: [MESSAGE] }))
   on('skill.prompt', (_$: any, e: any) => ({ text: e.text }))
+  on('session.end', (_$: any, e: any) => ({ sessionId: e.sessionId }))
   on('command.register', () => ({ value: undefined as never }))
   on('ui.log', (_$: any, e: any) => {
     logs.push(e.text)
@@ -54,7 +55,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
-  return { requests, logs, clock, scores: (setup.p ??= {}) }
+  return { requests, logs, clock, setup, scores: (setup.p ??= {}) }
 }
 
 const submit = ($: any, text: string, origin: any = { kind: 'composer' }) => $.prompt.submit({ text, origin, wait: false } as never) as Promise<{ text: string; context?: string[] }>
@@ -70,8 +71,7 @@ test('the listing becomes a shortlist of the best skills, with the other-skills 
   const { text } = await listing($)
   expect(text).toContain('- review: Review a pull request for bugs, style and tests')
   expect(text).toContain('- deploy:')
-  expect(text).not.toContain('pdf')
-  expect(text).not.toContain('charts')
+  expect(text).not.toMatch(/^- (pdf|plugin-a:charts)/m)
   expect(text).toMatch(/Other installed skills are not listed here[^\n]*exact name/)
   expect(requests.length).toBe(1)
   expect(requests[0]!.url).toBe('https://api.typesafe.ai/v1/systemone')
@@ -199,12 +199,65 @@ test('a compaction resets what the model is known to have seen, so a skill can b
   expect((await submit($, 'Fill in the PDF form for the audit please')).context?.length).toBe(1)
 })
 
-test('a listing with skills added mid-session is dropped, its skills stay available by name and join the roster', async ($, on) => {
+test('a delta listing with new skills goes through unchanged, is shown, and joins the roster', async ($, on) => {
   await boot($, on, { p: { review: 0.9, extra: 0.9 } })
   await submit($, 'Please review the pull request for the billing module')
   await listing($)
-  expect((await listing($, {}, '- extra: A skill added later')).text).toBeNull()
-  expect((await submit($, 'Do the extra thing with the later skill please')).context?.[0]).toContain('- extra:')
+  const delta = '- extra: A skill added later'
+  expect((await listing($, {}, delta)).text).toBe(delta)
+  expect((await command($, 'why')).text).toMatch(/of 6 skills/)
+  expect((await submit($, 'Do the extra thing with the later skill please')).context ?? []).toEqual([])
+})
+
+test('a later partial listing never shrinks the roster or ends the shortlisting', async ($, on) => {
+  const { scores } = await boot($, on, { p: { review: 0.9 } })
+  await submit($, 'Please review the pull request for the billing module')
+  await listing($)
+  const partial = '- review: Review a pull request for bugs, style and tests\n- pdf: Read and fill in PDF forms'
+  expect((await listing($, {}, partial)).text).toBe(partial)
+  expect((await command($, 'why')).text).toMatch(/of 5 skills/)
+  scores['deploy'] = 0.9
+  expect((await submit($, 'Now deploy the application to production')).context?.[0]).toContain('- deploy:')
+})
+
+test('the shortlist names the hidden skills, names only', async ($, on) => {
+  await boot($, on, { p: { review: 0.9 } })
+  await submit($, 'Please review the pull request for the billing module')
+  const { text } = await listing($)
+  expect(text).toContain('Other skills (names only): deploy, pdf, plugin-a:charts, notes.')
+  expect(text).not.toContain('Deploy the application')
+})
+
+test('two Jev failures in a row pause judging; later prompts use the shorter timeout', { options: { jevTimeoutMs: 500, promptTimeoutMs: 50 } }, async ($, on) => {
+  const { clock, requests, setup, scores } = await boot($, on, { p: { review: 0.9 } })
+  await submit($, 'Please review the pull request for the billing module')
+  await listing($)
+  setup.hang = true
+  scores['pdf'] = 0.9
+  const asked = () => requests.length
+  const hung: string[] = []
+  for (const text of ['Fill in the PDF form for the audit please', 'Fill in the PDF form for the audit again please']) {
+    let done = false
+    const pending = submit($, text).then(() => (done = true))
+    await settle(clock, () => done)
+    await pending
+    hung.push(text)
+  }
+  expect((await command($, 'why')).text).toMatch(/timed out after 50 ms/)
+  setup.hang = false
+  const before = asked()
+  expect((await submit($, 'Fill in the PDF form once more please')).context ?? []).toEqual([])
+  expect(asked()).toBe(before)
+  expect((await command($, 'stats')).text).toMatch(/failures: 2/)
+})
+
+test('/clear resets the shortlist state', async ($, on) => {
+  await boot($, on, { p: { review: 0.9 } })
+  await submit($, 'Please review the pull request for the billing module')
+  await listing($)
+  await $.session.end({ reason: 'clear', sessionId: 's', resume: { kind: 'none' } } as never)
+  expect((await command($, 'why')).text).toMatch(/of 5 skills/)
+  expect((await submit($, 'Fill in the PDF form for the audit please')).context ?? []).toEqual([])
 })
 
 test('a full listing again (a compaction or resume) is shortlisted afresh', async ($, on) => {

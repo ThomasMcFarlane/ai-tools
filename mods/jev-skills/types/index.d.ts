@@ -43,6 +43,8 @@ declare module 'claude-code' {
       // the person's latest prompts, oldest first
       recent: string[]
       last: JevSkillsLast
+      // consecutive Jev failures and the time (ms since the epoch) until which judging is paused
+      fails: { count: number; until: number }
       stats: JevSkillsStats
     }
   }
