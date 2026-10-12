@@ -1,10 +1,13 @@
-import type { EngineInterface, Next, Register, SessionCompactInput, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, Next, Register, SessionAppendInput, SessionCompactInput, TurnCompleteInput } from 'claude-code'
 
 import { compact, prescore } from './compact'
+import { rewriteRow } from './entry'
+import type { EntryRow, Judge } from './entry'
 import { jevAsker } from './jev'
 import { DEFAULT_KEY_FILE, keyFromFile, redact } from './key'
 import { DEFAULTS, estimateAfter, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Config, Verdict } from './policy'
+import { goalFromMessages, truncate } from './state'
 import type { CompactResult, Protect } from './types'
 
 const SCORES = { plugin: 'jev-compaction', key: 'scores' } as const
@@ -16,14 +19,14 @@ const NOW_VALID_MS = 60_000
 const MAX_SCORES = 3000
 // `$.session.messages()` and so, it appears, a compaction's transcript are the newest 4096 only.
 const TRANSCRIPT_CAP = 4096
-const NO_STATS = { applied: 0, deferred: 0, fallbacks: 0, freedTokens: 0, requests: 0 }
+const NO_STATS = { applied: 0, deferred: 0, fallbacks: 0, freedTokens: 0, requests: 0, sentencesDropped: 0, wordCharsSaved: 0, entryCharsSaved: 0 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 function summary(r: CompactResult): string {
   const s = r.stats
-  return `tools kept ${s.toolsKept}, truncated ${s.resultsTruncated}, dropped ${s.callsDropped}; texts kept ${s.textsKept}, abridged ${s.textsAbridged}, stubbed ${s.textsStubbed}; ${s.requests} Jev request(s)${s.abandoned > 0 ? `; ${s.abandoned} items unscored` : ''}`
+  return `tools kept ${s.toolsKept}, truncated ${s.resultsTruncated}, dropped ${s.callsDropped}; texts kept ${s.textsKept}, abridged ${s.textsAbridged}, stubbed ${s.textsStubbed}; ${s.sentencesDropped} sentences dropped, ${s.wordCharsSaved} chars saved by word compression; ${s.requests} Jev request(s)${s.abandoned > 0 ? `; ${s.abandoned} items unscored` : ''}`
 }
 
 let config: Config = DEFAULTS
@@ -66,8 +69,8 @@ function notify($: EngineInterface, text: string) {
 }
 
 async function bump($: EngineInterface, change: Partial<typeof NO_STATS>) {
-  const { value = NO_STATS } = await $.state.get(STATS)
-  const next = { ...value }
+  const { value } = await $.state.get(STATS)
+  const next = { ...NO_STATS, ...value }
   for (const [name, by] of Object.entries(change)) next[name as keyof typeof NO_STATS] += by
   await $.state.set(STATS, next)
 }
@@ -176,7 +179,7 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
   try {
     if (verdict.act === 'apply' && done) {
       const freed = done.tokensBefore - done.tokensAfter
-      await bump($, { applied: 1, freedTokens: freed, requests })
+      await bump($, { applied: 1, freedTokens: freed, requests, sentencesDropped: done.result.stats.sentencesDropped, wordCharsSaved: done.result.stats.wordCharsSaved })
       lastApplied = done.tokensAfter
       notify($, `compacted ~${k(done.tokensBefore)} to ~${k(done.tokensAfter)} tokens (${summary(done.result)})`)
       return { messages: done.result.messages, tokensBefore: done.tokensBefore, tokensAfter: done.tokensAfter }
@@ -263,11 +266,97 @@ async function prescoreSome($: EngineInterface) {
   }
 }
 
+const ENTRY_CONTEXT =
+  'A coding assistant is writing its reply. `history` is the recent conversation, oldest first; the last entry is the text just written (or a note about a tool result just received). Each question asks whether one sentence or one chunk of it carries information the assistant or the user still needs later. What is not kept is deleted permanently.'
+
+// After a failed or timed-out Jev request on entry, entry stops asking for this long.
+const ENTRY_PAUSE_MS = 30 * 60_000
+let entryPausedUntil = 0
+
+/** One Jev request about the row being written: the recent conversation and the new text as the state. Key and messages are fetched lazily, inside the caller's one timeout. */
+function judgeFor($: EngineInterface, role: 'user' | 'assistant', made: { requests: number }): Judge {
+  return async (current, questions) => {
+    const key = await resolveKey($)
+    if (!key) throw new Error('no Jev API key')
+    made.requests++
+    let recent: { role: string; text: string }[] = []
+    let goal = config.goal
+    try {
+      const all = await $.session.messages()
+      recent = all.slice(-6).map((m) => ({ role: m.role, text: truncate(m.text, 500) }))
+      goal ||= goalFromMessages(all)
+    } catch {
+      // the new text alone is a state too
+    }
+    const history = [...recent, { role, text: truncate(current, 6000) }].map((m, i) => ({ i, ...m }))
+    try {
+      return await asker($, key, config.entryTimeoutMs, Date.now(), config.entryTimeoutMs)({ context: ENTRY_CONTEXT, goal, history }, questions)
+    } catch (err) {
+      if (/\((401|403)\)/.test(message(err))) cachedKey = undefined
+      throw err
+    }
+  }
+}
+
+/** The input command of the Bash call a result answers, from the stored conversation. */
+async function commandOf($: EngineInterface, id: string): Promise<string | undefined> {
+  const api = await $.session.messages({ as: 'api' })
+  for (let i = api.length - 1; i >= 0; i--) {
+    for (const block of api[i]?.content ?? []) {
+      if (block.type === 'tool_use' && block['id'] === id) {
+        const command = (block['input'] as { command?: unknown } | undefined)?.command
+        return typeof command === 'string' ? command : undefined
+      }
+    }
+  }
+  return undefined
+}
+
+// Rewrites the text of a row before it is stored: the stored form is what the model reads and what is cached, so the
+// compression costs no cache miss. One timeout bounds the whole rewrite (key, messages, requests); any failure leaves
+// the row as it came and pauses entry Jev for 30 minutes.
+async function onAppend($: EngineInterface, e: SessionAppendInput, next: Next<'session.append'>) {
+  let rewritten: Awaited<ReturnType<typeof rewriteRow>>
+  const made = { requests: 0 }
+  if (config.compressOnEntry && e.agentId === undefined) {
+    let timer: { cancel: () => void } | undefined
+    try {
+      const judge = Date.now() < entryPausedUntil ? undefined : judgeFor($, e.message.type === 'assistant' ? 'assistant' : 'user', made)
+      let failed = false
+      const guarded: Judge | undefined = judge && (async (c, q) => judge(c, q).catch((err: unknown) => {
+        if (!/^no Jev API key/.test(message(err))) failed = true
+        throw err
+      }))
+      const late = new Promise<'late'>((resolve) => {
+        timer = $.clock.after(config.entryTimeoutMs, () => resolve('late'))
+      })
+      const work = rewriteRow(e as unknown as EntryRow, guarded, config, (id) => commandOf($, id))
+      work.catch(() => undefined)
+      const done = await Promise.race([work, late])
+      if (done === 'late') entryPausedUntil = Date.now() + ENTRY_PAUSE_MS
+      else {
+        rewritten = done
+        if (failed) entryPausedUntil = Date.now() + ENTRY_PAUSE_MS
+      }
+    } catch (err) {
+      entryPausedUntil = Date.now() + ENTRY_PAUSE_MS
+      $.ui.log(`jev-compaction: entry compression skipped: ${redact(message(err), cachedKey)}`)
+    } finally {
+      timer?.cancel()
+    }
+  }
+  const result = await next(rewritten ? { ...e, message: { ...e.message, content: rewritten.content } } : e)
+  if (rewritten || made.requests > 0) await bump($, { entryCharsSaved: rewritten?.saved ?? 0, requests: made.requests }).catch(() => undefined)
+  return result
+}
+
 async function onCommand($: EngineInterface, args: string) {
   const word = args.trim().split(/\s+/)[0] ?? ''
   if (word === 'stats') {
-    const { value: s = NO_STATS } = await $.state.get(STATS)
-    return { text: `jev-compaction: ${s.applied} applied, ${s.deferred} deferred, ${s.fallbacks} built-in fallbacks; ~${s.freedTokens} tokens freed; ${s.requests} Jev requests` }
+    const s = { ...NO_STATS, ...(await $.state.get(STATS)).value }
+    return {
+      text: `jev-compaction: ${s.applied} applied, ${s.deferred} deferred, ${s.fallbacks} built-in fallbacks; ~${s.freedTokens} tokens freed; ${s.requests} Jev requests; ${s.sentencesDropped} sentences dropped, ${s.wordCharsSaved} chars saved by word compression, ${s.entryCharsSaved} chars saved on entry`,
+    }
   }
   if (word === 'now') {
     interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
@@ -285,6 +374,7 @@ export const register: Register = (on, options) => {
   prescoreAt = 0
   prescoring = false
   cachedKey = undefined
+  entryPausedUntil = 0
   on('session.start', async ($, e, next) => {
     interactive = (e as { isInteractive?: boolean }).isInteractive !== false
     await $.state.set(INTERACTIVE, interactive)
@@ -296,6 +386,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
   on('turn.complete', ($, e, next) => onTurnComplete($, e, next))
+  on('session.append', ($, e, next) => onAppend($, e, next))
   on('session.compact', ($, e, next) => onCompact($, e, next))
   on('command.run', { command: 'jev-compact' }, ($, e) => onCommand($, e.args))
 }

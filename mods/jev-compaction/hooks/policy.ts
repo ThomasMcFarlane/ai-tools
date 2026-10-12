@@ -1,5 +1,7 @@
 import type { SessionCompactTrigger } from 'claude-code'
 
+import { DEFAULT_TRIM_COMMANDS } from './entry'
+
 export type Config = {
   triggerTokens: number
   targetTokens: number
@@ -26,6 +28,16 @@ export type Config = {
   maxStateTokens: number
   maxRequestTokens: number
   truncateHeadChars: number
+  textCompression: boolean
+  sentenceKeepThreshold: number
+  maxSentenceDropRatio: number
+  compressOnEntry: boolean
+  entryUser: boolean
+  entryAssistant: boolean
+  entryToolResults: boolean
+  entryTimeoutMs: number
+  entryResultMinChars: number
+  entryTrimCommands: string
 }
 
 export const DEFAULTS: Config = {
@@ -54,16 +66,28 @@ export const DEFAULTS: Config = {
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
   truncateHeadChars: 300,
+  textCompression: true,
+  sentenceKeepThreshold: 0.35,
+  maxSentenceDropRatio: 0.7,
+  compressOnEntry: true,
+  entryUser: false,
+  entryAssistant: false,
+  entryToolResults: true,
+  entryTimeoutMs: 3_000,
+  entryResultMinChars: 12_000,
+  entryTrimCommands: DEFAULT_TRIM_COMMANDS,
 }
 
 /** Windows above this use the absolute token thresholds, smaller ones percentages. */
 export const LARGE_WINDOW = 300_000
 
 export function resolveConfig(options: Readonly<Record<string, unknown>>): Config {
-  const out: Record<string, string | number> = { ...DEFAULTS }
+  const out: Record<string, string | number | boolean> = { ...DEFAULTS }
   for (const [key, fallback] of Object.entries(DEFAULTS)) {
     const value = options[key]
-    if (typeof fallback === 'number') {
+    if (typeof fallback === 'boolean') {
+      if (typeof value === 'boolean') out[key] = value
+    } else if (typeof fallback === 'number') {
       if (typeof value === 'number' && Number.isFinite(value)) out[key] = value
     } else if (typeof value === 'string' && value !== '') out[key] = value
   }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { applyDecisions, callKey, collectTexts, compact, hash, prescore, resultKey, signalLines, textKey } from './compact'
+import { compressWords } from './squeeze'
 import type { JevAsker, Message, Scores } from './types'
 
 const long = (n: number, ch = 'x') => ch.repeat(n)
@@ -394,5 +395,158 @@ describe('a history too big for one state', () => {
     expect(stats.callsDropped).toBeLessThan(120)
     expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id).slice(-3)).toEqual(['k119', 'k118', 'k117'].reverse())
     expect(pairsIntact(out)).toBe(true)
+  })
+})
+
+describe('text compression', () => {
+  const SENTENCES = [
+    'The loader reads the config file once at startup and keeps it in memory.',
+    'I then compared the new schema with the old one for each table in turn.',
+    'This is a good moment to say that the approach looks sound so far.',
+    'The decision is to keep the cache key as it is, because the hash is stable.',
+    'Next I walked through the handlers one by one to see how they react.',
+    'Overall the design holds up well and little else needs to change here.',
+    'The constraint is that the batch has to finish within twenty seconds.',
+    'As a recap, we have now covered everything that came up so far today.',
+    'The result is that the parser accepts both forms of the header line.',
+    'The next step is to run the suite once more after the rename lands.',
+  ]
+  const long = () => `${SENTENCES.join(' ')}\nSee \`src/load.ts\` and ${'/etc/app/conf.d/main.toml'} for the details of the setup.`
+  const named = (message: string, p: Record<number, number>, base = 0.9) =>
+    Object.fromEntries([[message, 0.9], ...SENTENCES.map((_, i) => [`sent_${message.replace('text_', '')}_s${i}`, p[i] ?? base])])
+
+  test('Jev drops the low-scoring sentences of an old assistant message, in groups per message, keeping atomic lines', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), ...tail()]
+    const jev = fakeJev(named('text_m1', { 2: 0.1, 4: 0.2, 7: 0.05 }))
+    const { messages: out, stats } = await compact(messages, jev.ask)
+    expect(jev.asked.filter((n) => n.startsWith('sent_m1_s'))).toEqual(SENTENCES.map((_, i) => `sent_m1_s${i}`))
+    expect(stats).toMatchObject({ sentencesDropped: 3, requests: 2 })
+    const text = out[1]!.text
+    for (const i of [2, 4, 7]) expect(text).not.toContain(compressWords(SENTENCES[i]!))
+    for (const i of [0, 1, 3, 5, 6, 8, 9]) expect(text).toContain(compressWords(SENTENCES[i]!))
+    expect(text).toContain('`src/load.ts`')
+    expect(text.match(/\[… 1 sentence omitted by jev-compaction …\]/g)?.length).toBe(3)
+    expect(text.indexOf('[… 1')).toBeLessThan(text.indexOf(compressWords(SENTENCES[3]!)))
+    expect(out.length).toBe(messages.length)
+    expect(out[0]).toBe(messages[0])
+  })
+
+  test('never more than 70 percent of a message is dropped, the highest scorers stay', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), ...tail()]
+    const scores: Record<number, number> = {}
+    SENTENCES.forEach((_, i) => (scores[i] = i / 100))
+    const { messages: out, stats } = await compact(messages, fakeJev(named('text_m1', scores)).ask)
+    // 11 sentences in all (the line with a path counts), floor(0.7 * 11) = 7
+    expect(stats.sentencesDropped).toBe(7)
+    const text = out[1]!.text
+    for (const i of [0, 1, 2, 3, 4, 5, 6]) expect(text).not.toContain(compressWords(SENTENCES[i]!))
+    for (const i of [7, 8, 9]) expect(text).toContain(compressWords(SENTENCES[i]!))
+  })
+
+  test('sentenceKeepThreshold and maxSentenceDropRatio are options', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), ...tail()]
+    const low = Object.fromEntries(SENTENCES.map((_, i) => [i, 0.3]))
+    const strict = await compact(messages, fakeJev(named('text_m1', low)).ask, { sentenceKeepThreshold: 0.2 })
+    expect(strict.stats.sentencesDropped).toBe(0)
+    const capped = await compact(messages, fakeJev(named('text_m1', low)).ask, { maxSentenceDropRatio: 0.2 })
+    expect(capped.stats.sentencesDropped).toBe(2)
+  })
+
+  test('messages Jev stubbed, short messages, pinned ones and user text get no sentence questions', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), assistant(SENTENCES.slice(0, 5).join(' ')), user(long()), assistant(long()), ...tail()]
+    const jev = fakeJev({ text_m1: 0.05, text_m3: 0.9, text_m4: 0.9 })
+    const { messages: out } = await compact(messages, jev.ask)
+    expect(out[1]!.text).toContain('earlier assistant message omitted')
+    expect(jev.asked.filter((n) => n.startsWith('sent_')).every((n) => n.startsWith('sent_m5_'))).toBe(true)
+    expect(jev.asked.some((n) => n.startsWith('sent_m5_'))).toBe(true)
+    expect(out[4]!.text).toContain(compressWords(SENTENCES[2]!))
+  })
+
+  test('a second compaction of the result changes nothing and asks no sentence question', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), ...tail()]
+    const first = await compact(messages, fakeJev(named('text_m1', { 2: 0.1 })).ask)
+    const jev = fakeJev({}, 0)
+    const second = await compact(first.messages, jev.ask)
+    expect(second.messages).toEqual(first.messages)
+    expect(jev.asked.some((n) => n.startsWith('sent_'))).toBe(false)
+  })
+
+  test('remembered sentence scores are reused without a request', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), ...tail()]
+    const first = await compact(messages, fakeJev(named('text_m1', { 2: 0.1 })).ask)
+    const jev = fakeJev({}, 0)
+    const again = await compact(messages, jev.ask, {}, first.scores)
+    expect(jev.requests()).toBe(0)
+    expect(again.messages).toEqual(first.messages)
+  })
+
+  test('old user text gets only the word filter: no question, no deletion of sentences', async () => {
+    const prompt = 'Sure! Can you please just look at the broken build in the CI and let me know why it does not work in order to fix it?'
+    const messages = [user('start'), assistant('ok'), user(prompt), assistant('done'), ...tail()]
+    const jev = fakeJev({}, 0)
+    const { messages: out, stats } = await compact(messages, jev.ask)
+    expect(jev.asked).toEqual([])
+    expect(out[2]!.text).toBe('Sure! Can you please just look at broken build in the CI and let me know why it does not work in order to fix it?')
+    expect(stats.wordCharsSaved).toBe(prompt.length - out[2]!.text.length)
+    expect(out[0]).toBe(messages[0])
+    expect(out[1]).toBe(messages[1])
+  })
+
+  test('word compression of old assistant text keeps the failure lines and cuts the padding', async () => {
+    const text = 'Sure! Let me check the build output for you now.\nERROR: the module was not found in the path\nHope this helps!'
+    const messages = [user('start'), assistant(text), user('ok'), ...tail()]
+    const { messages: out } = await compact(messages, fakeJev({}).ask)
+    expect(out[1]!.text).toBe('Sure! Let me check build output for you now.\nERROR: the module was not found in the path')
+  })
+
+  test('textCompression off leaves text and questions as before', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), assistant('Sure! Let me check the build output for you now.'), user('ok'), ...tail()]
+    const jev = fakeJev({}, 0.9)
+    const { messages: out, stats } = await compact(messages, jev.ask, { textCompression: false })
+    expect(jev.asked.some((n) => n.startsWith('sent_'))).toBe(false)
+    expect(out).toEqual(messages)
+    expect(stats).toMatchObject({ sentencesDropped: 0, wordCharsSaved: 0 })
+  })
+
+  test('pre-scoring scores sentences as well, and a later compaction reuses them', async () => {
+    const messages = [user('start'), assistant(long()), user('ok'), ...tail()]
+    const jev = fakeJev(named('text_m1', { 2: 0.1 }))
+    const memory: Scores = {}
+    for (let round = 0; round < 2; round++) {
+      const { scores } = await prescore(messages, jev.ask, {}, memory, {})
+      Object.assign(memory, scores)
+    }
+    expect(Object.keys(memory).length).toBe(1 + SENTENCES.length)
+    const final = fakeJev({}, 0)
+    const { stats } = await compact(messages, final.ask, {}, memory)
+    expect(final.requests()).toBe(0)
+    expect(stats.sentencesDropped).toBe(1)
+  })
+
+  test('word compression never changes a message in the pinned ends or under protection', async () => {
+    const padded = 'Sure! Let me check the build output for you now.'
+    const messages = [user(padded), assistant(padded), user('ok'), assistant(padded), user('x'), assistant(padded), user('y'), assistant(padded), user('z'), assistant(padded), user('w'), assistant(padded)]
+    const { messages: out } = await compact(messages, fakeJev({}).ask, {}, {}, { protect: { ids: new Set(), indexes: new Set([1]), noUserText: true } })
+    expect(out[0]).toBe(messages[0])
+    expect(out[1]).toBe(messages[1])
+    expect(out[3]!.text).toBe('Sure! Let me check build output for you now.')
+    expect(out.slice(-6)).toEqual(messages.slice(-6))
+  })
+})
+
+describe('text compression safety', () => {
+  test('a user message whose text would compress to nothing is kept', async () => {
+    const messages = [user('start'), assistant('ok'), user('Hope this helps!'), assistant('done'), ...tail()]
+    const { messages: out } = await compact(messages, fakeJev({}).ask)
+    expect(out.length).toBe(messages.length)
+    expect(out[2]!.text).toBe('Hope this helps!')
+  })
+
+  test('the entry note does not pin a message: a compaction still judges it', async () => {
+    const text = `[… 3 sentences cut on entry …] ${Array.from({ length: 12 }, (_, i) => `Step number ${i} of the plan reads the input and writes the matching output file.`).join(' ')}`
+    const jev = fakeJev({}, 0.9)
+    await compact([user('start'), assistant(text), user('ok'), ...tail()], jev.ask)
+    expect(jev.asked).toContain('text_m1')
+    expect(jev.asked.some((n) => n.startsWith('sent_m1_'))).toBe(true)
   })
 })

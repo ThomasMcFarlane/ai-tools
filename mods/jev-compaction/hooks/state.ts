@@ -3,11 +3,11 @@ import type { Message, Options, Protect, ToolCall } from './types'
 
 /** The notes this mod leaves in cut text; an item that carries one is never judged or cut again. */
 const NOTE =
-  /\[jev-compaction truncated \d+ chars|\[… \d+ chars omitted by jev-compaction …\]|\[earlier assistant message omitted by jev-compaction:|\[jev-compaction dropped /
+  /\[jev-compaction truncated \d+ chars|\[… \d+ chars omitted by jev-compaction …\]|\[earlier assistant message omitted by jev-compaction:|\[jev-compaction dropped |\[… \d+ sentences? omitted by jev-compaction …\]/
 export const hasNote = (text: string) => NOTE.test(text)
 
 export const STATE_CONTEXT =
-  'A coding assistant conversation is being compacted to free context. `history` is the conversation so far, oldest first (an entry like `[N messages left out]` stands for messages not shown); tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, the full output of that call, or the full text of one message (named by its history index `i`) still needs to stay in the history verbatim. Whatever is not kept is deleted or shortened permanently, but the assistant can always re-run a tool or re-read a file.'
+  'A coding assistant conversation is being compacted to free context. `history` is the conversation so far, oldest first (an entry like `[N messages left out]` stands for messages not shown); tool outputs are replaced by a short `result` note and long texts may be abridged. Each question asks whether one tool call, the full output of that call, the full text of one message (named by its history index `i`), or one sentence of an assistant message still needs to stay in the history verbatim. Whatever is not kept is deleted or shortened permanently, but the assistant can always re-run a tool or re-read a file.'
 
 type HistoryToolCall = { id: string; tool: string; input: string; result: string }
 type HistoryEntry = {

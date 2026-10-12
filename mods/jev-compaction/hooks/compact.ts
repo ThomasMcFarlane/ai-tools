@@ -1,5 +1,7 @@
 // Ported from fast-jev-compaction (MIT): batching, decisions and rebuilding, extended to message text.
 import { collectToolCalls, estimateTokens, fitState, hasNote, isPinned } from './state'
+import { SIGNAL_LINES, SIGNAL_MAX_CHARS, SENTENCE_MIN_CHARS, compressWords, dropSegments, pickDrops, planSentences, sentenceQuestion, sentencesNote, signalLines } from './squeeze'
+import type { SentencePlan } from './squeeze'
 import type {
   CompactResult,
   CompactStats,
@@ -25,6 +27,9 @@ export const DEFAULT_OPTIONS: Options = {
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
   truncateHeadChars: 300,
+  textCompression: true,
+  sentenceKeepThreshold: 0.35,
+  maxSentenceDropRatio: 0.7,
 }
 
 /** A score this close to a threshold is asked again instead of reused. */
@@ -47,8 +52,11 @@ export function resolveOptions(options: Partial<Options> = {}): Options {
     const value = options[key]
     if (key === 'goal') {
       if (typeof value === 'string') out.goal = value
-    } else if (typeof value === 'number' && Number.isFinite(value)) out[key] = Math.max(0, value)
+    } else if (key === 'textCompression') {
+      if (typeof value === 'boolean') out.textCompression = value
+    } else if (typeof value === 'number' && Number.isFinite(value)) out[key as Exclude<keyof Options, 'goal' | 'textCompression'>] = Math.max(0, value)
   }
+  out.maxSentenceDropRatio = Math.min(1, out.maxSentenceDropRatio)
   out.preserveRecentMessages = Math.floor(out.preserveRecentMessages)
   out.truncateHeadChars = Math.floor(out.truncateHeadChars)
   return out
@@ -78,6 +86,10 @@ export function hash(text: string): string {
 export const callKey = (call: Pick<ToolCall, 'tool' | 'input'>) => `c:${call.tool}:${hash(stable(call.input))}`
 export const resultKey = (call: Pick<ToolCall, 'tool' | 'input' | 'resultChars'>) => `r:${call.tool}:${hash(stable(call.input))}:${call.resultChars}`
 export const textKey = (role: string, text: string) => `t:${role}:${hash(text)}`
+export const sentenceKey = (text: string) => `s:${hash(text)}`
+/** The text as the compaction will leave it before Jev's cuts: word compression is idempotent, so scores stay valid. */
+const prepared = (text: string, options: Pick<Options, 'textCompression'>, role: 'user' | 'assistant' = 'assistant') =>
+  options.textCompression ? compressWords(text, { user: role === 'user' }) : text
 
 /** Unpinned, unprotected, not-yet-compacted messages whose text is long enough to be judged. */
 export function collectTexts(messages: readonly Message[], preserve: number, protect?: Protect): TextCandidate[] {
@@ -110,7 +122,7 @@ export function questionsFor(calls: readonly ToolCall[], texts: readonly TextCan
     })
   }
   for (const t of texts) {
-    const text = messages[t.index]?.text ?? ''
+    const text = prepared(messages[t.index]?.text ?? '', options, t.role)
     out.push({
       name: `text_m${t.index}`,
       key: textKey(t.role, text),
@@ -123,6 +135,19 @@ export function questionsFor(calls: readonly ToolCall[], texts: readonly TextCan
     })
   }
   return out
+}
+
+/** Sentence questions of one old assistant message that Jev did not stub: grouped per message, bounded by `planSentences`. */
+export function sentenceQuestions(index: number, text: string, threshold: number): { plan: SentencePlan; questions: Question[] } {
+  const plan = planSentences(text)
+  const questions = plan.ask.map((a) => ({
+    name: `sent_m${index}_s${a.segment}`,
+    key: sentenceKey(a.text),
+    thresholds: [threshold],
+    textIndex: index,
+    instructions: sentenceQuestion(`the assistant message at history index i=${index}`, a.text),
+  }))
+  return { plan, questions }
 }
 
 /** A remembered score is reused unless it lies within the margin of a threshold. */
@@ -179,28 +204,7 @@ export function abridgeText(text: string, head: number, tail: number): string {
   return out.length < text.length ? out : text
 }
 
-export const SIGNAL_LINES =
-  /\b(error|errors|fail|failed|failure|failing|exception|traceback|panic|fatal|denied|refused|warning|warn|assert\w*|expected|received|not found|cannot|unable|segfault|exit code [1-9]|status [45]\d\d)\b/i
-export const SIGNAL_MAX_CHARS = 1500
-
-/** Lines of the dropped middle that look like failures, with one line of context either side, in order. */
-export function signalLines(middle: string, maxChars = SIGNAL_MAX_CHARS): string {
-  const lines = middle.split('\n')
-  const keep = new Set<number>()
-  lines.forEach((line, i) => {
-    if (!SIGNAL_LINES.test(line)) return
-    for (const j of [i - 1, i, i + 1]) if (j >= 0 && j < lines.length) keep.add(j)
-  })
-  const out: string[] = []
-  let used = 0
-  for (const i of [...keep].sort((a, b) => a - b)) {
-    const line = lines[i] as string
-    if (used + line.length + 1 > maxChars) break
-    out.push(line)
-    used += line.length + 1
-  }
-  return out.join('\n')
-}
+export { SIGNAL_LINES, SIGNAL_MAX_CHARS, signalLines }
 
 export const stubText = (chars: number) => `[earlier assistant message omitted by jev-compaction: ${chars} chars]`
 
@@ -212,15 +216,43 @@ function truncatedResultText(text: string, isError: boolean, headChars: number):
   return out.length < text.length ? out : text
 }
 
-function newText(message: Message, action: TextAction | undefined): string {
-  if (hasNote(message.text)) return message.text
-  if (action === 'stub') return stubText(message.text.length)
-  if (action === 'abridge') {
-    return message.role === 'user'
-      ? abridgeText(message.text, USER_HEAD, USER_TAIL)
-      : abridgeText(message.text, ASSISTANT_HEAD, ASSISTANT_TAIL)
+/** What a compaction may do to text beyond Jev's keep, abridge and stub: word compression and sentence drops. */
+export type Shrink = {
+  words: boolean
+  /** Messages that are pinned or protected. */
+  skip: (index: number, role: 'user' | 'assistant') => boolean
+  /** Sentence segments to drop per message index, with the segment count they were planned on. */
+  drops: ReadonlyMap<number, { count: number; drop: ReadonlySet<number> }>
+}
+
+type Rewritten = { text: string; abridged: boolean; stubbed: boolean; sentences: number; wordChars: number }
+
+function rewriteText(message: Message, action: TextAction | undefined, index: number, shrink?: Shrink): Rewritten {
+  const noted = hasNote(message.text)
+  const out: Rewritten = { text: message.text, abridged: false, stubbed: false, sentences: 0, wordChars: 0 }
+  if (action === 'stub' && !noted) return { ...out, text: stubText(message.text.length), stubbed: true }
+  let text = message.text
+  if (shrink?.words && !shrink.skip(index, message.role)) {
+    text = compressWords(text, { user: message.role === 'user' })
+    out.wordChars = message.text.length - text.length
   }
-  return message.text
+  const plan = shrink?.drops.get(index)
+  if (plan && !noted) {
+    const segments = planSentences(text).segments
+    if (segments.length === plan.count) {
+      const dropped = dropSegments(segments, plan.drop, sentencesNote)
+      text = dropped.text
+      out.sentences = dropped.dropped
+    }
+  }
+  if (action === 'abridge' && !noted) {
+    const cut = message.role === 'user' ? abridgeText(text, USER_HEAD, USER_TAIL) : abridgeText(text, ASSISTANT_HEAD, ASSISTANT_TAIL)
+    out.abridged = cut !== text
+    text = cut
+  }
+  // Never leave an empty message behind: the original stays.
+  if (text.trim() === '' && message.text.trim() !== '') return { ...out, text: message.text, abridged: false, sentences: 0, wordChars: 0 }
+  return { ...out, text }
 }
 
 const droppedNote = (tool: string, input: Record<string, unknown>) => {
@@ -245,14 +277,20 @@ export function applyDecisions(
   texts: ReadonlyMap<number, TextAction>,
   headChars: number,
   counts?: ApplyCounts,
+  shrink?: Shrink,
 ): Message[] {
   const out: Message[] = []
   messages.forEach((message, index) => {
     const dropped = (id: string) => tools.get(id) === 'drop_call'
-    let text = newText(message, texts.get(index))
+    const rewritten = rewriteText(message, texts.get(index), index, shrink)
+    let text = rewritten.text
     if (text !== message.text && text.length < message.text.length) {
-      if (texts.get(index) === 'stub') counts && counts.stubbed++
-      else counts && counts.abridged++
+      if (counts) {
+        if (rewritten.stubbed) counts.stubbed++
+        else if (rewritten.abridged) counts.abridged++
+        counts.sentences = (counts.sentences ?? 0) + rewritten.sentences
+        counts.wordChars = (counts.wordChars ?? 0) + rewritten.wordChars
+      }
     } else text = message.text
     const gone = message.toolUses.filter((t) => dropped(t.tool_use_id))
     if (gone.length > 0) {
@@ -308,6 +346,8 @@ type Gathered = {
   questions: Question[]
   scores: Map<string, number>
   fresh: Scores
+  /** Sentence plans per message index; their questions are `sent_m<index>_s<segment>`. */
+  plans: Map<number, SentencePlan>
   stateTokens: number
   stateStage: string
   requests: number
@@ -319,7 +359,8 @@ type Gathered = {
 /**
  * Asks Jev what has no usable remembered score. A batch that fails or times out is dropped like an abandoned
  * one (its items stay as they are) and the scores of the others are kept; only a run in which every batch
- * failed throws, as nothing was learned.
+ * failed throws, as nothing was learned. Sentence questions follow the text questions: they are asked about
+ * the messages Jev did not stub, so a second phase runs once the text scores are known.
  */
 async function gather(messages: readonly Message[], ask: JevAsker, opts: Options, memory: Scores, run: RunOptions): Promise<Gathered> {
   const calls = collectToolCalls(messages, opts.preserveRecentMessages, run.protect)
@@ -327,58 +368,95 @@ async function gather(messages: readonly Message[], ask: JevAsker, opts: Options
   const questions = questionsFor(calls, texts, messages, opts)
   const scores = new Map<string, number>()
   const fresh: Scores = {}
-  const toAsk: Question[] = []
-  for (const q of questions) {
-    const remembered = memory[q.key]
-    if (reusable(remembered, q.thresholds, run.reuseAll ? 0 : REASK_MARGIN)) scores.set(q.name, remembered)
-    else toAsk.push(q)
+  const plans = new Map<number, SentencePlan>()
+  const g: Gathered = { calls, texts, questions, scores, fresh, plans, stateTokens: 0, stateStage: '', requests: 0, abandoned: 0, failed: 0, reused: 0 }
+  const reuseMargin = run.reuseAll ? 0 : REASK_MARGIN
+  const classify = (qs: readonly Question[]) => {
+    const toAsk: Question[] = []
+    for (const q of qs) {
+      const remembered = memory[q.key]
+      if (reusable(remembered, q.thresholds, reuseMargin)) {
+        scores.set(q.name, remembered)
+        g.reused++
+      } else toAsk.push(q)
+    }
+    return toAsk
   }
-  const g: Gathered = { calls, texts, questions, scores, fresh, stateTokens: 0, stateStage: '', requests: 0, abandoned: 0, failed: 0, reused: questions.length - toAsk.length }
-  if (toAsk.length === 0) return g
-  if (toAsk.length < (run.minQuestions ?? 0)) return g
+  // Long assistant messages that are scored and not stubbed get sentence questions (once per message).
+  const planned = new Set<number>()
+  const sentenceBatch = (): Question[] => {
+    const out: Question[] = []
+    if (!opts.textCompression) return out
+    for (const t of texts) {
+      const p = scores.get(`text_m${t.index}`)
+      if (t.role !== 'assistant' || planned.has(t.index) || p === undefined || decideText('assistant', p, opts, t.chars) === 'stub') continue
+      planned.add(t.index)
+      const text = prepared(messages[t.index]?.text ?? '', opts)
+      if (text.length <= SENTENCE_MIN_CHARS || hasNote(text)) continue
+      const { plan, questions: qs } = sentenceQuestions(t.index, text, opts.sentenceKeepThreshold)
+      if (qs.length === 0) continue
+      plans.set(t.index, plan)
+      out.push(...qs)
+    }
+    questions.push(...out)
+    return out
+  }
+
+  const toAsk = classify(questions)
+  const sentences = classify(sentenceBatch())
+  const pending = [...toAsk, ...sentences]
+  if (pending.length === 0) return g
+  if (pending.length < (run.minQuestions ?? 0)) return g
   const fitted = fitState(messages, calls, opts)
   g.stateTokens = fitted.tokens
   g.stateStage = fitted.stage
-  // A text the state no longer shows cannot be judged and stays as it is.
-  const askable = toAsk.filter(
-    (q) => (q.textIndex === undefined || fitted.visibleTexts.has(q.textIndex)) && (q.callId === undefined || fitted.visibleCalls.has(q.callId)),
-  )
-  const batches = batchQuestions(askable, fitted.tokens, opts).slice(0, run.maxBatches ?? Infinity)
   let firstError: unknown
-  for (let at = 0; at < batches.length; at += MAX_PARALLEL_REQUESTS) {
-    if (at > 0 && run.stop?.()) {
-      g.abandoned += batches.slice(at).reduce((n, b) => n + b.length, 0)
-      break
-    }
-    const round = batches.slice(at, at + MAX_PARALLEL_REQUESTS)
-    g.requests += round.length
-    const answered = await Promise.all(
-      round.map((batch) =>
-        ask(fitted.state, Object.fromEntries(batch.map((q) => [q.name, { type: 'noul' as const, instructions: q.instructions }]))).then(
-          (answers) => ({ answers }),
-          (error: unknown) => ({ error }),
-        ),
-      ),
-    )
-    for (const [i, result] of answered.entries()) {
-      const batch = round[i] ?? []
-      if ('error' in result) {
-        firstError ??= result.error
-        g.failed += batch.length
-        continue
+  let rounds = 0
+  let batchesLeft = run.maxBatches ?? Infinity
+  const askAll = async (list: readonly Question[]) => {
+    // A text the state no longer shows cannot be judged and stays as it is.
+    const askable = list.filter((q) => (q.textIndex === undefined || fitted.visibleTexts.has(q.textIndex)) && (q.callId === undefined || fitted.visibleCalls.has(q.callId)))
+    const batches = batchQuestions(askable, fitted.tokens, opts).slice(0, batchesLeft)
+    batchesLeft -= batches.length
+    for (let at = 0; at < batches.length; at += MAX_PARALLEL_REQUESTS) {
+      if (rounds > 0 && run.stop?.()) {
+        g.abandoned += batches.slice(at).reduce((n, b) => n + b.length, 0)
+        break
       }
-      for (const q of batch) {
-        const p = result.answers[q.name]
-        if (p === undefined) {
-          firstError ??= new Error(`Invalid Jev answer for ${q.name}`)
-          g.failed++
+      rounds++
+      const round = batches.slice(at, at + MAX_PARALLEL_REQUESTS)
+      g.requests += round.length
+      const answered = await Promise.all(
+        round.map((batch) =>
+          ask(fitted.state, Object.fromEntries(batch.map((q) => [q.name, { type: 'noul' as const, instructions: q.instructions }]))).then(
+            (answers) => ({ answers }),
+            (error: unknown) => ({ error }),
+          ),
+        ),
+      )
+      for (const [i, result] of answered.entries()) {
+        const batch = round[i] ?? []
+        if ('error' in result) {
+          firstError ??= result.error
+          g.failed += batch.length
           continue
         }
-        scores.set(q.name, p)
-        fresh[q.key] = p
+        for (const q of batch) {
+          const p = result.answers[q.name]
+          if (p === undefined) {
+            firstError ??= new Error(`Invalid Jev answer for ${q.name}`)
+            g.failed++
+            continue
+          }
+          scores.set(q.name, p)
+          fresh[q.key] = p
+        }
       }
     }
   }
+  await askAll(pending)
+  const later = classify(sentenceBatch())
+  if (later.length > 0 && batchesLeft > 0) await askAll(later)
   if (firstError !== undefined && Object.keys(fresh).length === 0) throw firstError
   return g
 }
@@ -402,7 +480,7 @@ export async function compact(
   run: RunOptions = {},
 ): Promise<CompactResult> {
   const opts = resolveOptions(options)
-  const { calls, texts, scores, fresh, stateTokens, stateStage, requests, abandoned, failed, reused } = await gather(messages, ask, opts, memory, run)
+  const { calls, texts, scores, fresh, plans, stateTokens, stateStage, requests, abandoned, failed, reused } = await gather(messages, ask, opts, memory, run)
 
   const score = (name: string) => scores.get(name) ?? 1
   const tools = new Map<string, ToolAction>()
@@ -418,8 +496,19 @@ export async function compact(
     if (action !== 'keep') textActions.set(t.index, action)
   }
 
-  const counts: ApplyCounts = { truncated: 0, dropped: 0, abridged: 0, stubbed: 0 }
-  const out = applyDecisions(messages, tools, textActions, opts.truncateHeadChars, counts)
+  const drops = new Map<number, { count: number; drop: Set<number> }>()
+  for (const [index, plan] of plans) {
+    const scored = plan.ask.flatMap((a) => {
+      const p = scores.get(`sent_m${index}_s${a.segment}`)
+      return p === undefined ? [] : [{ segment: a.segment, p }]
+    })
+    const drop = pickDrops(plan, scored, opts.sentenceKeepThreshold, opts.maxSentenceDropRatio)
+    if (drop.size > 0 && textActions.get(index) !== 'stub') drops.set(index, { count: plan.segments.length, drop })
+  }
+  const skip = (index: number, role: 'user' | 'assistant') =>
+    isPinned(index, messages.length, opts.preserveRecentMessages) || run.protect?.indexes.has(index) === true || (role === 'user' && run.protect?.noUserText === true)
+  const counts: ApplyCounts = { truncated: 0, dropped: 0, abridged: 0, stubbed: 0, sentences: 0, wordChars: 0 }
+  const out = applyDecisions(messages, tools, textActions, opts.truncateHeadChars, counts, { words: opts.textCompression, skip, drops })
   const candidates = calls.filter((c) => !c.pinned).length
   const stats = {
     toolsKept: candidates - counts.truncated - counts.dropped,
@@ -428,6 +517,8 @@ export async function compact(
     textsKept: texts.length - counts.abridged - counts.stubbed,
     textsAbridged: counts.abridged,
     textsStubbed: counts.stubbed,
+    sentencesDropped: counts.sentences ?? 0,
+    wordCharsSaved: counts.wordChars ?? 0,
   }
   const result: CompactStats = {
     messagesBefore: messages.length,
