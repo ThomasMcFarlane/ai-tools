@@ -1,6 +1,6 @@
 {
   "name": "jev-compaction",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Thomas McFarlane"
   },
@@ -159,6 +159,75 @@
       "title": "Truncated result head (characters)",
       "description": "Characters of a truncated tool result that are kept.",
       "default": 300,
+      "required": false
+    },
+    "textCompression": {
+      "type": "boolean",
+      "title": "Compress old text",
+      "description": "During a compaction, cut padding, pleasantries and joining words from old text (user text only by the word filter) and let Jev drop sentences that carry nothing from long assistant messages.",
+      "default": true,
+      "required": false
+    },
+    "sentenceKeepThreshold": {
+      "type": "number",
+      "title": "Sentence keep threshold",
+      "description": "An old assistant sentence whose Jev probability is below this is dropped (never more than the drop ratio of a message).",
+      "default": 0.35,
+      "required": false
+    },
+    "maxSentenceDropRatio": {
+      "type": "number",
+      "title": "Maximum sentences dropped",
+      "description": "The largest share of one message's sentences that may be dropped (0 to 1).",
+      "default": 0.7,
+      "required": false
+    },
+    "compressOnEntry": {
+      "type": "boolean",
+      "title": "Compress on entry",
+      "description": "Compress text as it enters the transcript, so the compressed form is the only one ever sent or cached. Master switch for the three kinds below.",
+      "default": true,
+      "required": false
+    },
+    "entryUser": {
+      "type": "boolean",
+      "title": "Entry: user prompts",
+      "description": "Word filter only (articles and whitespace, no removals, never a deleted sentence) on your prompts. Off by default.",
+      "default": false,
+      "required": false
+    },
+    "entryAssistant": {
+      "type": "boolean",
+      "title": "Entry: assistant text",
+      "description": "Word filter and Jev sentence pruning on the assistant's reply text (long replies only for Jev; at most one request per message). Off by default.",
+      "default": false,
+      "required": false
+    },
+    "entryToolResults": {
+      "type": "boolean",
+      "title": "Entry: long tool results",
+      "description": "Trim long output of noisy Bash commands (test, build, install and log runners; see the allowlist) to its head, tail, failure lines and the chunks Jev keeps. Never Read, Grep, Glob, agents or MCP tools.",
+      "default": true,
+      "required": false
+    },
+    "entryTimeoutMs": {
+      "type": "number",
+      "title": "Entry Jev timeout (ms)",
+      "description": "A Jev request on entry is abandoned after this long and the text enters unpruned.",
+      "default": 3000,
+      "required": false
+    },
+    "entryResultMinChars": {
+      "type": "number",
+      "title": "Entry tool result minimum (characters)",
+      "description": "Only tool output longer than this is trimmed on entry.",
+      "default": 12000,
+      "required": false
+    },
+    "entryTrimCommands": {
+      "type": "string",
+      "title": "Entry: commands whose output may be trimmed",
+      "description": "Regular expression a Bash command must match (at the start of a command) for its long output to be trimmed on entry. Readers such as cat, head, git diff, rg and find are never trimmed. Default: test, build, install and log runners.",
       "required": false
     },
     "model": {

@@ -10,6 +10,9 @@ export type Options = {
   maxStateTokens: number
   maxRequestTokens: number
   truncateHeadChars: number
+  textCompression: boolean
+  sentenceKeepThreshold: number
+  maxSentenceDropRatio: number
 }
 
 /** A tool call paired with its result by `tool_use_id`. */
@@ -42,7 +45,7 @@ export type Question = {
   instructions: string
   /** Thresholds the score is compared with; a score near one is asked again. */
   thresholds: number[]
-  /** For a text question, the message index (it must be visible in the state). */
+  /** For a text or sentence question, the message index (it must be visible in the state). */
   textIndex?: number
   /** For a tool question, the call id (`t3`); it must be listed in the state. */
   callId?: string
@@ -66,6 +69,8 @@ export type CompactStats = {
   textsKept: number
   textsAbridged: number
   textsStubbed: number
+  sentencesDropped: number
+  wordCharsSaved: number
   abandoned: number
   failed: number
   pinned: number
@@ -106,4 +111,4 @@ export type Protect = {
   noUserText?: boolean
 }
 
-export type ApplyCounts = { truncated: number; dropped: number; abridged: number; stubbed: number }
+export type ApplyCounts = { truncated: number; dropped: number; abridged: number; stubbed: number; sentences?: number; wordChars?: number }

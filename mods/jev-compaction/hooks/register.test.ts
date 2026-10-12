@@ -2,6 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import type { Message } from './types'
 
+// Secret-shaped fixtures are assembled at runtime so no literal matches a real token format.
+const S = { SKL: ['sk', 'live', ''].join('_'), SKT: ['sk', 'test', ''].join('_'), RKL: ['rk', 'live', ''].join('_'), GHP: ['gh', 'p_'].join(''), PAT: ['github', 'pat', ''].join('_'), GLP: ['glp', 'at-'].join(''), XOX: ['xo', 'xb-'].join(''), AIZ: ['AI', 'za'].join(''), AKI: ['AK', 'IA'].join(''), NPM: ['np', 'm_'].join(''), HF: ['h', 'f_'].join(''), JWT: ['ey', 'J'].join(''), PEM: ['-----BE', 'GIN'].join('') }
+
 type Setup = {
   env?: Record<string, string>
   files?: Record<string, string>
@@ -40,6 +43,8 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const toasts: string[] = []
   const logs: string[] = []
   const compactCalls: any[] = []
+  const rows = mock.session(on)
+  const stored = { get: () => rows.appended().map((r) => r.message as any) }
   mock.env(on, setup.env ?? { JEV_COMPACTION_API_KEY: KEY, HOME: '/home/u' })
   on('fs.read', (_$: any, e: any) => {
     const text = (setup.files ?? {})[e.path]
@@ -74,7 +79,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('command.register', () => ({ value: undefined as never }))
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
-  return { requests, toasts, logs, compactCalls, usage, clock }
+  return { requests, toasts, logs, compactCalls, usage, clock, stored }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -378,4 +383,126 @@ test('a session that is not interactive is left alone', async ($, on) => {
   usage.tokens = 450_000
   await $.turn.complete(reply())
   expect(compactCalls.length).toBe(0)
+})
+
+// ---- compression on entry (session.append) ----------------------------------------------------------------
+
+const PADDED = 'Sure! Let me check the build output for you now.'
+const longReply = `${Array.from({ length: 12 }, (_, i) => `Step number ${i} of the plan reads the input and writes the matching output file.`).join(' ')}\nSee \`src/a.ts\` for the details.`
+
+function appendRow(door: string, type: 'user' | 'assistant', content: unknown[], origin: unknown, extra: Record<string, unknown> = {}) {
+  return { message: { type, content }, door, origin, uuid: 'u-1', ...extra } as never
+}
+
+const bootEntry = boot
+
+const ON = { entryUser: true, entryAssistant: true }
+const replyRow = (text: string) => appendRow('response', 'assistant', [{ type: 'text', text }], { kind: 'model', model: 'm' })
+const stat = async ($: any) => ((await $.command.run({ command: 'jev-compact', args: 'stats' } as never)) as { text: string }).text
+
+test('entry: user prompts and assistant text are off by default', async ($, on) => {
+  const { requests, stored } = await bootEntry($, on, { p: 0 })
+  await $.session.append(appendRow('prompt', 'user', [{ type: 'text', text: PADDED }], { kind: 'composer' }))
+  await $.session.append(replyRow(longReply))
+  expect(stored.get().map((m) => m.content[0].text)).toEqual([PADDED, longReply])
+  expect(requests).toEqual([])
+})
+
+test('entry: a user prompt gets the article drop only, with no Jev request', { options: ON }, async ($, on) => {
+  const { requests, stored } = await bootEntry($, on)
+  await $.session.append(appendRow('prompt', 'user', [{ type: 'text', text: PADDED }], { kind: 'composer' }))
+  expect(stored.get()[0].content).toEqual([{ type: 'text', text: 'Sure! Let me check build output for you now.' }])
+  expect(requests).toEqual([])
+  expect(await stat($)).toMatch(/, 4 chars saved on entry/)
+  await $.session.append(appendRow('prompt', 'user', [{ type: 'text', text: PADDED }], { kind: 'sdk' }))
+  expect(stored.get()[1].content[0].text).toBe(PADDED)
+})
+
+test('entry: a long reply gets one Jev request and loses the sentences Jev rates low; other rows and agents pass', { options: ON }, async ($, on) => {
+  const { requests, stored } = await bootEntry($, on, { p: 0 })
+  await $.session.append(replyRow(longReply))
+  expect(requests.length).toBe(1)
+  expect(requests[0]!.headers.authorization).toBe(`Bearer ${KEY}`)
+  const text = stored.get()[0].content[0].text as string
+  expect(text).toContain('`src/a.ts`')
+  expect(text).toMatch(/\[… \d+ sentences cut on entry …\]/)
+  expect(text.length).toBeLessThan(longReply.length / 2)
+  await $.session.append(appendRow('response', 'assistant', [{ type: 'text', text: PADDED }], { kind: 'model', model: 'm' }, { agentId: 'sub-1' }))
+  expect(stored.get()[1].content[0].text).toBe(PADDED)
+  await $.session.append(appendRow('delivery', 'user', [{ type: 'text', text: PADDED }], { kind: 'task-notification' }))
+  expect(stored.get()[2].content[0].text).toBe(PADDED)
+  expect(requests.length).toBe(1)
+})
+
+test('entry: a Jev failure leaves the reply word-filtered, pauses entry Jev, and the key stays out of logs', { options: ON }, async ($, on) => {
+  const { logs, stored, requests } = await bootEntry($, on, { status: 500 })
+  await $.session.append(replyRow(longReply))
+  expect(stored.get()[0].content[0].text).toContain('Step number 11 of')
+  expect(requests.length).toBe(1)
+  await $.session.append(replyRow(longReply))
+  expect(requests.length).toBe(1)
+  expect([...logs].join('\n')).not.toContain(KEY)
+})
+
+test('entry: a request that never answers is cut off by one timeout and the row enters unpruned', { options: { ...ON, entryTimeoutMs: 50 } }, async ($, on) => {
+  const { clock, stored } = await bootEntry($, on, { hang: true })
+  let done = false
+  const pending = $.session.append(replyRow(longReply)).then(() => (done = true))
+  await settle(clock, () => done)
+  await pending
+  expect(stored.get()[0].content[0].text).toContain('Step number 11 of')
+})
+
+test('entry: compressOnEntry off leaves every row as it came', { options: { ...ON, compressOnEntry: false } }, async ($, on) => {
+  const { stored, requests } = await bootEntry($, on, { p: 0 })
+  await $.session.append(appendRow('prompt', 'user', [{ type: 'text', text: PADDED }], { kind: 'composer' }))
+  await $.session.append(replyRow(longReply))
+  expect(stored.get().map((m) => m.content[0].text)).toEqual([PADDED, longReply])
+  expect(requests).toEqual([])
+})
+
+test('entry: without a key a long reply is word-filtered and Jev is never called', { options: ON }, async ($, on) => {
+  const { requests, stored } = await bootEntry($, on, { env: { HOME: '/home/u' } })
+  await $.session.append(replyRow(longReply))
+  expect(requests).toEqual([])
+  expect(stored.get()[0].content[0].text).toContain('Step number 11 of')
+})
+
+const OUTPUT = Array.from({ length: 600 }, (_, i) => `row ${i}: some listing text that carries little`).join('\n')
+const apiWith = (command: string) => [{ role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command } }] }]
+const toolRow = (tool: string) => appendRow('tool-result', 'user', [{ type: 'tool_result', tool_use_id: 't1', content: OUTPUT }], { kind: 'tool', tool })
+
+test('entry: a long result of a noisy Bash command is trimmed by default; a reader, or another tool, is not', async ($, on) => {
+  const { requests, stored } = await bootEntry($, on, { p: 0, api: apiWith('npm test') })
+  await $.session.append(toolRow('Bash'))
+  expect(stored.get()[0].content[0].content.length).toBeLessThan(OUTPUT.length / 3)
+  expect(stored.get()[0].content[0].tool_use_id).toBe('t1')
+  expect(requests.length).toBe(1)
+  await $.session.append(toolRow('Grep'))
+  expect(stored.get()[1].content[0].content).toBe(OUTPUT)
+  expect(requests.length).toBe(1)
+})
+
+test('entry: a Bash reader command keeps its output whole', async ($, on) => {
+  const { requests, stored } = await bootEntry($, on, { p: 0, api: apiWith('cat build.log') })
+  await $.session.append(toolRow('Bash'))
+  expect(stored.get()[0].content[0].content).toBe(OUTPUT)
+  expect(requests).toEqual([])
+})
+
+test('entry: everything sent to Jev has secrets masked', { options: ON }, async ($, on) => {
+  const { requests } = await bootEntry($, on, { p: 0 })
+  const secret = 'Authorization: Bearer abcdef1234567890abcdef and API_KEY=sk-live-1234567890abcdefghij done.'
+  await $.session.append(replyRow(`${secret}\n${longReply}`))
+  expect(requests.length).toBe(1)
+  expect(JSON.stringify(requests[0]!.body)).not.toMatch(/abcdef1234567890abcdef|sk-live-1234567890/)
+})
+
+test('compaction: state and questions sent to Jev have secrets masked', async ($, on) => {
+  const { requests } = await boot($, on, { p: 0 })
+  const messages = transcript(2)
+  messages.splice(1, 0, { role: 'assistant', text: `The deploy used TOKEN=${S.GHP}abcdefghijklmnopqrstuvwx and Bearer abcdef1234567890abcdef. ${'Padding words to make it long enough. '.repeat(14)}`, toolUses: [] })
+  await $.session.compact({ trigger: 'plugin', messages } as never)
+  expect(requests.length).toBeGreaterThan(0)
+  expect(JSON.stringify(requests.map((r) => r.body))).not.toMatch(/p_abcdefghijklmnopqrstuvwx|abcdef1234567890abcdef/)
 })

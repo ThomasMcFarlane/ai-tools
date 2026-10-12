@@ -1,3 +1,4 @@
+import { maskDeep } from './mask'
 import type { JevAsker } from './types'
 
 export const SYSTEM_ONE_URL = 'https://api.typesafe.ai/v1/systemone'
@@ -22,7 +23,7 @@ export function buildRequest(apiKey: string, model: string, state: object, quest
     url: SYSTEM_ONE_URL,
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model, state, questions }),
+    body: JSON.stringify({ model, state: maskDeep(state), questions: maskDeep(questions) }),
   }
 }
 

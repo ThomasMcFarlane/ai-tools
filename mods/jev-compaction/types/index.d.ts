@@ -9,6 +9,11 @@ export type JevCompactionStats = {
   freedTokens: number
   // Jev requests made
   requests: number
+  // sentences dropped and characters saved by word compression during compactions
+  sentencesDropped: number
+  wordCharsSaved: number
+  // characters saved by compressing rows as they entered the transcript
+  entryCharsSaved: number
 }
 
 declare module 'claude-code' {
