@@ -153,9 +153,13 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
   isNow = false
   // The user asked for something specific: that is the built-in summary's job.
   if (e.instructions) return next(e)
-  // The list may be cut. A soft compaction waits (the engine compacts at its own limit); only auto and manual, which
-  // must produce something, fall back.
-  if (e.messages.length >= TRANSCRIPT_CAP) return e.trigger === 'plugin' || now ? { skip: 'jev-compaction: transcript over 4096 messages' } : next(e)
+  // The list may be cut. A soft compaction waits (the engine compacts at its own limit) unless the context is at or
+  // above the hard limit; auto and manual, which must produce something, fall back.
+  if (e.messages.length >= TRANSCRIPT_CAP) {
+    if (e.trigger !== 'plugin' && !now) return next(e)
+    const usage = await $.session.usage().then((u) => u.context, () => undefined)
+    return usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard ? next(e) : { skip: 'jev-compaction: transcript over 4096 messages' }
+  }
   let key: string | undefined
   let verdict: Verdict
   let usage: { tokens?: number; window: number } | undefined
@@ -166,14 +170,10 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
     if (!key) throw new Error('no Jev API key (environment or key file)')
     done = await attempt($, e, key, usage.tokens, usage.window)
     verdict = judge({ trigger: e.trigger, isNow: now, ...done, minFreedTokens: config.minFreedTokens })
-    // Part of the backlog is still unscored at the hard limit: keep what was learned and go on next time.
-    if (verdict.act === 'next' && e.trigger === 'plugin' && done.result.stats.abandoned > 0) {
-      verdict = { act: 'skip', reason: `${verdict.reason}; ${done.result.stats.abandoned} items still unscored` }
-    }
   } catch (err) {
     const text = redact(message(err), key)
     if (/\((401|403)\)/.test(text)) cachedKey = undefined
-    verdict = now ? { act: 'skip', reason: text } : failure(e.trigger, text, usage?.tokens, usage && thresholdsFor(config, usage.window).hard)
+    verdict = failure(now ? 'plugin' : e.trigger, text, usage?.tokens, usage && thresholdsFor(config, usage.window).hard)
   }
   const requests = done?.result.stats.requests ?? 0
   try {

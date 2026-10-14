@@ -139,6 +139,79 @@ test('soft compaction at the hard limit that frees too little falls back to the 
   expect(isBuiltin(await compact($, 'plugin'))).toBe(true)
 })
 
+const HARD = { hardTokens: 300_000, triggerTokens: 200_000, targetTokens: 120_000, softMinFreedTokens: 50_000 }
+
+test('hard ceiling: a periodic result that stays above the hard limit runs the built-in summary instead', { options: { ...HARD, hardTokens: 200_000 } }, async ($, on) => {
+  const { toasts, compactCalls } = await boot($, on, { p: 0, tokens: 466_000 })
+  // Jev frees ~103k (466k to ~363k), still above the 200k limit
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(true)
+  expect(toasts[0]).toMatch(/built-in summary: .*hard limit 200000/)
+  expect(compactCalls.length).toBe(1)
+})
+
+test('hard ceiling: a periodic result that reaches below the hard limit is applied', { options: HARD }, async ($, on) => {
+  const { toasts } = await boot($, on, { p: 0, tokens: 350_000 })
+  const r = await compact($, 'plugin')
+  expect(isBuiltin(r)).toBe(false)
+  expect(r.messages!.length).toBe(19)
+  expect(toasts[0]).toMatch(/compacted ~350k to ~2\d\dk tokens/)
+})
+
+test('hard ceiling: a Jev error, a missing key or an unfittable history above the hard limit runs the built-in summary', { options: HARD }, async ($, on) => {
+  const failing = await boot($, on, { status: 500, tokens: 466_000 })
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(true)
+  expect(failing.toasts[0]).toMatch(/built-in summary: .*500/)
+})
+
+test('hard ceiling: no key above the hard limit runs the built-in summary, below it is deferred', { options: HARD }, async ($, on) => {
+  const { usage } = await boot($, on, { env: { HOME: '/home/u' }, tokens: 466_000 })
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(true)
+  usage.tokens = 280_000
+  expect((await compact($, 'plugin')).skip).toMatch(/no Jev API key/)
+})
+
+test('hard ceiling: a transcript of 4096 messages or more runs the built-in summary above the hard limit, defers below it', { options: HARD }, async ($, on) => {
+  const { usage } = await boot($, on, { p: 0, tokens: 466_000 })
+  const many = Array.from({ length: 4096 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'x', toolUses: [] }))
+  expect(isBuiltin(await compact($, 'plugin', { messages: many }))).toBe(true)
+  usage.tokens = 280_000
+  expect((await compact($, 'plugin', { messages: many })).skip).toMatch(/over 4096 messages/)
+})
+
+test('hard ceiling: below the hard limit a soft compaction that frees too little is still deferred', { options: HARD }, async ($, on) => {
+  await boot($, on, { p: 1, tokens: 280_000 })
+  expect((await compact($, 'plugin')).skip).toMatch(/deferred/)
+})
+
+test('hard ceiling: the regrowth guard does not block a turn end at or above the hard limit', { options: HARD }, async ($, on) => {
+  const { compactCalls, usage } = await boot($, on, { core: () => ({ skip: 'deferred by test' }) })
+  const turn = async (tokens: number) => {
+    usage.tokens = tokens
+    await $.turn.complete(reply())
+  }
+  await turn(250_000)
+  expect(compactCalls.length).toBe(1)
+  // guard 250k: 280k is within the regrowth, so no attempt
+  await turn(280_000)
+  expect(compactCalls.length).toBe(1)
+  // at the hard limit every turn end attempts, however little the context grew
+  await turn(300_000)
+  expect(compactCalls.length).toBe(2)
+  await turn(301_000)
+  expect(compactCalls.length).toBe(3)
+})
+
+test('hard ceiling: /jev-compact now falls back to the built-in summary above the hard limit', { options: HARD }, async ($, on) => {
+  const { usage } = await boot($, on, { p: 1, tokens: 466_000 })
+  await $.command.run({ command: 'jev-compact', args: 'now' } as never)
+  await $.turn.complete(reply())
+  expect(isBuiltin(await compact($, 'manual'))).toBe(true)
+  usage.tokens = 280_000
+  await $.command.run({ command: 'jev-compact', args: 'now' } as never)
+  await $.turn.complete(reply())
+  expect((await compact($, 'manual')).skip).toMatch(/deferred/)
+})
+
 test('auto: applied below the hard limit, built-in summary above it', async ($, on) => {
   await boot($, on, { p: 0, tokens: 600_000 })
   expect(isBuiltin(await compact($, 'auto'))).toBe(false)
