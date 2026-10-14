@@ -10,10 +10,28 @@ const COMMAND = 'plan-view'
 const plan = atom({ plugin: 'plan-view', key: 'plan' } as const, { path: '', at: 0 })
 
 // Markdown files mentioned in replies: `pending` waits for an answer (newest last), `seen` was ever offered.
-const offer = atom({ plugin: 'plan-view', key: 'offer' } as const, { pending: [] as string[], seen: [] as string[] })
+const offer = atom({ plugin: 'plan-view', key: 'offer' } as const, { pending: [] as string[], seen: [] as string[], at: 0 })
 
 // The drawn text. A module variable on purpose: a render may not write $.state, and session.start re-reads it after a reload.
 let shown = ''
+
+// Mention -> existing path, hits only (a file may appear later). Module-level because a render may not write $.state.
+const resolved = new Map<string, string>()
+
+const resolveMd = async ($: EngineInterface, m: string): Promise<string | undefined> => {
+  const home = (await $.env.get('HOME')) ?? ''
+  const bases = [await $.session.cwd(), await $.session.root()]
+  const key = `${m}\0${bases.join('\0')}`
+  const hit = resolved.get(key)
+  if (hit) return hit
+  const options = m.startsWith('/') ? [m] : m.startsWith('~/') ? [`${home}${m.slice(1)}`] : bases.map(b => `${b.replace(/\/+$/, '')}/${m}`)
+  for (const path of options) {
+    if (await $.fs.exists(path)) {
+      resolved.set(key, path)
+      return path
+    }
+  }
+}
 
 const report = ($: EngineInterface, where: string, err: unknown) => {
   try {
@@ -92,50 +110,102 @@ export const register: Register = on => {
   // Offers a preview of each existing .md file the reply names.
   on('turn.complete', async ($, e, next) => {
     try {
-      const home = (await $.env.get('HOME')) ?? ''
-      const bases = [await $.session.cwd(), await $.session.root()]
-      const { pending, seen } = await read($, offer)
+      const { seen } = await read($, offer)
       const shownPath = (await read($, plan)).path
       const fresh: string[] = []
       for (const m of mdMentions(e.answer)) {
-        const options = m.startsWith('/') ? [m] : m.startsWith('~/') ? [`${home}${m.slice(1)}`] : bases.map(b => `${b.replace(/\/+$/, '')}/${m}`)
-        for (const path of options) {
-          if (seen.includes(path) || fresh.includes(path) || (path === shownPath && (await $.ui.panes()).some(p => p.id === PANE))) continue
-          if (await $.fs.exists(path)) {
-            fresh.push(path)
-            break
-          }
-        }
+        const path = await resolveMd($, m)
+        if (!path || seen.includes(path) || fresh.includes(path) || (path === shownPath && (await $.ui.panes()).some(p => p.id === PANE))) continue
+        fresh.push(path)
       }
-      if (fresh.length) await update($, offer, o => ({ pending: [...o.pending, ...fresh], seen: [...o.seen, ...fresh] }))
+      if (fresh.length) await update($, offer, o => ({ pending: [...o.pending, ...fresh], seen: [...o.seen, ...fresh], at: o.pending.length + fresh.length - 1 }))
     } catch (err) {
       report($, 'turn.complete', err)
     }
     return next(e)
   })
 
+  // Stays under the message for good, whatever the band or `seen` say.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    try {
+      const paths = new Set<string>()
+      for (const m of mdMentions(e.props.text)) {
+        const path = await resolveMd($, m)
+        if (path) paths.add(path)
+      }
+      if (!paths.size) return next(e)
+      const { Box, Button, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column">
+          {await next(e)}
+          <Box flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1}>
+            <Text bold color="suggestion">Markdown preview</Text>
+            {[...paths].map(path => (
+              <Box key={path}>
+                <Text bold>{path.split('/').pop()}</Text>
+                <Text dimColor wrap="truncate-middle">{`  ${path}  `}</Text>
+                <Button
+                  key={`open:${path}`}
+                  label="Open"
+                  onPress={async () => {
+                    try {
+                      await update($, offer, o => {
+                        const pending = o.pending.filter(p => p !== path)
+                        return { ...o, pending, at: Math.min(o.at, Math.max(pending.length - 1, 0)) }
+                      })
+                      await show($, path)
+                    } catch (err) {
+                      report($, 'open', err)
+                    }
+                  }}
+                />
+              </Box>
+            ))}
+          </Box>
+        </Box>
+      )
+    } catch (err) {
+      report($, 'AssistantMessage', err)
+      return next(e)
+    }
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const { pending } = await read($, offer)
-    const path = pending[pending.length - 1]
-    if (!path || e.props.hasSurvey) return next(e)
+    const { pending, at: raw } = await read($, offer)
+    if (!pending.length || e.props.hasSurvey) return next(e)
+    const at = Math.min(Math.max(raw, 0), pending.length - 1)
+    const path = pending[at]
+    const many = pending.length > 1
     const { Box, Button, Text } = $.ui.resolve(e)
+    // Drops only the shown path; the index then points at its neighbour.
+    const drop = async () => update($, offer, o => ({ ...o, pending: o.pending.filter(p => p !== path), at }))
+    const go = (step: number) => () => update($, offer, o => ({ ...o, at: (at + step + o.pending.length) % o.pending.length }))
     return (
-      <Box flexDirection="column">
-        <Text dimColor wrap="truncate-middle">{`Preview ${path.split('/').pop()}? ${path}${pending.length > 1 ? ` (+${pending.length - 1} more)` : ''}`}</Text>
+      <Box flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1}>
         <Box>
+          <Text bold color="suggestion">Markdown preview</Text>
+          {many && <Text dimColor>{`  ${at + 1} of ${pending.length}`}</Text>}
+        </Box>
+        <Box>
+          <Text bold>{path.split('/').pop()}</Text>
+          <Text dimColor wrap="truncate-middle">{`  ${path}`}</Text>
+        </Box>
+        <Box>
+          {many && <Button key="prev" label="Prev" onPress={go(-1)} />}
+          {many && <Button key="next" label="Next" onPress={go(1)} />}
           <Button
             key="open"
             label="Open"
             onPress={async () => {
               try {
-                await update($, offer, o => ({ ...o, pending: o.pending.filter(p => p !== path) }))
+                await drop()
                 await show($, path)
               } catch (err) {
                 report($, 'open', err)
               }
             }}
           />
-          <Button key="dismiss" label="Dismiss" onPress={() => update($, offer, o => ({ ...o, pending: [] }))} />
+          <Button key="dismiss" label="Dismiss" onPress={drop} />
         </Box>
       </Box>
     )
