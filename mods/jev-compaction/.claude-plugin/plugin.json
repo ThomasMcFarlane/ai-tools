@@ -1,6 +1,6 @@
 {
   "name": "jev-compaction",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "Thomas McFarlane"
   },
@@ -24,7 +24,7 @@
     "hardTokens": {
       "type": "number",
       "title": "Hard limit (tokens)",
-      "description": "Windows over 300k tokens: at this size a compaction that cannot free enough falls back to the built-in summary.",
+      "description": "Windows over 300k tokens: at or above this size a compaction that does not end below it falls back to the built-in summary.",
       "default": 500000,
       "required": false
     },

@@ -28,6 +28,11 @@ describe('periodic trigger and regrowth guard', () => {
     expect(shouldTrigger(399_999, t, 0, 25_000)).toBe(false)
     expect(shouldTrigger(400_000, t, 0, 25_000)).toBe(true)
   })
+  test('at or above the hard limit the guard never blocks an attempt', () => {
+    expect(shouldTrigger(499_999, t, 480_000, 50_000)).toBe(false)
+    expect(shouldTrigger(500_000, t, 480_000, 50_000)).toBe(true)
+    expect(shouldTrigger(372_000, thresholdsFor({ ...DEFAULTS, triggerTokens: 200_000, hardTokens: 300_000 }, 1_000_000), 372_000, 50_000)).toBe(true)
+  })
   test('after an attempt it waits for 50000 tokens of regrowth', () => {
     expect(shouldTrigger(420_000, t, 410_000, 50_000)).toBe(false)
     expect(shouldTrigger(459_999, t, 410_000, 50_000)).toBe(false)
@@ -87,15 +92,32 @@ describe('policy levels', () => {
     expect(judge({ ...base, trigger: 'manual', tokensAfter: 399_999 }).act).toBe('apply')
     expect(judge({ ...base, trigger: 'manual', tokensAfter: 410_000 }).act).toBe('next')
   })
-  test('now: manual-like but never the built-in summary', () => {
+  test('now: manual-like, deferred below the hard limit, built-in summary above it', () => {
     expect(judge({ ...base, isNow: true, tokensAfter: 410_000 }).act).toBe('skip')
-    expect(judge({ ...base, isNow: true, tokensBefore: 620_000, tokensAfter: 610_000 }).act).toBe('skip')
+    expect(judge({ ...base, isNow: true, tokensBefore: 620_000, tokensAfter: 610_000 }).act).toBe('next')
+    expect(judge({ ...base, isNow: true, tokensBefore: 620_000, tokensAfter: 450_000 }).act).toBe('apply')
     expect(judge({ ...base, isNow: true }).act).toBe('apply')
+  })
+  test('hard ceiling: a periodic result that ends at or above the hard limit falls back, below it is applied', () => {
+    const live = { ...base, tokensBefore: 466_000, thresholds: thresholdsFor({ ...DEFAULTS, triggerTokens: 200_000, targetTokens: 120_000, hardTokens: 300_000, softMinFreedTokens: 50_000 }, 1_000_000) }
+    // the live case: ~466k to ~372k frees 94k, more than the soft minimum, yet stays above the limit
+    expect(judge({ ...live, tokensAfter: 372_000 }).act).toBe('next')
+    expect(judge({ ...live, tokensAfter: 300_000 }).act).toBe('next')
+    expect(judge({ ...live, tokensAfter: 299_999 })).toEqual({ act: 'apply' })
+    expect(judge({ ...live, tokensAfter: 120_000 })).toEqual({ act: 'apply' })
+  })
+  test('hard ceiling: below the hard limit a small gain is still deferred', () => {
+    expect(judge({ ...base, tokensBefore: 299_000, tokensAfter: 290_000, thresholds: thresholdsFor({ ...DEFAULTS, hardTokens: 300_000 }, 1_000_000) }).act).toBe('skip')
+  })
+  test('hard ceiling: manual applies only below the hard limit when it started at or above it', () => {
+    expect(judge({ ...base, trigger: 'manual', tokensBefore: 620_000, tokensAfter: 550_000 }).act).toBe('next')
+    expect(judge({ ...base, trigger: 'manual', tokensBefore: 620_000, tokensAfter: 450_000 }).act).toBe('apply')
   })
   test('failures defer a soft compaction and fall back for auto and manual', () => {
     expect(failure('plugin', 'x').act).toBe('skip')
     expect(failure('plugin', 'x', 400_000, 500_000).act).toBe('skip')
     expect(failure('plugin', 'x', 500_000, 500_000).act).toBe('next')
+    expect(failure('plugin', 'x', 466_000, 300_000).act).toBe('next')
     expect(failure('auto', 'x').act).toBe('next')
     expect(failure('manual', 'x').act).toBe('next')
   })

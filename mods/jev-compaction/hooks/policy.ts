@@ -102,10 +102,10 @@ export function thresholdsFor(config: Config, window: number): Thresholds {
   return { trigger: of(config.triggerPercent), target: of(config.targetPercent), hard: of(config.hardPercent), softMinFreed: of(config.softMinFreedPercent) }
 }
 
-/** Soft compaction starts once the context passes the trigger, and again only after it regrew. */
+/** Soft compaction starts once the context passes the trigger, and again only after it regrew; at or above the hard limit always. */
 export function shouldTrigger(tokens: number, t: Thresholds, guard: number, regrow: number): boolean {
   if (tokens < t.trigger) return false
-  return guard <= 0 || tokens >= guard + regrow
+  return tokens >= t.hard || guard <= 0 || tokens >= guard + regrow
 }
 
 /** Why the compaction was refused (the text of the deferral or fallback). */
@@ -113,7 +113,7 @@ export type Verdict = { act: 'apply' } | { act: 'skip'; reason: string } | { act
 
 export type Judgement = {
   trigger: SessionCompactTrigger
-  /** `/jev-compact now`: manual-like, never the built-in summary. */
+  /** `/jev-compact now`: manual-like; the built-in summary only at or above the hard limit. */
   isNow: boolean
   tokensBefore: number
   tokensAfter: number
@@ -121,24 +121,32 @@ export type Judgement = {
   minFreedTokens: number
 }
 
-/** The policy levels: soft (`plugin`), hard (`auto`), manual, and manual-like `now`. */
+/**
+ * The policy levels: soft (`plugin`), hard (`auto`), manual, and manual-like `now`. The hard limit is a ceiling:
+ * at or above it no level applies a result that ends at or above it, and none defers; the built-in summary runs.
+ */
 export function judge(j: Judgement): Verdict {
   const freed = j.tokensBefore - j.tokensAfter
   const enough = freed >= j.minFreedTokens
+  const { hard } = j.thresholds
+  const stuck = j.tokensBefore >= hard && j.tokensAfter >= hard
   if (j.isNow || j.trigger === 'manual') {
-    if (enough) return { act: 'apply' }
-    const reason = `frees only ~${freed} tokens (minimum ${j.minFreedTokens})`
-    return j.isNow ? { act: 'skip', reason } : { act: 'next', reason }
+    if (enough && !stuck) return { act: 'apply' }
+    const reason = stuck ? `~${j.tokensAfter} tokens after pruning, still at the hard limit ${hard}` : `frees only ~${freed} tokens (minimum ${j.minFreedTokens})`
+    return j.isNow && !stuck ? { act: 'skip', reason } : { act: 'next', reason }
   }
   if (j.trigger === 'auto') {
-    return j.tokensAfter < j.thresholds.hard && enough
+    return j.tokensAfter < hard && enough
       ? { act: 'apply' }
-      : { act: 'next', reason: `~${j.tokensAfter} tokens after pruning, freeing ~${freed} (hard limit ${j.thresholds.hard}, minimum ${j.minFreedTokens})` }
+      : { act: 'next', reason: `~${j.tokensAfter} tokens after pruning, freeing ~${freed} (hard limit ${hard}, minimum ${j.minFreedTokens})` }
+  }
+  // At or above the hard limit only the size after counts: the result must end below it.
+  if (j.tokensBefore >= hard) {
+    return j.tokensAfter < hard ? { act: 'apply' } : { act: 'next', reason: `~${j.tokensAfter} tokens after pruning, freeing ~${freed}, still at the hard limit ${hard}` }
   }
   // Soft: a rewrite breaks the prompt cache, so it must pay for itself.
   if (j.tokensAfter <= j.thresholds.target || freed >= j.thresholds.softMinFreed) return { act: 'apply' }
-  const reason = `frees only ~${freed} tokens (minimum ${j.thresholds.softMinFreed}), ~${j.tokensAfter} left (target ${j.thresholds.target})`
-  return j.tokensBefore >= j.thresholds.hard ? { act: 'next', reason } : { act: 'skip', reason }
+  return { act: 'skip', reason: `frees only ~${freed} tokens (minimum ${j.thresholds.softMinFreed}), ~${j.tokensAfter} left (target ${j.thresholds.target})` }
 }
 
 /** What a failure (Jev error, missing key, unfittable state) does at each level. */
