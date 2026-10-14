@@ -7,7 +7,7 @@ const TEXT = '# Add caching\n\n- step one\n- step two\n'
 const boot = async ($: any, on: any, learn = true) => {
   const opened: { id: string; title?: string }[] = []
   const closed: string[] = []
-  const disk: Record<string, string> = { [PLAN]: TEXT, '/work/docs/spec.md': '# The spec\n\nbody\n', '/work/notes.txt': 'x' }
+  const disk: Record<string, string> = { [PLAN]: TEXT, '/work/docs/spec.md': '# The spec\n\nbody\n', '/work/notes.txt': 'x', '/work/docs/a.md': '# A\n', '/work/docs/b.md': '# B\n' }
   let isOpen = false
   mock.store(on)
   on('session.start', () => ({ cwd: '/work' }))
@@ -92,10 +92,11 @@ const mountBand = ($: any) =>
 test('a mentioned existing .md file is offered; non-files are not', async ($, on) => {
   await boot($, on)
   const ui = await mountBand($)
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Preview')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Markdown preview')
   await $.turn.complete(reply('Wrote `docs/spec.md`, notes.txt and missing.md'))
   const drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).toContain('Preview spec.md?')
+  expect(drawn).toContain('Markdown preview')
+  expect(drawn).toContain('spec.md')
   expect(drawn).toContain('Dismiss')
   expect(drawn).not.toContain('missing.md')
   expect(drawn).not.toContain('notes.txt')
@@ -108,9 +109,9 @@ test('Open shows the offered file and clears the offer', async ($, on) => {
   await $.turn.complete(reply('See /work/docs/spec.md'))
   await ui.press({ key: 'open' })
   expect(opened).toEqual([{ id: 'plan-view', title: 'The spec' }])
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Preview')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Markdown preview')
   await $.turn.complete(reply('Again /work/docs/spec.md'))
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Preview') // already offered
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Markdown preview') // already offered
   await ui.unmount()
 })
 
@@ -119,7 +120,68 @@ test('Dismiss clears the offer without opening', async ($, on) => {
   const ui = await mountBand($)
   await $.turn.complete(reply('See docs/spec.md'))
   await ui.press({ key: 'dismiss' })
-  expect(JSON.stringify(await ui.drawn())).not.toContain('Preview')
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Markdown preview')
   expect(opened).toEqual([])
+  await ui.unmount()
+})
+
+const mountMessage = ($: any, text: string) =>
+  $.ui.mount({
+    plugin: 'plan-view',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: { text, isFirstOfReply: true },
+    viewport: { columns: 100, rows: 40, isFullscreen: true },
+  })
+
+test('a message mentioning an existing .md gets an inline card, others do not', async ($, on) => {
+  const { opened } = await boot($, on)
+  const none = await mountMessage($, 'See notes.txt and missing.md')
+  expect(JSON.stringify(await none.drawn())).not.toContain('Markdown preview')
+  await none.unmount()
+  const ui = await mountMessage($, 'See docs/spec.md')
+  expect(JSON.stringify(await ui.drawn())).toContain('Markdown preview')
+  await ui.press({ key: 'open:/work/docs/spec.md' })
+  expect(opened).toEqual([{ id: 'plan-view', title: 'The spec' }])
+  expect(JSON.stringify(await ui.drawn())).toContain('Markdown preview') // stays after Open
+  await ui.unmount()
+})
+
+test('the band shows one file at a time; Prev and Next walk them', async ($, on) => {
+  await boot($, on)
+  const ui = await mountBand($)
+  await $.turn.complete(reply('See docs/a.md'))
+  let drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).not.toContain(' of ')
+  expect(drawn).not.toContain('Prev')
+  await $.turn.complete(reply('And docs/b.md'))
+  drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('2 of 2')
+  expect(drawn).toContain('b.md')
+  await ui.press({ key: 'next' })
+  drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('1 of 2')
+  expect(drawn).toContain('a.md')
+  await ui.press({ key: 'prev' })
+  expect(JSON.stringify(await ui.drawn())).toContain('2 of 2')
+  await ui.unmount()
+})
+
+test('Dismiss and Open remove only the shown file', async ($, on) => {
+  const { opened } = await boot($, on)
+  const ui = await mountBand($)
+  await $.turn.complete(reply('docs/a.md docs/b.md'))
+  await ui.press({ key: 'dismiss' }) // b.md was newest
+  let drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('a.md')
+  expect(drawn).not.toContain(' of ')
+  expect(opened).toEqual([])
+  await $.turn.complete(reply('docs/spec.md'))
+  await ui.press({ key: 'prev' })
+  await ui.press({ key: 'open' }) // opens a.md
+  expect(opened).toEqual([{ id: 'plan-view', title: 'A' }])
+  drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('spec.md')
+  expect(drawn).not.toContain(' of ')
   await ui.unmount()
 })

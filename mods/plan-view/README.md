@@ -11,7 +11,8 @@ A Claude Code mod that previews Markdown as formatted text (headings, lists, tab
 
 ## Behaviour
 
-- When Claude finishes a reply that mentions Markdown files, a band above the prompt asks `Preview <file>?` with `Open` and `Dismiss`. Mentions are `.md` paths in the reply text: absolute, `~/`, or relative (tried against the session's working directory, then its project root), bare, in backticks or in links (`file:` links too). Only files that exist are offered, each once per session. `TASKS.md` is never offered, as the tasks-board mod shows it. With several waiting the newest is shown with a dim `+n more`; `Open` opens that one, `Dismiss` clears them all. Nothing depends on a `plans` folder or a file name.
+- Every assistant message that mentions existing Markdown files gets a bordered `Markdown preview` card under it, with the file name, its path and an `Open` button per file. The card stays on that message for good. Mentions are `.md` paths in the message text: absolute, `~/`, or relative (tried against the session's working directory, then its project root), bare, in backticks or in links (`file:` links too). Only files that exist are shown. `TASKS.md` is never offered, as the tasks-board mod shows it. Nothing depends on a `plans` folder or a file name.
+- When Claude finishes a reply that mentions such files, the same card also appears above the prompt, with `Open` and `Dismiss`, once per file per session. With several waiting it shows one at a time, newest first, with `Prev`, `Next` and a counter such as `2 of 3`. `Open` opens the shown file and `Dismiss` drops it; both remove only that one from the band.
 - `Open` loads the file into a docked right-hand pane titled with its first `# ` heading, else the file name.
 - In plan mode, the plan file the session reported opens or refreshes the pane by itself when Claude writes or edits it, and when it calls `ExitPlanMode`.
 - A dim line at the top gives the file path and when the pane last read it.

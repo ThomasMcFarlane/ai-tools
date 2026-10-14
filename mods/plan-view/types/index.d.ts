@@ -6,10 +6,12 @@ export type PlanViewPlan = {
 }
 
 export type PlanViewOffer = {
-  // absolute paths of mentioned .md files awaiting Open or Dismiss, newest last
+  // absolute paths of mentioned .md files awaiting Open or Dismiss in the band, newest last
   pending: string[]
   // every path ever offered this session, so none is offered twice
   seen: string[]
+  // index into pending of the file the band shows; clamped on read
+  at: number
 }
 
 declare module 'claude-code' {
