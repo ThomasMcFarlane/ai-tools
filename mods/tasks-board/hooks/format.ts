@@ -11,6 +11,7 @@ export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
   N a positive integer unique on the board. Numbers are stable: never renumber or reuse one; a new epic takes the
   highest number + 1. Headings that hold no task table (Conventions, Identities, archive notes) are not epics and
   are not numbered.
+- Each epic has an "ETA: YYYY-MM-DD HH:MM <TZ>" line directly under its heading, kept current (roughly the latest ETA of its open rows). The checker only warns when it is missing, malformed, or in the past while the epic has open rows.
 - A task's reference is <epic>.<task>, e.g. 3.579 or 2.PZ-001. The ID column keeps the task's own ID verbatim.
   Depends cells hold comma-separated references in that form, each resolving to an existing row.
 - Status is exactly one of:

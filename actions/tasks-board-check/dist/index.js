@@ -273,6 +273,36 @@ function lintBoard(text2) {
   findings.sort((a, b) => a.line - b.line);
   return { canonical: findings.length === 0, issues: [...new Set(findings.map((f) => f.message))], findings };
 }
+var TZ_HOURS = { ICT: 7, UTC: 0, GMT: 0, BST: 1 };
+function epicEtaWarnings(text2, now = /* @__PURE__ */ new Date()) {
+  const out = [];
+  const epics = [];
+  let col;
+  for (const { text: line, no } of joinRowsNumbered(text2.split("\n"))) {
+    if (/^##\s/.test(line)) epics.push({ no, open: false, table: false });
+    const e = epics[epics.length - 1];
+    if (!e) continue;
+    const eta = /^ETA:\s*(.*\S)\s*$/.exec(line);
+    if (eta && e.eta === void 0) e.eta = eta[1];
+    if (!line.startsWith("|")) continue;
+    const c = cells(line);
+    if (/^(#|id)$/i.test(c[0] ?? "")) {
+      col = columnsOf(c);
+      if (col) e.table = true;
+    } else if (col && ID.test(c[col.id] ?? "") && !["done", "dropped", "superseded", "parked"].includes(c[col.status] ?? "")) e.open = true;
+  }
+  for (const e of epics.filter((x) => x.table)) {
+    if (e.eta === void 0) {
+      if (e.open) out.push({ line: e.no, rule: "epic-eta", message: 'epic has no "ETA: YYYY-MM-DD HH:MM <timezone>" line under its heading' });
+      continue;
+    }
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}) ([A-Z]{2,5})$/.exec(e.eta);
+    if (!ETA_FORMAT.test(e.eta)) out.push({ line: e.no, rule: "epic-eta", message: `epic ETA not YYYY-MM-DD HH:MM <timezone>: "${e.eta}"` });
+    else if (m && m[6] in TZ_HOURS && e.open && Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - TZ_HOURS[m[6]], +m[5]) < now.getTime())
+      out.push({ line: e.no, rule: "epic-eta", message: `epic ETA is in the past while it has open rows: "${e.eta}"` });
+  }
+  return out;
+}
 var checkBoard = (text2, mode) => lintBoard(text2).findings.filter((f) => mode === "canonical" || f.rule === "duplicate-id" || f.rule === "padded-cell");
 var FIX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
@@ -280,7 +310,8 @@ var FIX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 function check(text2, format2 = "canonical") {
   const problems2 = checkBoard(text2, "canonical");
   const failing = checkBoard(text2, format2);
-  return { problems: problems2, tasks: parseBoard(text2).length, failed: failing.length > 0 };
+  const warnings2 = epicEtaWarnings(text2);
+  return { problems: problems2, warnings: warnings2, tasks: parseBoard(text2).length, failed: failing.length > 0 };
 }
 
 // src/cli.ts
@@ -305,8 +336,9 @@ try {
   console.error(`cannot read ${path}: ${e.message}`);
   process.exit(2);
 }
-var { problems, tasks, failed } = check(text, format);
+var { problems, warnings, tasks, failed } = check(text, format);
 for (const p of problems) console.log(`${path}:${p.line}: [${p.rule}] ${p.message}`);
+for (const w of warnings) console.log(`${path}:${w.line}: warning [${w.rule}] ${w.message}`);
 console.log(
   `${path}: ${tasks} tasks, ${problems.length} problems (${format}) - ${failed ? "FAIL" : "ok"}`
 );
