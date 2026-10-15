@@ -145,6 +145,42 @@ test('a non-canonical primary board launches the formatting agent once, recorded
   expect(spawned.length).toBe(1)
 })
 
+test('a gh spawn failure (session cwd deleted) is not reported and does not stop the formatting agent', async ($, on) => {
+  const dir = '/work/repo'
+  const text = '# Tasks\n\n| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | a | todo | | n |\n'
+  const reported: string[] = []
+  let spawned = 0
+  mock.store(on)
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: 1_759_000_000_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'gh') throw new Error("ENOENT: no such file or directory, posix_spawn 'gh'")
+    const out = e.argv.includes('remote') ? 'git@github.com:Some-Org/app.git\n' : `worktree ${dir}\n`
+    return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('agent.spawn', () => {
+    spawned++
+    return { model: 'sonnet', agentId: 'a1' }
+  })
+  on('command.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', (_$, e) => {
+    reported.push(String(e.text))
+    return { value: undefined }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(reported).toEqual([])
+  expect(spawned).toBe(1)
+})
+
 test('worktree variants are what the worktree changed since it forked, not where the primary moved on', async ($, on) => {
   const dir = '/work/repo'
   const table = (s1: string, s2: string, s3: string) =>

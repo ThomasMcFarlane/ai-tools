@@ -328,7 +328,12 @@ const AUTOFIX_KEY = (org: string, repo: string) => `autofix:${org}/${repo}`
 const FIX_SEARCH = 'TASKS.md canonical board format in:title'
 
 async function openFixPr($: EngineInterface, slug: string): Promise<string> {
-  const r = await $.process.run(['gh', 'pr', 'list', '-R', slug, '--state', 'open', '--search', FIX_SEARCH, '--json', 'url'])
+  let r
+  try {
+    r = await $.process.run(['gh', 'pr', 'list', '-R', slug, '--state', 'open', '--search', FIX_SEARCH, '--json', 'url'])
+  } catch {
+    return '' // spawn throws when the session cwd was deleted; the poll retries on the next refresh
+  }
   if (r.exitCode !== 0) return ''
   const list = JSON.parse(r.stdout || '[]') as { url: string }[]
   return list[0]?.url ?? ''
