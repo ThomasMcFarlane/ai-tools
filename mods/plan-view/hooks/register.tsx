@@ -6,6 +6,8 @@ import { clip, isPlanPath, mdMentions, planTitle } from './plan'
 const PANE = 'plan-view'
 // '/plan' is Claude Code's own command (enter plan mode), so this one is '/plan-view'.
 const COMMAND = 'plan-view'
+const LIST_PANE = 'plan-view-list'
+const LIST_COMMAND = 'plan-view-list'
 
 const plan = atom({ plugin: 'plan-view', key: 'plan' } as const, { path: '', at: 0 })
 
@@ -57,10 +59,24 @@ const show = async ($: EngineInterface, path: string) => {
   await open($)
 }
 
+// Drops the path from the band (keeping the index in range), then shows it.
+const openOffered = async ($: EngineInterface, path: string) => {
+  await update($, offer, o => {
+    const pending = o.pending.filter(p => p !== path)
+    return { ...o, pending, at: Math.min(o.at, Math.max(pending.length - 1, 0)) }
+  })
+  await show($, path)
+}
+
+const openList = async ($: EngineInterface) => {
+  await $.ui.open({ id: LIST_PANE, title: 'Markdown files' })
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({ name: COMMAND, description: "Toggle the Markdown preview pane (the plan, or the last file opened)" })
+      await $.command.register({ name: LIST_COMMAND, description: 'Toggle the pane listing the Markdown files suggested this session' })
       const { path } = await read($, plan)
       if (path) await load($, path).catch(() => undefined) // a deleted plan just leaves the pane empty
     } catch (err) {
@@ -149,11 +165,7 @@ export const register: Register = on => {
                   label="Open"
                   onPress={async () => {
                     try {
-                      await update($, offer, o => {
-                        const pending = o.pending.filter(p => p !== path)
-                        return { ...o, pending, at: Math.min(o.at, Math.max(pending.length - 1, 0)) }
-                      })
-                      await show($, path)
+                      await openOffered($, path)
                     } catch (err) {
                       report($, 'open', err)
                     }
@@ -179,33 +191,36 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
     // Drops only the shown path; the index then points at its neighbour.
     const drop = async () => update($, offer, o => ({ ...o, pending: o.pending.filter(p => p !== path), at }))
+    const dismissAll = () => update($, offer, o => ({ ...o, pending: [], at: 0 }))
     const go = (step: number) => () => update($, offer, o => ({ ...o, at: (at + step + o.pending.length) % o.pending.length }))
     return (
       <Box flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1}>
         <Box>
           <Text bold color="suggestion">Markdown preview</Text>
-          {many && <Text dimColor>{`  ${at + 1} of ${pending.length}`}</Text>}
+          <Text dimColor>{`  ${at + 1} of ${pending.length}`}</Text>
         </Box>
         <Box>
           <Text bold>{path.split('/').pop()}</Text>
           <Text dimColor wrap="truncate-middle">{`  ${path}`}</Text>
         </Box>
         <Box>
-          {many && <Button key="prev" label="Prev" onPress={go(-1)} />}
-          {many && <Button key="next" label="Next" onPress={go(1)} />}
+          {/* Button has no disabled prop, so with one file the labels are dim text instead. */}
+          {many ? <Button key="prev" label="Prev" onPress={go(-1)} /> : <Text dimColor>[Prev]</Text>}
+          {many ? <Button key="next" label="Next" onPress={go(1)} /> : <Text dimColor>[Next]</Text>}
           <Button
             key="open"
             label="Open"
             onPress={async () => {
               try {
-                await drop()
-                await show($, path)
+                await openOffered($, path)
               } catch (err) {
                 report($, 'open', err)
               }
             }}
           />
           <Button key="dismiss" label="Dismiss" onPress={drop} />
+          <Button key="dismiss-all" label="Dismiss all" onPress={dismissAll} />
+          <Button key="list" label="List" onPress={() => openList($).catch(err => report($, 'list', err))} />
         </Box>
       </Box>
     )
@@ -225,6 +240,37 @@ export const register: Register = on => {
       report($, 'command.run', err)
       return { text: `Preview pane failed: ${String(err instanceof Error ? err.message : err)}` }
     }
+  })
+
+  on('command.run', { command: LIST_COMMAND }, async $ => {
+    try {
+      if ((await $.ui.panes()).some(p => p.id === LIST_PANE)) {
+        await $.ui.close({ id: LIST_PANE })
+        return { text: 'Markdown list closed.' }
+      }
+      await openList($)
+      return { text: 'Markdown list opened.' }
+    } catch (err) {
+      report($, 'command.run', err)
+      return { text: `Markdown list failed: ${String(err instanceof Error ? err.message : err)}` }
+    }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: LIST_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const { seen } = await read($, offer)
+    if (!seen.length) return <Text dimColor>No Markdown files suggested yet.</Text>
+    return (
+      <Box flexDirection="column">
+        {seen.map(path => (
+          <Box key={path}>
+            <Text bold>{path.split('/').pop()}</Text>
+            <Text dimColor wrap="truncate-middle">{`  ${path}  `}</Text>
+            <Button key={`open:${path}`} label="Open" onPress={() => openOffered($, path).catch(err => report($, 'open', err))} />
+          </Box>
+        ))}
+      </Box>
+    )
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
