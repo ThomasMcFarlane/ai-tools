@@ -152,8 +152,9 @@ test('the band shows one file at a time; Prev and Next walk them', async ($, on)
   const ui = await mountBand($)
   await $.turn.complete(reply('See docs/a.md'))
   let drawn = JSON.stringify(await ui.drawn())
-  expect(drawn).not.toContain(' of ')
-  expect(drawn).not.toContain('Prev')
+  expect(drawn).toContain('1 of 1')
+  expect(drawn).toContain('Prev') // dimmed, not hidden
+  await ui.press({ key: 'prev' }).then(() => { throw new Error('Prev should not be pressable at 1') }, () => undefined)
   await $.turn.complete(reply('And docs/b.md'))
   drawn = JSON.stringify(await ui.drawn())
   expect(drawn).toContain('2 of 2')
@@ -174,7 +175,7 @@ test('Dismiss and Open remove only the shown file', async ($, on) => {
   await ui.press({ key: 'dismiss' }) // b.md was newest
   let drawn = JSON.stringify(await ui.drawn())
   expect(drawn).toContain('a.md')
-  expect(drawn).not.toContain(' of ')
+  expect(drawn).toContain('1 of 1')
   expect(opened).toEqual([])
   await $.turn.complete(reply('docs/spec.md'))
   await ui.press({ key: 'prev' })
@@ -182,6 +183,52 @@ test('Dismiss and Open remove only the shown file', async ($, on) => {
   expect(opened).toEqual([{ id: 'plan-view', title: 'A' }])
   drawn = JSON.stringify(await ui.drawn())
   expect(drawn).toContain('spec.md')
-  expect(drawn).not.toContain(' of ')
+  expect(drawn).toContain('1 of 1')
   await ui.unmount()
+})
+
+test('Dismiss all clears the band but keeps the list', async ($, on) => {
+  const { opened } = await boot($, on)
+  const ui = await mountBand($)
+  await $.turn.complete(reply('docs/a.md docs/b.md'))
+  await ui.press({ key: 'dismiss-all' })
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Markdown preview')
+  expect(opened).toEqual([])
+  await ui.unmount()
+  const list = await mountList($)
+  const drawn = JSON.stringify(await list.drawn())
+  expect(drawn).toContain('a.md')
+  expect(drawn).toContain('b.md')
+  await list.unmount()
+})
+
+const mountList = ($: any) =>
+  $.ui.mount({
+    plugin: 'plan-view',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'plan-view-list',
+    props: { title: 'Markdown files', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} },
+    viewport: { columns: 100, rows: 40, isFullscreen: true },
+  })
+
+test('the list pane shows seen paths and says so when empty; List and the command open it', async ($, on) => {
+  const { opened } = await boot($, on)
+  const empty = await mountList($)
+  expect(JSON.stringify(await empty.drawn())).toContain('No Markdown files suggested yet.')
+  await empty.unmount()
+  const band = await mountBand($)
+  await $.turn.complete(reply('docs/a.md docs/b.md'))
+  await band.press({ key: 'list' })
+  expect(opened).toEqual([{ id: 'plan-view-list', title: 'Markdown files' }])
+  const ui = await mountList($)
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('/work/docs/a.md')
+  expect(drawn).toContain('/work/docs/b.md')
+  await ui.press({ key: 'open:/work/docs/a.md' })
+  expect(opened.at(-1)).toEqual({ id: 'plan-view', title: 'A' })
+  await ui.unmount()
+  await band.unmount()
+  await $.command.run({ command: 'plan-view-list', args: '' })
+  expect(opened.at(-1)).toEqual({ id: 'plan-view-list', title: 'Markdown files' })
 })
