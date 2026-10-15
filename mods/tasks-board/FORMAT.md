@@ -12,6 +12,7 @@
   N a positive integer unique on the board. Numbers are stable: never renumber or reuse one; a new epic takes the
   highest number + 1. Headings that hold no task table (Conventions, Identities, archive notes) are not epics and are
   not numbered. The parser still reads the older `Task <n>: <name>` form, but it is not canonical.
+- Each epic has an `ETA: YYYY-MM-DD HH:MM <TZ>` line directly under its heading, kept current (roughly the latest ETA of its open rows). The checker only warns when it is missing, malformed, or in the past while the epic has open rows.
 - A task's reference is `<epic>.<task>`, e.g. `3.579` or `2.PZ-001`; the ID column keeps the task's own ID verbatim
   (unique across the board). Agents use the reference everywhere they name a task: Depends, Notes, commit messages,
   PR titles and bodies, chat and reports. Depends cells hold comma-separated references in that form, each

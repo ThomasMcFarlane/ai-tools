@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { check } from '../src/check.ts';
+import { epicEtaWarnings } from '../../../mods/tasks-board/hooks/board.ts';
 
 const H =
   '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n';
@@ -35,14 +36,19 @@ describe('check', () => {
   });
 
   it('superseded needs a Superseded by prefix naming an existing row', () => {
-    const r = (n: string) => '## 1. E\n\n' + H + `| A-1 | t | superseded | | | | | ${n} |\n| A-2 | t | todo | | | | | |\n`;
+    const r = (n: string) =>
+      '## 1. E\n\n' + H + `| A-1 | t | superseded | | | | | ${n} |\n| A-2 | t | todo | | | | | |\n`;
     expect(check(r('Superseded by 1.A-2.')).failed).toBe(false);
     expect(check(r('Superseded by 1.A-7.')).failed).toBe(true);
     expect(check(r('replaced')).failed).toBe(true);
   });
   it('dropped needs a Dropped: prefix', () => {
-    expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | Dropped: not needed. |\n').failed).toBe(false);
-    expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | not needed |\n').failed).toBe(true);
+    expect(
+      check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | Dropped: not needed. |\n').failed,
+    ).toBe(false);
+    expect(check('## 1. E\n\n' + H + '| A-1 | t | dropped | | | | | not needed |\n').failed).toBe(
+      true,
+    );
   });
 
   it('rejects legacy statuses and points to the table', () => {
@@ -69,5 +75,32 @@ describe('check', () => {
     );
     expect(r.tasks).toBe(2);
     expect(r.failed).toBe(false);
+  });
+});
+
+describe('epic ETA warnings', () => {
+  it('warns without failing', () => {
+    const r = check('## 1. E\n\n' + H + '| A-1 | t | todo | a | | | | |\n');
+    expect(r.failed).toBe(false);
+    expect(r.warnings.map((w) => w.rule)).toEqual(['epic-eta']);
+  });
+});
+
+describe('epicEtaWarnings', () => {
+  const T = (eta: string, status = 'todo') =>
+    `## 1. E\n${eta}\n\n${H}| A-1 | t | ${status} | | | | | |\n`;
+  const now = new Date('2026-10-15T00:00:00Z');
+  it('accepts an ETA line under the heading without disturbing lint or parse', () => {
+    const text = T('ETA: 2026-10-20 18:00 ICT');
+    expect(check(text).problems).toEqual([]);
+    expect(check(text).tasks).toBe(1);
+    expect(epicEtaWarnings(text, now)).toEqual([]);
+  });
+  it('warns on a missing, malformed or past ETA while rows are open', () => {
+    expect(epicEtaWarnings(T(''), now)[0]!.message).toContain('no "ETA');
+    expect(epicEtaWarnings(T('ETA: soon'), now)[0]!.message).toContain('not YYYY');
+    expect(epicEtaWarnings(T('ETA: 2026-10-14 18:00 ICT'), now)[0]!.message).toContain('past');
+    expect(epicEtaWarnings(T('ETA: 2026-10-14 18:00 ICT', 'done'), now)).toEqual([]);
+    expect(epicEtaWarnings(T('', 'done'), now)).toEqual([]);
   });
 });

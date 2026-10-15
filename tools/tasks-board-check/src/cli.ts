@@ -24,8 +24,9 @@ try {
   console.error(`cannot read ${path}: ${(e as Error).message}`);
   process.exit(2);
 }
-const { problems, tasks, failed } = check(text, format);
+const { problems, warnings, tasks, failed } = check(text, format);
 for (const p of problems) console.log(`${path}:${p.line}: [${p.rule}] ${p.message}`);
+for (const w of warnings) console.log(`${path}:${w.line}: warning [${w.rule}] ${w.message}`);
 console.log(
   `${path}: ${tasks} tasks, ${problems.length} problems (${format}) - ${failed ? 'FAIL' : 'ok'}`,
 );
