@@ -177,6 +177,10 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
   return { found, infos }
 }
 
+// Only the fullscreen layout docks a pane as a sidebar; the main screen draws it inline, so open unasked only there.
+let isFullscreen: boolean | undefined
+let isAutoOpened = false
+
 const sync = async ($: EngineInterface, opts: { auto?: boolean } = {}) => {
   await refresh($, true)
   const b = await read($, board)
@@ -184,6 +188,10 @@ const sync = async ($: EngineInterface, opts: { auto?: boolean } = {}) => {
   if (opts.auto && b.path === '') {
     await $.ui.close({ id: PANE }).catch(err => report($, 'close', err))
     return
+  }
+  if (opts.auto) {
+    if (isFullscreen !== true) return
+    isAutoOpened = true
   }
   await openPane($, b.repo)
 }
@@ -493,6 +501,23 @@ export const register: Register = (on, options) => {
       $.ui.status(`tasks-board: ${String(err).slice(0, 60)}`)
     }
     return ran
+  })
+
+  // Draws nothing: learns the layout and opens the pane once it is known to be a sidebar.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    try {
+      isFullscreen = e.viewport?.isFullscreen
+      if (isFullscreen === true && !isAutoOpened) {
+        const b = await read($, board)
+        if (b.path !== '') {
+          isAutoOpened = true
+          void openPane($, b.repo).catch(err => report($, 'auto-open', err))
+        }
+      }
+    } catch (err) {
+      report($, 'auto-open', err)
+    }
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
