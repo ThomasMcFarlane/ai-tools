@@ -177,9 +177,15 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
   return { found, infos }
 }
 
-const sync = async ($: EngineInterface) => {
+const sync = async ($: EngineInterface, opts: { auto?: boolean } = {}) => {
   await refresh($, true)
-  await openPane($, (await read($, board)).repo)
+  const b = await read($, board)
+  // Automatic opens must not show an empty pane the user did not ask for.
+  if (opts.auto && b.path === '') {
+    await $.ui.close({ id: PANE }).catch(err => report($, 'close', err))
+    return
+  }
+  await openPane($, b.repo)
 }
 
 const openPane = ($: EngineInterface, repo: string) =>
@@ -306,6 +312,10 @@ async function runBoardCommand($: EngineInterface, args: string): Promise<{ text
     await sync($)
     return { text: rest[0] ? `Session tag: ${rest[0]}` : 'Session tag cleared.' }
   }
+  if (sub === 'close') {
+    await $.ui.close({ id: PANE })
+    return { text: 'Board pane closed.' }
+  }
   if (sub === 'refresh') {
     await sync($)
     return { text: 'Board refreshed.' }
@@ -407,13 +417,13 @@ export const register: Register = (on, options) => {
     try {
       await $.command.register({
         name: 'board',
-        description: 'TASKS.md board pane: open | path <file> | debug | pin <n...> | unpin <n...> | me <tag> | refresh',
-        argumentHint: '[open|path|debug|pin|unpin|me|refresh]',
+        description: 'TASKS.md board pane: open | path <file> | debug | pin <n...> | unpin <n...> | me <tag> | refresh | close',
+        argumentHint: '[open|path|debug|pin|unpin|me|refresh|close]',
       })
       // session.start also fires on a mid-session enable and on a reload (changed modules): start clean there
       // so a stale override cannot win, then search like /board does and open the pane.
       await update($, pathOverride, () => '')
-      void sync($).catch(err => report($, 'session.start', err))
+      void sync($, { auto: true }).catch(err => report($, 'session.start', err))
       // session.start fires again on a hot reload, which drops the old timers. Callbacks return their
       // promise (the period waits for it) and never throw, so a failure cannot end a timer.
       // Frame timer: does nothing, with no $ call, unless the last render drew an active row.
@@ -427,7 +437,7 @@ export const register: Register = (on, options) => {
       // If the first search never ran (nothing loaded yet), the timer does it, as /board would.
       $.clock.every(15000, async () => {
         try {
-          if ((await read($, board)).checkedAt === 0) await sync($)
+          if ((await read($, board)).checkedAt === 0) await sync($, { auto: true })
           else await refresh($)
           await pollFixPr($)
         } catch (err) {
