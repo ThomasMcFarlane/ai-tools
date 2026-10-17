@@ -177,9 +177,23 @@ async function scanWorktrees($: EngineInterface, basePath: string, baseMtime: nu
   return { found, infos }
 }
 
-const sync = async ($: EngineInterface) => {
+// Only the fullscreen layout docks a pane as a sidebar; the main screen draws it inline, so open unasked only there.
+let isFullscreen: boolean | undefined
+let isAutoOpened = false
+
+const sync = async ($: EngineInterface, opts: { auto?: boolean } = {}) => {
   await refresh($, true)
-  await openPane($, (await read($, board)).repo)
+  const b = await read($, board)
+  // Automatic opens must not show an empty pane the user did not ask for.
+  if (opts.auto && b.path === '') {
+    await $.ui.close({ id: PANE }).catch(err => report($, 'close', err))
+    return
+  }
+  if (opts.auto) {
+    if (isFullscreen !== true) return
+    isAutoOpened = true
+  }
+  await openPane($, b.repo)
 }
 
 const openPane = ($: EngineInterface, repo: string) =>
@@ -306,6 +320,10 @@ async function runBoardCommand($: EngineInterface, args: string): Promise<{ text
     await sync($)
     return { text: rest[0] ? `Session tag: ${rest[0]}` : 'Session tag cleared.' }
   }
+  if (sub === 'close') {
+    await $.ui.close({ id: PANE })
+    return { text: 'Board pane closed.' }
+  }
   if (sub === 'refresh') {
     await sync($)
     return { text: 'Board refreshed.' }
@@ -407,13 +425,13 @@ export const register: Register = (on, options) => {
     try {
       await $.command.register({
         name: 'board',
-        description: 'TASKS.md board pane: open | path <file> | debug | pin <n...> | unpin <n...> | me <tag> | refresh',
-        argumentHint: '[open|path|debug|pin|unpin|me|refresh]',
+        description: 'TASKS.md board pane: open | path <file> | debug | pin <n...> | unpin <n...> | me <tag> | refresh | close',
+        argumentHint: '[open|path|debug|pin|unpin|me|refresh|close]',
       })
       // session.start also fires on a mid-session enable and on a reload (changed modules): start clean there
       // so a stale override cannot win, then search like /board does and open the pane.
       await update($, pathOverride, () => '')
-      void sync($).catch(err => report($, 'session.start', err))
+      void sync($, { auto: true }).catch(err => report($, 'session.start', err))
       // session.start fires again on a hot reload, which drops the old timers. Callbacks return their
       // promise (the period waits for it) and never throw, so a failure cannot end a timer.
       // Frame timer: does nothing, with no $ call, unless the last render drew an active row.
@@ -427,7 +445,7 @@ export const register: Register = (on, options) => {
       // If the first search never ran (nothing loaded yet), the timer does it, as /board would.
       $.clock.every(15000, async () => {
         try {
-          if ((await read($, board)).checkedAt === 0) await sync($)
+          if ((await read($, board)).checkedAt === 0) await sync($, { auto: true })
           else await refresh($)
           await pollFixPr($)
         } catch (err) {
@@ -483,6 +501,23 @@ export const register: Register = (on, options) => {
       $.ui.status(`tasks-board: ${String(err).slice(0, 60)}`)
     }
     return ran
+  })
+
+  // Draws nothing: learns the layout and opens the pane once it is known to be a sidebar.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    try {
+      isFullscreen = e.viewport?.isFullscreen
+      if (isFullscreen === true && !isAutoOpened) {
+        const b = await read($, board)
+        if (b.path !== '') {
+          isAutoOpened = true
+          void openPane($, b.repo).catch(err => report($, 'auto-open', err))
+        }
+      }
+    } catch (err) {
+      report($, 'auto-open', err)
+    }
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
