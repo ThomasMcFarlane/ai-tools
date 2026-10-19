@@ -129,7 +129,7 @@ export function registerMapCommand(program: Command, helpers: MapHelpers): void 
     )
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
     .option('--timeout <ms>', 'per-attempt timeout in milliseconds', String(DEFAULT_TIMEOUT_MS))
-    .option('--retries <n>', 'retries per resolver on timeout or SERVFAIL (UDP)', String(DEFAULT_RETRIES))
+    .option('--retries <n>', 'retries per resolver on timeout, SERVFAIL or refused/reset connection (UDP)', String(DEFAULT_RETRIES))
     .option('--expect <values...>', 'expected value set; resolvers that differ are flagged')
     .option(
       '--input <file>',

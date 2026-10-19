@@ -112,13 +112,13 @@ describe('queryNsReferral', () => {
     });
     await expect(
       queryNsReferral('127.0.0.1', 'example.vc', { port, timeoutMs: 200 }),
-    ).rejects.toThrow(/timed out/);
+    ).rejects.toMatchObject({ code: 'ETIMEOUT' });
   });
 
   it('rejects non-zero rcodes', async () => {
     const port = await startServer((query) => referralResponse(query, [], 5));
     await expect(
       queryNsReferral('127.0.0.1', 'example.vc', { port, timeoutMs: 2000 }),
-    ).rejects.toThrow(/rcode 5/);
+    ).rejects.toMatchObject({ code: 'EREFUSED' });
   });
 });

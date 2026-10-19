@@ -47,7 +47,7 @@ dns-checker lookup [options] <domain>
 | `-r, --resolver <names...>` | `system` | Resolver names, `all`, `world`, or literal IPs. Comma or space separated. |
 | `--transport <mode>` | `auto` | `auto`, `udp`, `doh` or `system`. |
 | `--timeout <ms>` | `2000` | Per-attempt timeout in milliseconds. |
-| `--retries <n>` | `2` | Extra attempts per resolver on timeout or SERVFAIL (UDP). |
+| `--retries <n>` | `3` | Extra attempts per resolver on timeout, SERVFAIL or refused/reset connection (UDP). |
 | `--strict` | off | Exit 1 when every lookup errors. |
 | `--expect <values...>` | | Expected value set; resolvers that differ are flagged. |
 | `--json` | off | Emit results as JSON. |
@@ -77,7 +77,7 @@ dns-checker check [options] <domain>
 | `-r, --resolver <name>` | `system` | `system`, a registry name, or a literal IP. |
 | `--transport <mode>` | `auto` | `auto`, `udp`, `doh` or `system`. |
 | `--timeout <ms>` | `2000` | Per-attempt timeout in milliseconds. |
-| `--retries <n>` | `2` | Extra attempts on timeout or SERVFAIL (UDP). |
+| `--retries <n>` | `3` | Extra attempts on timeout, SERVFAIL or refused/reset connection (UDP). |
 | `--expect <values...>` | | Rule: see [Match rules](#match-rules). |
 | `--expect-absent <values...>` | | Rule. |
 | `--contains <value>` | | Rule. |
@@ -106,7 +106,7 @@ Takes the same rule flags as `check`, plus:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--retries <n>` | `2` | Extra attempts per lookup on timeout or SERVFAIL (UDP); per-attempt timeout is 2000ms. |
+| `--retries <n>` | `3` | Extra attempts per lookup on timeout, SERVFAIL or refused/reset connection (UDP); per-attempt timeout is 2000ms. |
 | `--interval <duration>` | `30s` | Poll interval. |
 | `--timeout <duration>` | `30m` | Overall wait limit, capped at 24h. |
 
@@ -135,7 +135,7 @@ dns-checker map [options] [domain]
 | `-r, --resolver <names...>` | `system` | Resolvers, as for `lookup`. |
 | `--transport <mode>` | `auto` | `auto`, `udp`, `doh` or `system`. |
 | `--timeout <ms>` | `2000` | Per-attempt timeout. |
-| `--retries <n>` | `2` | Extra attempts per resolver on timeout or SERVFAIL (UDP). |
+| `--retries <n>` | `3` | Extra attempts per resolver on timeout, SERVFAIL or refused/reset connection (UDP). |
 | `--expect <values...>` | | Expected value set; otherwise the majority answer set is the reference. |
 | `--input <file>` | | Read `lookup --json` output (`-` for stdin) instead of querying. |
 | `-o, --output <file>` | `dns-map-<domain>.html` | HTML file to write. |
@@ -178,7 +178,7 @@ dns-checker watch add [options] <name> --domain <d>
 | `--regex <pattern>` | | Rule. |
 | `--absent` | off | Rule. |
 | `--any-change` | off | Rule. |
-| `--retries <n>` | `2` | Extra attempts per lookup on timeout or SERVFAIL (UDP), stored in the spec. |
+| `--retries <n>` | `3` | Extra attempts per lookup on timeout, SERVFAIL or refused/reset connection (UDP), stored in the spec. |
 | `--interval <duration>` | `60s` | Poll interval used by the daemon. |
 | `-r, --resolver <name>` | `system` | `system`, a registry name, or a literal IP. |
 | `--transport <mode>` | `auto` | `auto`, `udp`, `doh` or `system`. |
@@ -248,8 +248,8 @@ Show recent watch events, oldest first. `--tail <n>` defaults to `20`. Events co
 
 ## Retries and concurrency
 
-`--timeout` is the per-attempt timeout (default 2000ms). On a timeout, SERVFAIL, REFUSED or network error over
-UDP, the same resolver is queried again, up to `--retries` extra times (default 2), so the worst case per
+`--timeout` is the per-attempt timeout (default 2000ms). On a timeout, SERVFAIL, REFUSED, connection refused or reset, or network error over
+UDP, the same resolver is queried again, up to `--retries` extra times (default 3), so the worst case per
 resolver is `timeout x (retries + 1)`. Definitive answers (NXDOMAIN, no data) are never retried. There is no
 TCP fallback: Node's resolver does not expose one. Resolvers are queried concurrently, at most 32 at a time,
 so a slow resolver does not delay the others. Every JSON result has `attempts`; the table adds `(N tries)`

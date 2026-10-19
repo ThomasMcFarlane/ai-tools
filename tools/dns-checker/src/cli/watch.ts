@@ -295,7 +295,7 @@ export function registerWatchCommands(program: Command): void {
     .option('--regex <pattern>', 'match when any value matches this regular expression')
     .option('--absent', 'match when no records are returned', false)
     .option('--any-change', 'match when values differ from the recorded baseline', false)
-    .option('--retries <n>', 'retries per lookup on timeout or SERVFAIL (UDP), default 2')
+    .option('--retries <n>', 'retries per lookup on timeout, SERVFAIL or refused/reset connection (UDP), default 3')
     .option('--interval <duration>', 'poll interval', '60s')
     .option('-r, --resolver <name>', 'resolver: system, a registry name, or a literal IP')
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')

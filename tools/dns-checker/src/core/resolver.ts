@@ -23,7 +23,7 @@ export interface LookupOptions {
 }
 
 export const DEFAULT_TIMEOUT_MS = 2000;
-export const DEFAULT_RETRIES = 2;
+export const DEFAULT_RETRIES = 3;
 
 const RETRYABLE_CODES: ReadonlySet<string> = new Set([
   'ETIMEOUT',
@@ -162,7 +162,12 @@ async function withNsReferral(
     if (!isNoDataError(error)) {
       throw error;
     }
-    const referral = await queryNsReferral(ip, domain, { timeoutMs }).catch(() => []);
+    const referral = await queryNsReferral(ip, domain, { timeoutMs }).catch((referralError: unknown) => {
+      if (isRetryableError(referralError)) {
+        throw referralError;
+      }
+      return [];
+    });
     if (referral.length === 0) {
       throw error;
     }
