@@ -14,9 +14,9 @@ Tools that let AI agents check external state, wait for changes, and resume work
 
 ### Option A: prebuilt binaries
 
-Both CLIs are published on the Releases page of this repository as self-contained native binaries: no Node or any other runtime is needed to run them.
+Both CLIs are published on the Releases page of this repository, each on its own version and tag (`<tool>-v<version>`), as self-contained native binaries: no Node or any other runtime is needed to run them.
 
-Download the artifact for your platform. `dns-checker` ships as `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`; `gh-watcher` uses the same scheme. Make the file executable, put it on your `PATH`, and verify it runs:
+Pick the release for the tool, for example `dns-checker 0.1.0` (tag `dns-checker-v0.1.0`), and download the artifact for your platform. `dns-checker` ships as `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`; `gh-watcher` uses the same scheme. Make the file executable, put it on your `PATH`, and verify it runs:
 
 ```sh
 chmod +x dns-checker-linux-x64
@@ -51,12 +51,14 @@ node tools/gh-watcher/dist/cli.js --help
 
 ### Releases
 
-Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. Each run lints, typechecks, builds and tests the repository, cross-compiles both CLIs for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (ten binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests. The workflow fails, without overwriting anything, if a release or tag with that name already exists.
+Each CLI is released independently, with its own version and a tag named `<tool>-v<version>` (for example `dns-checker-v0.2.0`, `gh-watcher-v0.1.0`). Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. A run lints, typechecks, builds and tests the repository, cross-compiles only that tool for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (five binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests under the title `<tool> <version>`. The workflow fails, without overwriting anything, if a release or tag with that name already exists, or if the version does not match `version` in `tools/<tool>/package.json`: bump `package.json` through a PR first.
 
 To cut a release, either:
 
-- open Actions, pick **Release**, choose **Run workflow** on `main` and enter a version such as `0.1.0`. The workflow creates and pushes tag `v0.1.0` on that commit once the build and tests pass, then publishes the release in the same run; or
-- push a tag yourself: `git tag v0.1.0 && git push origin v0.1.0`.
+- open Actions, pick **Release**, choose **Run workflow** on `main`, select the tool and enter its version such as `0.2.0` (no leading `v`). The workflow creates and pushes tag `dns-checker-v0.2.0` on that commit once the build and tests pass, then publishes the release in the same run; or
+- push a tag yourself: `git tag dns-checker-v0.2.0 && git push origin dns-checker-v0.2.0`.
+
+Tool releases are not marked as GitHub's "Latest" release, so they do not compete with plugin releases. Link to downloads with the tool tag, not `releases/latest`: `https://github.com/ThomasMcFarlane/ai-tools/releases/download/<tool>-v<version>/<tool>-<os>-<arch>`. The old repo-wide `v*` tags are no longer used; `v0.1.0` remains as a historical release.
 
 Versions with a suffix (for example `0.2.0-rc.1`) are published as pre-releases. Verify a download against the checksums, from the directory holding the binaries:
 

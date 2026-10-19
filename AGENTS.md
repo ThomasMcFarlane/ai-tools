@@ -38,7 +38,7 @@ npm run lint                                  # eslint .
 npm run format                                # prettier --write .
 ```
 
-`npm run build:bin` packages each CLI as a self-contained native binary under `tools/<tool>/bin/` (no Node needed at runtime); release automation lives in `.github/workflows/release.yml`.
+`npm run build:bin` packages each CLI as a self-contained native binary under `tools/<tool>/bin/` (no Node needed at runtime); release automation lives in `.github/workflows/release.yml`; each CLI is released on its own `<tool>-v<version>` tag, and the version must match `tools/<tool>/package.json`.
 
 ## Conventions
 

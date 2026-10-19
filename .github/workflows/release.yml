@@ -1,19 +1,31 @@
 name: Release
 
-# Two ways to release:
-#   1. Push a tag matching v* (for example v0.1.0).
-#   2. Run this workflow manually with a `version` input (for example 0.1.0). The tag
-#      v<version> is then created on the dispatched commit once the build and tests
-#      pass. Tags pushed with GITHUB_TOKEN do not trigger other workflows, so the whole
-#      release runs inside this single workflow.
+# Each CLI tool is released on its own version, tagged <tool>-v<version>
+# (for example dns-checker-v0.2.0). Two ways to release:
+#   1. Push a tag matching <tool>-v*.
+#   2. Run this workflow manually with `tool` and `version` inputs (version without the
+#      leading v). The tag <tool>-v<version> is then created on the dispatched commit
+#      once the build and tests pass. Tags pushed with GITHUB_TOKEN do not trigger other
+#      workflows, so the whole release runs inside this single workflow.
+# The version must equal the version in tools/<tool>/package.json. When adding a tool
+# with a build:bin script, extend the tag patterns and the `tool` choices below.
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - 'dns-checker-v*'
+      - 'gh-watcher-v*'
   workflow_dispatch:
     inputs:
+      tool:
+        description: 'Tool to release'
+        required: true
+        type: choice
+        options:
+          - dns-checker
+          - gh-watcher
       version:
-        description: "Version to release, without the leading v (for example 0.1.0)"
+        description: 'Version to release, without the leading v (for example 0.2.0)'
         required: true
         type: string
 
@@ -21,12 +33,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('{0}-v{1}', inputs.tool, inputs.version) || github.ref_name }}
   cancel-in-progress: false
 
 env:
   # Quiet npm and keep CI output deterministic.
-  NO_UPDATE_NOTIFIER: "1"
+  NO_UPDATE_NOTIFIER: '1'
 
 jobs:
   prepare:
@@ -36,13 +48,17 @@ jobs:
     permissions:
       contents: read
     outputs:
+      tool: ${{ steps.resolve.outputs.tool }}
+      version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - name: Resolve tag
+      - uses: actions/checkout@v4
+      - name: Resolve tool, version and tag
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
+          INPUT_TOOL: ${{ inputs.tool }}
           INPUT_VERSION: ${{ inputs.version }}
           REF_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -51,19 +67,30 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tool="$INPUT_TOOL"
             version="${INPUT_VERSION#v}"
-            if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-              echo "::error::version must look like 0.1.0 or 0.1.0-rc.1, got '$INPUT_VERSION'"
-              exit 1
-            fi
             if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
               echo "::error::dispatch the release from $DEFAULT_BRANCH, not $REF_NAME"
               exit 1
             fi
-            tag="v$version"
+            tag="$tool-v$version"
           else
             tag="$REF_NAME"
-            version="${tag#v}"
+            tool="${tag%%-v[0-9]*}"
+            version="${tag#"$tool"-v}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::version must look like 0.2.0 or 0.2.0-rc.1, got '$version'"
+            exit 1
+          fi
+          if ! printf '%s' "$tool" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || ! grep -q '"build:bin"' "tools/$tool/package.json" 2>/dev/null; then
+            echo "::error::'$tool' is not a tool under tools/ with a build:bin script"
+            exit 1
+          fi
+          package_version=$(node -p "require('./tools/$tool/package.json').version")
+          if [ "$version" != "$package_version" ]; then
+            echo "::error::version $version does not match tools/$tool/package.json ($package_version); bump package.json through a PR first"
+            exit 1
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "::error::a release for $tag already exists; refusing to overwrite it"
@@ -77,6 +104,8 @@ jobs:
             *-*) prerelease=true ;;
             *) prerelease=false ;;
           esac
+          echo "tool=$tool" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
@@ -106,6 +135,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      TOOL: ${{ needs.prepare.outputs.tool }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -115,16 +146,23 @@ jobs:
       - run: npm ci
       - run: npm run build
       # Cross-compiles linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 for
-      # every tool, then renames the output to <tool>-<os>-<arch>[.exe].
-      - run: npm run build:bin
+      # the released tool, then renames the output to <tool>-<os>-<arch>[.exe].
+      - run: npm run build:bin -w "@ai-tools/$TOOL" && npm run rename:bins
       - name: Collect binaries and checksums
         run: |
           set -euo pipefail
           mkdir release-assets
-          cp tools/*/bin/* release-assets/
+          cp "tools/$TOOL"/bin/* release-assets/
           cd release-assets
-          expected=10
+          expected=5
           count=$(ls | wc -l)
+          for suffix in linux-x64 linux-arm64 macos-x64 macos-arm64 win-x64.exe; do
+            if [ ! -f "$TOOL-$suffix" ]; then
+              echo "::error::missing $TOOL-$suffix"
+              ls -l
+              exit 1
+            fi
+          done
           if [ "$count" -ne "$expected" ]; then
             echo "::error::expected $expected binaries, found $count"
             ls -l
@@ -151,6 +189,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.prepare.outputs.tag }}
+      TOOL: ${{ needs.prepare.outputs.tool }}
+      VERSION: ${{ needs.prepare.outputs.version }}
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
@@ -174,7 +214,8 @@ jobs:
             echo "::error::a release for $TAG already exists; refusing to overwrite it"
             exit 1
           fi
-          flags=(--verify-tag --generate-notes --title "$TAG")
+          # Not "Latest": plugin and CLI releases must not compete for that badge.
+          flags=(--verify-tag --generate-notes --title "$TOOL $VERSION" --latest=false)
           if [ "$PRERELEASE" = "true" ]; then
             flags+=(--prerelease)
           fi
