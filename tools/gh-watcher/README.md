@@ -15,7 +15,7 @@ non-interactive and exit-code driven.
 
 ## Install and build
 
-Quickest path: download a prebuilt binary from the Releases page of this repository. Artifacts follow the pattern `gh-watcher-<os>-<arch>`: `gh-watcher-linux-x64`, `gh-watcher-linux-arm64`, `gh-watcher-macos-x64`, `gh-watcher-macos-arm64` and `gh-watcher-win-x64.exe`. Make the downloaded file executable (`chmod +x`), put it on your `PATH`, and verify with `gh-watcher --help`. The binaries are self-contained and need no Node at runtime. On macOS they are unsigned: remove the quarantine attribute with `xattr -d com.apple.quarantine gh-watcher` or approve the binary in System Settings on first run.
+Quickest path: download a prebuilt binary from the `gh-watcher-v<version>` release on the Releases page of this repository (for example `https://github.com/ThomasMcFarlane/ai-tools/releases/download/gh-watcher-v<version>/gh-watcher-linux-x64`). Artifacts follow the pattern `gh-watcher-<os>-<arch>`: `gh-watcher-linux-x64`, `gh-watcher-linux-arm64`, `gh-watcher-macos-x64`, `gh-watcher-macos-arm64` and `gh-watcher-win-x64.exe`. Make the downloaded file executable (`chmod +x`), put it on your `PATH`, and verify with `gh-watcher --help`. The binaries are self-contained and need no Node at runtime. On macOS they are unsigned: remove the quarantine attribute with `xattr -d com.apple.quarantine gh-watcher` or approve the binary in System Settings on first run.
 
 Alternatively, build from source (requires Node >= 20 and npm). From the repository root:
 

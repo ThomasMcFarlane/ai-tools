@@ -8,7 +8,7 @@ and exit-code driven, so an agent can treat it as a pure function.
 
 ## Install and build
 
-Quickest path: download a prebuilt binary from the Releases page of this repository. Artifacts follow the pattern `dns-checker-<os>-<arch>`: `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`. Make the downloaded file executable (`chmod +x`), put it on your `PATH`, and verify with `dns-checker --help`. The binaries are self-contained and need no Node at runtime. On macOS they are unsigned: remove the quarantine attribute with `xattr -d com.apple.quarantine dns-checker` or approve the binary in System Settings on first run.
+Quickest path: download a prebuilt binary from the `dns-checker-v<version>` release on the Releases page of this repository (for example `https://github.com/ThomasMcFarlane/ai-tools/releases/download/dns-checker-v<version>/dns-checker-linux-x64`). Artifacts follow the pattern `dns-checker-<os>-<arch>`: `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`. Make the downloaded file executable (`chmod +x`), put it on your `PATH`, and verify with `dns-checker --help`. The binaries are self-contained and need no Node at runtime. On macOS they are unsigned: remove the quarantine attribute with `xattr -d com.apple.quarantine dns-checker` or approve the binary in System Settings on first run.
 
 Alternatively, build from source (requires Node >= 20 and npm). From the repository root:
 
