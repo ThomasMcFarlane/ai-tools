@@ -232,3 +232,26 @@ test('the list pane shows seen paths and says so when empty; List and the comman
   await $.command.run({ command: 'plan-view-list', args: '' })
   expect(opened.at(-1)).toEqual({ id: 'plan-view-list', title: 'Markdown files' })
 })
+
+const ask = (...texts: string[]) => ({ tool: 'AskUserQuestion', questions: [{ question: texts[0], header: 'H', options: texts.slice(1).map(t => ({ label: 'x', description: 'd', preview: t })) }] }) as any
+
+test('AskUserQuestion naming an .md opens the pane and offers the rest', async ($, on) => {
+  const { opened } = await boot($, on)
+  const ui = await mountBand($)
+  await $.tool.call(ask('Review /work/docs/spec.md first?', 'see docs/a.md', 'missing.md'))
+  expect(opened).toEqual([{ id: 'plan-view', title: 'The spec' }])
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('a.md')
+  expect(drawn).not.toContain('spec.md')
+  expect(drawn).not.toContain('missing.md')
+  await $.turn.complete(reply('Again /work/docs/spec.md'))
+  expect(opened.length).toBe(1) // already seen, not offered again
+  await ui.unmount()
+})
+
+test('AskUserQuestion with no existing .md, and other tools, do nothing', async ($, on) => {
+  const { opened } = await boot($, on)
+  await $.tool.call(ask('Use missing.md?', 'notes.txt'))
+  await $.tool.call({ tool: 'Bash', command: 'cat /work/docs/spec.md' } as any)
+  expect(opened).toEqual([])
+})

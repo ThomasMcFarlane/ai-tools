@@ -72,6 +72,29 @@ const openList = async ($: EngineInterface) => {
   await $.ui.open({ id: LIST_PANE, title: 'Markdown files' })
 }
 
+// Offers the existing .md files named in an AskUserQuestion call and opens the first; never throws.
+const offerFromQuestions = async ($: EngineInterface, e: unknown) => {
+  try {
+    const qs = (e as { questions?: unknown }).questions
+    const texts: unknown[] = []
+    for (const q of Array.isArray(qs) ? qs : []) {
+      texts.push(q?.question, q?.header)
+      for (const o of Array.isArray(q?.options) ? q.options : []) texts.push(o?.label, o?.description, o?.preview)
+    }
+    const { seen } = await read($, offer)
+    const fresh: string[] = []
+    for (const m of mdMentions(texts.filter(t => typeof t === 'string').join('\n'))) {
+      const path = await resolveMd($, m)
+      if (path && !seen.includes(path) && !fresh.includes(path)) fresh.push(path)
+    }
+    if (!fresh.length) return
+    await update($, offer, o => ({ pending: [...o.pending, ...fresh], seen: [...o.seen, ...fresh], at: o.pending.length + fresh.length - 1 }))
+    await openOffered($, fresh[0])
+  } catch (err) {
+    report($, 'AskUserQuestion', err)
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
@@ -104,6 +127,8 @@ export const register: Register = on => {
     const tool = String(e.tool)
     const file = typeof input.file_path === 'string' ? input.file_path : ''
     try {
+      // The dialog blocks next(), so look at the question first: a path named only there would show up too late.
+      if (tool === 'AskUserQuestion') await offerFromQuestions($, e)
       const known = (await read($, plan)).path
       const isWrite = ['Write', 'Edit', 'MultiEdit'].includes(tool) && isPlanPath(file, known)
       if (!isWrite && tool !== 'ExitPlanMode') return next(e)
