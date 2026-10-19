@@ -23,7 +23,9 @@ dns-checker lookup example.com -t A AAAA MX -r cloudflare google --json
 - `-t, --type <types...>`: record types (A, AAAA, CNAME, MX, NS, TXT, SOA, SRV, CAA, PTR; default A)
 - `-r, --resolver <names...>`: `system`, preset names, `all`, or literal IPs (default system)
 - `--transport <mode>`: `auto`, `udp`, `doh` or `system` (default auto)
-- `--timeout <ms>`: per-lookup timeout (default 5000)
+- `--timeout <ms>`: per-attempt timeout (default 2000)
+- `--retries <n>`: retries per resolver on timeout, SERVFAIL or refused/reset connection, UDP only (default 3); `result.attempts` in JSON, `(N tries)` in the table
+- Resolvers are queried concurrently (up to 32 at a time); `dns-checker --version` prints the version
 - `--strict`: exit 1 when every lookup errors
 - `--json`: emit results as JSON
 

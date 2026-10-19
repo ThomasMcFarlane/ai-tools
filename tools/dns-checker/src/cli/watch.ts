@@ -20,6 +20,7 @@ const HOOK_USAGE =
   'use none, exec:<command>, webhook:<url>, file:<path>, notify:claude, notify:codex or notify:opencode';
 
 interface AddFlags extends RuleFlags {
+  retries?: string;
   domain: string;
   type?: string;
   resolver?: string;
@@ -90,6 +91,14 @@ function describeHook(hook: HookConfig): string {
   }
 }
 
+function parseRetriesFlag(raw: string): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`invalid retries "${raw}": use a non-negative integer, e.g. 2`);
+  }
+  return value;
+}
+
 function parseTransport(raw: string | undefined): TransportPreference {
   const value = raw ?? 'auto';
   if (!TRANSPORTS.includes(value)) {
@@ -145,6 +154,7 @@ async function addAction(name: string, flags: AddFlags): Promise<void> {
     throw new Error(`invalid interval "${String(flags.interval)}": use a positive duration`);
   }
   const transport = parseTransport(flags.transport);
+  const retries = flags.retries === undefined ? undefined : parseRetriesFlag(flags.retries);
   const state = await loadState();
   if (state.watchers.some((entry) => entry.name === name)) {
     process.exitCode = 1;
@@ -156,6 +166,7 @@ async function addAction(name: string, flags: AddFlags): Promise<void> {
     type: type as RecordType,
     rule,
     transport,
+    ...(retries !== undefined ? { retries } : {}),
     intervalSeconds: intervalMs / 1000,
     hook,
     createdAt: new Date().toISOString(),
@@ -284,6 +295,7 @@ export function registerWatchCommands(program: Command): void {
     .option('--regex <pattern>', 'match when any value matches this regular expression')
     .option('--absent', 'match when no records are returned', false)
     .option('--any-change', 'match when values differ from the recorded baseline', false)
+    .option('--retries <n>', 'retries per lookup on timeout, SERVFAIL or refused/reset connection (UDP), default 3')
     .option('--interval <duration>', 'poll interval', '60s')
     .option('-r, --resolver <name>', 'resolver: system, a registry name, or a literal IP')
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')

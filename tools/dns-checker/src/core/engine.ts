@@ -33,6 +33,7 @@ function syncSpec(target: WatchSpec, spec: WatchSpec): void {
   target.rule = spec.rule;
   target.resolver = spec.resolver;
   target.transport = spec.transport;
+  target.retries = spec.retries;
   target.intervalSeconds = spec.intervalSeconds;
   target.hook = spec.hook;
   target.createdAt = spec.createdAt;
@@ -54,6 +55,7 @@ async function checkOne(spec: WatchSpec, deps: EngineDeps | undefined, manual: b
   const result = await lookupFn(target.domain, target.type, {
     resolver: target.resolver,
     transport: target.transport,
+    ...(target.retries !== undefined ? { retries: target.retries } : {}),
   });
   const values = answerValues(result);
   const baseline = state.baselines[target.name] ?? null;

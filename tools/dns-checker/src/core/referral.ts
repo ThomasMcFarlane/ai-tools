@@ -5,6 +5,7 @@ import type { DnsAnswer } from './types.js';
 
 const TYPE_NS = 2;
 const CLASS_IN = 1;
+const RCODE_CODES: Record<number, string> = { 2: 'ESERVFAIL', 5: 'EREFUSED' };
 
 export function buildNsQuery(domain: string, id: number): Buffer {
   const labels = domain.replace(/\.$/, '').split('.');
@@ -115,7 +116,12 @@ export function queryNsReferral(
     };
     const timer = setTimeout(() => {
       finish(() =>
-        reject(new Error(`NS referral query via ${ip} timed out after ${opts.timeoutMs}ms`)),
+        reject(
+          Object.assign(
+            new Error(`NS referral query via ${ip} timed out after ${opts.timeoutMs}ms`),
+            { code: 'ETIMEOUT' },
+          ),
+        ),
       );
     }, opts.timeoutMs);
     socket.on('error', (error) => finish(() => reject(error)));
@@ -127,7 +133,13 @@ export function queryNsReferral(
         try {
           const response = parseNsResponse(message);
           if (response.rcode !== 0) {
-            reject(new Error(`NS referral query via ${ip} returned rcode ${response.rcode}`));
+            const code = RCODE_CODES[response.rcode];
+            reject(
+              Object.assign(
+                new Error(`NS referral query via ${ip} returned rcode ${response.rcode}`),
+                code === undefined ? {} : { code },
+              ),
+            );
             return;
           }
           resolve(referralAnswers(response));

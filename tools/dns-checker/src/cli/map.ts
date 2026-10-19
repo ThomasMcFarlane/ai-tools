@@ -2,7 +2,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { Command } from 'commander';
 import { buildReport, summarise } from '../core/compare.js';
-import { lookup } from '../core/resolver.js';
+import { mapLimit, DEFAULT_CONCURRENCY } from '../core/pool.js';
+import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS, lookup } from '../core/resolver.js';
 import type { LookupResult, RecordType, TransportPreference } from '../core/types.js';
 import { generateHtml } from '../map/html.js';
 import { serveHtml } from '../map/serve.js';
@@ -13,6 +14,7 @@ export interface MapFlags {
   resolver?: string[];
   transport?: string;
   timeout?: string;
+  retries?: string;
   expect?: string[];
   input?: string;
   output?: string;
@@ -26,6 +28,7 @@ export interface MapHelpers {
   parseResolvers(raw: string[] | undefined): string[];
   parseTransport(raw: string | undefined): TransportPreference;
   parseTimeoutMs(raw: string | undefined): number;
+  parseRetries(raw: string | undefined): number;
   splitList(values: string[]): string[];
 }
 
@@ -82,12 +85,11 @@ export async function mapAction(
     const resolvers = helpers.parseResolvers(flags.resolver);
     const transport = helpers.parseTransport(flags.transport);
     const timeoutMs = helpers.parseTimeoutMs(flags.timeout);
-    results = [];
-    for (const type of types) {
-      for (const resolver of resolvers) {
-        results.push(await lookup(domain, type, { resolver, transport, timeoutMs }));
-      }
-    }
+    const retries = helpers.parseRetries(flags.retries);
+    const pairs = types.flatMap((type) => resolvers.map((resolver) => ({ type, resolver })));
+    results = await mapLimit(pairs, DEFAULT_CONCURRENCY, ({ type, resolver }) =>
+      lookup(domain, type, { resolver, transport, timeoutMs, retries }),
+    );
   }
   const expected = flags.expect === undefined ? undefined : helpers.splitList(flags.expect);
   const report = buildReport(results, expected);
@@ -126,7 +128,8 @@ export function registerMapCommand(program: Command, helpers: MapHelpers): void 
       'resolvers: system, a registry name, all, or a literal IP (default system)',
     )
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
-    .option('--timeout <ms>', 'per-lookup timeout in milliseconds', '5000')
+    .option('--timeout <ms>', 'per-attempt timeout in milliseconds', String(DEFAULT_TIMEOUT_MS))
+    .option('--retries <n>', 'retries per resolver on timeout, SERVFAIL or refused/reset connection (UDP)', String(DEFAULT_RETRIES))
     .option('--expect <values...>', 'expected value set; resolvers that differ are flagged')
     .option(
       '--input <file>',
