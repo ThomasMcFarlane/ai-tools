@@ -1,10 +1,16 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { clipTail } from './register'
+
 const PLAN = '/home/u/.claude/plans/quiet-fox.md'
 const TEXT = '# Add caching\n\n- step one\n- step two\n'
 
 // Boots the plugin with a plan file on a fake disk; `opened` collects ui.open calls, `closed` ui.close calls.
+// Set by a test to capture ui.status text (otherwise a status fails the test).
+let statuses: string[] | undefined
+
 const boot = async ($: any, on: any, learn = true) => {
+  statuses = undefined
   const opened: { id: string; title?: string }[] = []
   const closed: string[] = []
   const disk: Record<string, string> = { [PLAN]: TEXT, '/work/docs/spec.md': '# The spec\n\nbody\n', '/work/notes.txt': 'x', '/work/docs/a.md': '# A\n', '/work/docs/b.md': '# B\n' }
@@ -34,7 +40,9 @@ const boot = async ($: any, on: any, learn = true) => {
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }))
   on('ui.status', (_$: any, e: any) => {
-    throw new Error(`plan-view reported: ${e.text}`) // a failure inside the plugin fails the test
+    if (!statuses) throw new Error(`plan-view reported: ${e.text}`) // a failure inside the plugin fails the test
+    statuses.push(e.text)
+    return { value: undefined }
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   if (learn) await $.prompt.attachment({ type: 'plan_mode', text: 'x', detail: { planFilePath: PLAN } } as any)
@@ -254,4 +262,29 @@ test('AskUserQuestion with no existing .md, and other tools, do nothing', async 
   await $.tool.call(ask('Use missing.md?', 'notes.txt'))
   await $.tool.call({ tool: 'Bash', command: 'cat /work/docs/spec.md' } as any)
   expect(opened).toEqual([])
+})
+
+test('Open on a file deleted since it was offered forgets it and says so', async ($, on) => {
+  const { disk, opened } = await boot($, on)
+  statuses = []
+  const band = await mountBand($)
+  await $.turn.complete(reply('docs/a.md docs/b.md'))
+  delete disk['/work/docs/b.md'] // the band shows the newest offer
+  await band.press({ key: 'open' })
+  expect(statuses).toEqual(['plan-view: b.md no longer exists'])
+  expect(opened).toEqual([])
+  await band.unmount()
+  const list = await mountList($)
+  const drawn = JSON.stringify(await list.drawn())
+  expect(drawn).not.toContain('/work/docs/b.md')
+  expect(drawn).toContain('/work/docs/a.md')
+  await list.unmount()
+})
+
+test('a long error message keeps its tail', () => {
+  const t = clipTail(`${'/very/long/path/'.repeat(10)} ENOENT`)
+  expect(t.length).toBe(80)
+  expect(t.startsWith('…')).toBe(true)
+  expect(t.endsWith(' ENOENT')).toBe(true)
+  expect(clipTail('short')).toBe('short')
 })

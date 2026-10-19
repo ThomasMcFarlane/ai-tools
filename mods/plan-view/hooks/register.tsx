@@ -35,9 +35,12 @@ const resolveMd = async ($: EngineInterface, m: string): Promise<string | undefi
   }
 }
 
+// Keeps the end of a long message: the reason comes last, after any long path.
+export const clipTail = (t: string) => (t.length > 80 ? `…${t.slice(-79)}` : t)
+
 const report = ($: EngineInterface, where: string, err: unknown) => {
   try {
-    $.ui.status(`plan-view: ${where}: ${String(err instanceof Error ? err.message : err).slice(0, 80)}`)
+    $.ui.status(`plan-view: ${where}: ${clipTail(String(err instanceof Error ? err.message : err))}`)
   } catch {
     /* nothing left to do */
   }
@@ -59,13 +62,16 @@ const show = async ($: EngineInterface, path: string) => {
   await open($)
 }
 
-// Drops the path from the band (keeping the index in range), then shows it.
+// Drops the path from the band (keeping the index in range), then shows it. A file deleted since it was offered is forgotten instead.
 const openOffered = async ($: EngineInterface, path: string) => {
+  const gone = !(await $.fs.exists(path))
   await update($, offer, o => {
     const pending = o.pending.filter(p => p !== path)
-    return { ...o, pending, at: Math.min(o.at, Math.max(pending.length - 1, 0)) }
+    return { pending, seen: gone ? o.seen.filter(p => p !== path) : o.seen, at: Math.min(o.at, Math.max(pending.length - 1, 0)) }
   })
-  await show($, path)
+  if (!gone) return show($, path)
+  for (const [k, v] of resolved) if (v === path) resolved.delete(k)
+  $.ui.status(`plan-view: ${path.split('/').pop()} no longer exists`)
 }
 
 const openList = async ($: EngineInterface) => {
