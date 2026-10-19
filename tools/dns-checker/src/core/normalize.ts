@@ -12,13 +12,23 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function dohAnswers(items: unknown[]): DnsAnswer[] {
+const QUOTED_TXT = /^"(?:[^"\\]|\\.)*"(?:\s+"(?:[^"\\]|\\.)*")*$/;
+const TXT_CHUNK = /"((?:[^"\\]|\\.)*)"/g;
+
+function dohTxtValue(data: string): string {
+  if (!QUOTED_TXT.test(data)) {
+    return data;
+  }
+  return Array.from(data.matchAll(TXT_CHUNK), (match) => (match[1] ?? '').replace(/\\(.)/g, '$1')).join('');
+}
+
+function dohAnswers(type: RecordType, items: unknown[]): DnsAnswer[] {
   const answers: DnsAnswer[] = [];
   for (const item of items) {
     if (!isRecord(item) || typeof item.data !== 'string') {
       continue;
     }
-    answers.push(answer(item.data, finiteNumber(item.TTL) ?? 0));
+    answers.push(answer(type === 'TXT' ? dohTxtValue(item.data) : item.data, finiteNumber(item.TTL) ?? 0));
   }
   return answers;
 }
@@ -124,7 +134,7 @@ function rawAnswers(type: RecordType, raw: unknown): DnsAnswer[] {
   }
   if (isRecord(raw)) {
     if (Array.isArray(raw.Answer)) {
-      return dohAnswers(raw.Answer);
+      return dohAnswers(type, raw.Answer);
     }
     if (type === 'SOA') {
       return soaAnswer(raw);
