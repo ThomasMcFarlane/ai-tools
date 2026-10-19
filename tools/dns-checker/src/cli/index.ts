@@ -5,7 +5,14 @@ import { Command } from 'commander';
 import { answerValues, lookup } from '../core/resolver.js';
 import { evaluateRule } from '../core/matcher.js';
 import { loadState, saveState } from '../core/store.js';
-import { RESOLVERS, listResolverNames, resolveServer } from '../core/resolvers.js';
+import {
+  RESOLVERS,
+  WORLD_PRESET,
+  listGlobalResolverNames,
+  listWorldResolverNames,
+  resolveServer,
+  type ResolverLocation,
+} from '../core/resolvers.js';
 import {
   RECORD_TYPES,
   type LookupResult,
@@ -100,7 +107,9 @@ function parseMultiResolvers(raw: string[] | undefined): string[] {
   const expanded: string[] = [];
   for (const value of list) {
     if (value === 'all') {
-      expanded.push(...listResolverNames());
+      expanded.push(...listGlobalResolverNames());
+    } else if (value === WORLD_PRESET) {
+      expanded.push(...listWorldResolverNames());
     } else {
       resolveServer(value);
       expanded.push(value);
@@ -165,9 +174,15 @@ async function lookupAction(domain: string, flags: LookupFlags): Promise<void> {
   }
 }
 
-function finishCheck(outcome: MatchOutcome, values: string[], rule: MatchRule, json: boolean | undefined): void {
+function finishCheck(
+  outcome: MatchOutcome,
+  values: string[],
+  rule: MatchRule,
+  json: boolean | undefined,
+  location: ResolverLocation | undefined,
+): void {
   if (json) {
-    printJson({ matched: outcome.matched, reason: outcome.reason, values, rule });
+    printJson({ matched: outcome.matched, reason: outcome.reason, values, rule, location });
   } else {
     console.log(`${outcome.matched ? 'matched' : 'not matched'}: ${outcome.reason}`);
   }
@@ -186,7 +201,7 @@ async function checkAction(domain: string, flags: CheckFlags): Promise<void> {
   const values = answerValues(result);
   if (result.error !== undefined) {
     if (flags.json) {
-      printJson({ matched: false, reason: result.error, values, rule });
+      printJson({ matched: false, reason: result.error, values, rule, location: result.location });
     } else {
       console.error(`error: ${result.error}`);
     }
@@ -201,16 +216,16 @@ async function checkAction(domain: string, flags: CheckFlags): Promise<void> {
       state.baselines[key] = values;
       await saveState(state);
       if (flags.json) {
-        printJson({ matched: false, reason: 'baseline recorded', values, rule });
+        printJson({ matched: false, reason: 'baseline recorded', values, rule, location: result.location });
       } else {
         console.log('baseline recorded');
       }
       return;
     }
-    finishCheck(evaluateRule(rule, values, baseline), values, rule, flags.json);
+    finishCheck(evaluateRule(rule, values, baseline), values, rule, flags.json, result.location);
     return;
   }
-  finishCheck(evaluateRule(rule, values), values, rule, flags.json);
+  finishCheck(evaluateRule(rule, values), values, rule, flags.json, result.location);
 }
 
 async function waitAction(domain: string, flags: WaitFlags): Promise<void> {
@@ -228,7 +243,7 @@ async function waitAction(domain: string, flags: WaitFlags): Promise<void> {
     });
     if (result.error !== undefined) {
       if (flags.json) {
-        printJson({ matched: false, reason: result.error, values: [], rule });
+        printJson({ matched: false, reason: result.error, values: [], rule, location: result.location });
       } else {
         console.error(`error: ${result.error}`);
       }
@@ -250,7 +265,7 @@ async function waitAction(domain: string, flags: WaitFlags): Promise<void> {
     const outcome = evaluateRule(rule, values, baseline);
     if (outcome.matched) {
       if (flags.json) {
-        printJson({ matched: true, reason: outcome.reason, values, checkedAt: result.checkedAt });
+        printJson({ matched: true, reason: outcome.reason, values, checkedAt: result.checkedAt, location: result.location });
       } else {
         process.stderr.write('\n');
         console.log(`matched: ${outcome.reason}`);
@@ -282,7 +297,7 @@ function buildProgram(): Command {
     .description('Look up DNS records for a domain')
     .argument('<domain>', 'domain name to look up')
     .option('-t, --type <types...>', 'record types, comma or space separated (default A)')
-    .option('-r, --resolver <names...>', 'resolvers: system, a registry name, all, or a literal IP (default system)')
+    .option('-r, --resolver <names...>', 'resolvers: system, a registry name, all (global presets), world (location-tagged resolvers), or a literal IP (default system)')
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
     .option('--timeout <ms>', 'per-lookup timeout in milliseconds', '5000')
     .option('--strict', 'exit 1 when every lookup errors', false)
@@ -336,8 +351,14 @@ function buildProgram(): Command {
         return;
       }
       printTable([
-        ['name', 'label', 'ips', 'doh'],
-        ...defs.map((def) => [def.name, def.label, def.ips.join(','), def.doh ?? '-']),
+        ['name', 'label', 'ips', 'doh', 'location'],
+        ...defs.map((def) => [
+          def.name,
+          def.label,
+          def.ips.join(','),
+          def.doh ?? '-',
+          def.location === undefined ? '-' : `${def.location.city}, ${def.location.countryCode}`,
+        ]),
       ]);
     });
   registerMapCommand(p, {

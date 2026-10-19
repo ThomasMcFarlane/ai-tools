@@ -44,7 +44,7 @@ dns-checker lookup [options] <domain>
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-t, --type <types...>` | `A` | Record types, comma or space separated. Repeatable. |
-| `-r, --resolver <names...>` | `system` | Resolver names, `all`, or literal IPs. Comma or space separated. |
+| `-r, --resolver <names...>` | `system` | Resolver names, `all`, `world`, or literal IPs. Comma or space separated. |
 | `--transport <mode>` | `auto` | `auto`, `udp`, `doh` or `system`. |
 | `--timeout <ms>` | `5000` | Per-lookup timeout in milliseconds. |
 | `--strict` | off | Exit 1 when every lookup errors. |
@@ -261,7 +261,8 @@ Resolver arguments may be:
 
 - `system`: the operating system resolver.
 - A registry name from the table above.
-- `all` (`lookup` only): expands to every registry name.
+- `all` (`lookup` only): expands to the six global presets in the table above (unchanged by the world set).
+- `world` (`lookup` only): expands to every location-tagged resolver, see [World resolvers](#world-resolvers).
 - A literal IP address: used directly.
 
 Transport selection with `--transport`:
@@ -272,6 +273,40 @@ Transport selection with `--transport`:
 | `udp` | Send the query over UDP to the resolver's first IP. |
 | `doh` | Use DNS-over-HTTPS JSON (`application/dns-json`). Fails for resolvers without a DoH endpoint. |
 | `system` | Force the OS resolver, overriding `--resolver`. |
+
+## World resolvers
+
+`-r world` queries a set of public resolvers spread across cities and countries, in the spirit of
+dnschecker.org. Each entry has a name (for example `nic-cz`), a provider label, one IP and a
+`location`. `dns-checker resolvers` lists them (with a `location` column), and any entry works by name with
+`-r` in `lookup`, `check`, `wait` and `watch add`. The six global presets above are anycast and have no
+location.
+
+Locations are the resolver's nominal city: providers that run anycast may answer from a nearer site.
+Entries were each verified to answer from a test host; resolvers that did not answer were left out.
+
+The location shape, present on JSON results when known (and omitted otherwise):
+
+```json
+{ "city": "Prague", "country": "Czechia", "countryCode": "CZ", "lat": 50.0755, "lon": 14.4378 }
+```
+
+- `lookup --json`: every result object has `location`.
+- `check --json` and `wait --json`: the outcome object has `location`.
+- Watch events (`watch check --json`, `events.jsonl`): the event has `location`.
+- Human `lookup` output appends `(City, CC)` after the resolver name.
+
+## NS delegations
+
+A recursive resolver answers NS for a zone from the zone's own NS set. A parent server (a TLD server, or an
+authoritative server for the parent) instead answers with a referral: no answer section, and the delegated NS
+records in the authority section. For `-t NS` over UDP, when the normal lookup returns no data,
+dns-checker repeats the query to the same server without the recursion-desired flag and reports the NS
+records from the answer or authority section. This makes cutovers visible before the delegation is cached:
+
+```sh
+dns-checker lookup example.com -t NS -r 192.5.6.30
+```
 
 ## Match rules
 
