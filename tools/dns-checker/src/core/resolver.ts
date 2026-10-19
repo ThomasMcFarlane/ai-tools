@@ -186,7 +186,14 @@ export async function lookup(domain: string, type: RecordType, opts: LookupOptio
     throw new Error(`resolver "${server.name}" has no DoH endpoint`);
   }
   const checkedAt = new Date().toISOString();
-  const base = { domain, type, resolver: server.name, transport, checkedAt };
+  const base = {
+    domain,
+    type,
+    resolver: server.name,
+    transport,
+    checkedAt,
+    ...(server.location ? { location: server.location } : {}),
+  };
   if (transport === 'system') {
     const answers = await withDeadline(() => querySystem(domain, type), {
       timeoutMs,

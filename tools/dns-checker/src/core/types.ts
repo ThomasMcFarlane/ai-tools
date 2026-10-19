@@ -1,4 +1,5 @@
 import type { HookConfig } from '@ai-tools/hooks';
+import type { ResolverLocation } from './resolvers.js';
 
 export type { HookConfig, HookResult } from '@ai-tools/hooks';
 
@@ -21,6 +22,7 @@ export interface LookupResult {
   answers: DnsAnswer[];
   checkedAt: string;
   error?: string;
+  location?: ResolverLocation;
 }
 
 export type MatchRule =

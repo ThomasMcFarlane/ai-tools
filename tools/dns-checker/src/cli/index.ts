@@ -15,7 +15,9 @@ import {
   type TransportPreference,
 } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
-import { printJson, printTable } from './output.js';
+import { buildGroup } from '../core/compare.js';
+import { registerMapCommand } from './map.js';
+import { colourEnabled, createPainter, formatComparison, printJson, printTable } from './output.js';
 import { buildRule, type RuleFlags } from './rules.js';
 import { registerWatchCommands } from './watch.js';
 
@@ -28,6 +30,7 @@ interface LookupFlags {
   transport?: string;
   timeout?: string;
   strict?: boolean;
+  expect?: string[];
   json?: boolean;
 }
 
@@ -149,19 +152,13 @@ async function lookupAction(domain: string, flags: LookupFlags): Promise<void> {
   if (flags.json) {
     printJson(results);
   } else {
-    for (const result of results) {
-      const label = `${result.domain} ${result.type} via ${result.resolver}`;
-      console.log(label);
-      if (result.error !== undefined) {
-        console.error(`${label}: error: ${result.error}`);
-      } else if (result.answers.length === 0) {
-        console.log('  no records');
-      } else {
-        for (const answer of result.answers) {
-          console.log(`  ${answer.value} (ttl ${answer.ttl})`);
-        }
-      }
+    const painter = createPainter(colourEnabled());
+    const expected = flags.expect === undefined ? undefined : splitList(flags.expect);
+    const blocks: string[] = [];
+    for (const type of types) {
+      blocks.push(formatComparison(buildGroup(results.filter((result) => result.type === type), expected), painter));
     }
+    console.log(blocks.join('\n\n'));
   }
   if (flags.strict === true && results.length > 0 && results.every((result) => result.error !== undefined)) {
     process.exitCode = 1;
@@ -289,6 +286,7 @@ function buildProgram(): Command {
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
     .option('--timeout <ms>', 'per-lookup timeout in milliseconds', '5000')
     .option('--strict', 'exit 1 when every lookup errors', false)
+    .option('--expect <values...>', 'expected value set; resolvers that differ are flagged')
     .option('--json', 'emit results as JSON', false)
     .action(async (domain, opts) => {
       await lookupAction(domain as string, opts as LookupFlags);
@@ -342,6 +340,13 @@ function buildProgram(): Command {
         ...defs.map((def) => [def.name, def.label, def.ips.join(','), def.doh ?? '-']),
       ]);
     });
+  registerMapCommand(p, {
+    parseTypes: parseMultiTypes,
+    parseResolvers: parseMultiResolvers,
+    parseTransport,
+    parseTimeoutMs,
+    splitList,
+  });
   registerWatchCommands(p);
   return p;
 }
