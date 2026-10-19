@@ -82,6 +82,12 @@ dns-checker watch run
 
 When the record matches, the daemon runs `codex exec "<event prompt>"` asking the agent to continue the task that created the watcher. `--hook exec:<command>` gets `EVENT`, `EVENT_SUMMARY` and `DNS_*` variables plus the event JSON on stdin.
 
+## World locations and NS delegation
+
+- `-r world` (`lookup` only) queries every location-tagged public resolver (33 cities). `-r all` is unchanged and means the six global presets.
+- With `--json`, each per-resolver result carries `location` (`city`, `country`, `countryCode`, `lat`, `lon`) when the resolver has one; anycast presets and literal IPs omit the key. `check`, `wait` and watch events carry it too.
+- `lookup -t NS` against a parent or authoritative server (a literal IP such as a TLD server) falls back to a non-recursive query and reports the delegated NS set from the referral, instead of failing with ENODATA.
+
 ## Exit codes
 
 | Code | Meaning |

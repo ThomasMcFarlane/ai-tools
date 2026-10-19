@@ -197,3 +197,39 @@ describe('runWatches', () => {
     expect(events.map((event) => event.watch)).toEqual(['w2']);
   });
 });
+
+describe('event location', () => {
+  it('carries the resolver location onto the event when known', async () => {
+    const location = {
+      city: 'Prague',
+      country: 'Czechia',
+      countryCode: 'CZ',
+      lat: 50.0755,
+      lon: 14.4378,
+    };
+    const deps: EngineDeps = {
+      lookupFn: vi.fn(async (domain: string, type: RecordType): Promise<LookupResult> => ({
+        domain,
+        type,
+        resolver: 'nic-cz',
+        transport: 'udp',
+        answers: [{ value: '192.0.2.1', ttl: 60 }],
+        checkedAt: fixedNow.toISOString(),
+        location,
+      })),
+      fireHookFn: vi.fn(async () => ({ ok: true })),
+      now: () => fixedNow,
+    };
+    const spec: WatchSpec = {
+      name: 'loc',
+      domain: 'example.com',
+      type: 'A',
+      rule: { kind: 'absent' },
+      intervalSeconds: 60,
+      hook: { kind: 'none' },
+      createdAt: fixedNow.toISOString(),
+    };
+    const event = await checkWatch(spec, deps);
+    expect(event.location).toEqual(location);
+  });
+});

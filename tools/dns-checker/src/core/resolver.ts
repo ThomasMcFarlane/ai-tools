@@ -1,6 +1,7 @@
 import { Resolver as DnsResolver } from 'node:dns/promises';
 import * as dnsPromises from 'node:dns/promises';
 import { normalizeAnswers } from './normalize.js';
+import { queryNsReferral } from './referral.js';
 import { resolveServer, type ResolvedServer } from './resolvers.js';
 import {
   RECORD_TYPES,
@@ -123,6 +124,31 @@ async function querySystem(domain: string, type: RecordType): Promise<DnsAnswer[
   }
 }
 
+function isNoDataError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'ENODATA';
+}
+
+async function withNsReferral(
+  direct: () => Promise<DnsAnswer[]>,
+  domain: string,
+  ip: string,
+  timeoutMs: number,
+): Promise<DnsAnswer[]> {
+  try {
+    return await direct();
+  } catch (error) {
+    if (!isNoDataError(error)) {
+      throw error;
+    }
+    const referral = await queryNsReferral(ip, domain, { timeoutMs }).catch(() => []);
+    if (referral.length === 0) {
+      throw error;
+    }
+    return referral;
+  }
+}
+
 async function udpLookup(
   domain: string,
   type: RecordType,
@@ -132,7 +158,9 @@ async function udpLookup(
 ): Promise<DnsAnswer[]> {
   const resolver = new DnsResolver({ timeout: timeoutMs });
   resolver.setServers([ip]);
-  return withDeadline(() => queryUdp(resolver, domain, type), {
+  const direct = (): Promise<DnsAnswer[]> => queryUdp(resolver, domain, type);
+  const task = type === 'NS' ? () => withNsReferral(direct, domain, ip, timeoutMs) : direct;
+  return withDeadline(task, {
     timeoutMs,
     signal,
     onCancel: () => resolver.cancel(),

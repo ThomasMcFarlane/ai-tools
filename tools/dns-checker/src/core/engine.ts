@@ -70,6 +70,9 @@ async function checkOne(spec: WatchSpec, deps: EngineDeps | undefined, manual: b
     checkedAt,
     fired: false,
   };
+  if (result.location !== undefined) {
+    event.location = result.location;
+  }
   if (result.error !== undefined) {
     event.error = result.error;
   }

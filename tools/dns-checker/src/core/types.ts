@@ -3,7 +3,8 @@ import type { ResolverLocation } from './resolvers.js';
 
 export type { HookConfig, HookResult } from '@ai-tools/hooks';
 
-export type RecordType = 'A' | 'AAAA' | 'CNAME' | 'MX' | 'NS' | 'TXT' | 'SOA' | 'SRV' | 'CAA' | 'PTR';
+export type RecordType =
+  'A' | 'AAAA' | 'CNAME' | 'MX' | 'NS' | 'TXT' | 'SOA' | 'SRV' | 'CAA' | 'PTR';
 
 export type Transport = 'udp' | 'doh' | 'system';
 
@@ -21,6 +22,7 @@ export interface LookupResult {
   transport: Transport;
   answers: DnsAnswer[];
   checkedAt: string;
+  location?: ResolverLocation;
   error?: string;
   location?: ResolverLocation;
 }
@@ -62,6 +64,7 @@ export interface WatchEvent {
   values: string[];
   checkedAt: string;
   fired: boolean;
+  location?: ResolverLocation;
   error?: string;
 }
 
