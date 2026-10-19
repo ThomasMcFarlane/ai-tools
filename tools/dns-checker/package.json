@@ -1,6 +1,6 @@
 {
   "name": "@ai-tools/dns-checker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DNS lookup and watch library for AI agents",
   "type": "module",
   "license": "MIT",

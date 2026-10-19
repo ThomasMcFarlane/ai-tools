@@ -60,6 +60,7 @@ function tipHtml(r){
  h+='<span class="k">status</span> <span class="s-'+r.status+'" style="color:var(--c)">'+r.status+'</span><br>';
  if(r.ips.length)h+='<span class="k">resolver IPs</span> '+esc(r.ips.join(', '))+'<br>';
  if(r.error)h+='<span class="k">error</span> '+esc(r.error)+'<br>';
+ if(r.attempts>1)h+='<span class="k">attempts</span> '+r.attempts+'<br>';
  else h+='<span class="k">answers</span> '+(r.answers.length?esc(r.answers.map(function(a){return a.value}).join(', ')):'no records')+'<br>';
  var t=ttl(r);if(t!==null)h+='<span class="k">TTL</span> '+t+'s<br>';
  h+='<span class="k">transport</span> '+esc(r.transport);

@@ -7,3 +7,5 @@ export * from './core/matcher.js';
 export * from './core/store.js';
 export * from './core/hooks.js';
 export * from './core/engine.js';
+export * from './core/pool.js';
+export { VERSION } from './version.js';

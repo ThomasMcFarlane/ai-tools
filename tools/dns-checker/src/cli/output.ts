@@ -92,9 +92,10 @@ export function formatCells(rows: Cell[][]): string {
 }
 
 function locationLabel(row: CompareRow): string {
-  return row.location
+  const base = row.location
     ? `${row.resolver} (${row.location.city}, ${row.location.countryCode})`
     : row.resolver;
+  return row.attempts !== undefined && row.attempts > 1 ? `${base} (${row.attempts} tries)` : base;
 }
 
 function ttlOf(row: CompareRow): string {

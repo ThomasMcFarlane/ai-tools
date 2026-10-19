@@ -22,6 +22,7 @@ export interface LookupResult {
   transport: Transport;
   answers: DnsAnswer[];
   checkedAt: string;
+  attempts?: number;
   error?: string;
   location?: ResolverLocation;
 }
@@ -47,6 +48,7 @@ export interface WatchSpec {
   rule: MatchRule;
   resolver?: string;
   transport?: TransportPreference;
+  retries?: number;
   intervalSeconds: number;
   hook: HookConfig;
   createdAt: string;

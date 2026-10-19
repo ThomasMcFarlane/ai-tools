@@ -6,6 +6,7 @@ Two CLIs let you check external state, wait for changes, and resume work. Build 
 
 - Look up records across resolvers: `dns-checker lookup example.com -t A AAAA MX -r cloudflare --json`
 - Test a rule once: `dns-checker check example.com -t A --expect 203.0.113.10`
+- Flaky resolvers are retried (`--retries <n>`, default 2; `--timeout <ms>` is per attempt, default 2000); results carry `attempts`.
 - Block until a rule matches: `dns-checker wait _acme-challenge.example.com -t TXT --contains "token" --timeout 10m`
 - Rule flags: `--expect <values...>`, `--expect-absent <values...>`, `--contains <value>`, `--regex <pattern>`, `--absent`, `--any-change`
 - Resolver presets: cloudflare, google, quad9, opendns, adguard, yandex (or `system`, `all`, literal IPs)

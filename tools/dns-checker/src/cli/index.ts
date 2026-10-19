@@ -2,7 +2,9 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
-import { answerValues, lookup } from '../core/resolver.js';
+import { DEFAULT_RETRIES, DEFAULT_TIMEOUT_MS, answerValues, lookup } from '../core/resolver.js';
+import { DEFAULT_CONCURRENCY, mapLimit } from '../core/pool.js';
+import { VERSION } from '../version.js';
 import { evaluateRule } from '../core/matcher.js';
 import { loadState, saveState } from '../core/store.js';
 import {
@@ -36,6 +38,7 @@ interface LookupFlags {
   resolver?: string[];
   transport?: string;
   timeout?: string;
+  retries?: string;
   strict?: boolean;
   expect?: string[];
   json?: boolean;
@@ -46,6 +49,7 @@ interface CheckFlags extends RuleFlags {
   resolver?: string;
   transport?: string;
   timeout?: string;
+  retries?: string;
   json?: boolean;
 }
 
@@ -55,6 +59,7 @@ interface WaitFlags extends RuleFlags {
   transport?: string;
   interval?: string;
   timeout?: string;
+  retries?: string;
   json?: boolean;
 }
 
@@ -127,9 +132,17 @@ function parseTransport(raw: string | undefined): TransportPreference {
 }
 
 function parseTimeoutMs(raw: string | undefined): number {
-  const value = Number(raw ?? '5000');
+  const value = Number(raw ?? String(DEFAULT_TIMEOUT_MS));
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`invalid timeout "${String(raw)}": use a positive number of milliseconds, e.g. 5000`);
+    throw new Error(`invalid timeout "${String(raw)}": use a positive number of milliseconds, e.g. 2000`);
+  }
+  return value;
+}
+
+export function parseRetries(raw: string | undefined): number {
+  const value = Number(raw ?? String(DEFAULT_RETRIES));
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`invalid retries "${String(raw)}": use a non-negative integer, e.g. 2`);
   }
   return value;
 }
@@ -152,12 +165,11 @@ async function lookupAction(domain: string, flags: LookupFlags): Promise<void> {
   const resolvers = parseMultiResolvers(flags.resolver);
   const transport = parseTransport(flags.transport);
   const timeoutMs = parseTimeoutMs(flags.timeout);
-  const results: LookupResult[] = [];
-  for (const type of types) {
-    for (const resolver of resolvers) {
-      results.push(await lookup(domain, type, { resolver, transport, timeoutMs }));
-    }
-  }
+  const retries = parseRetries(flags.retries);
+  const pairs = types.flatMap((type) => resolvers.map((resolver) => ({ type, resolver })));
+  const results: LookupResult[] = await mapLimit(pairs, DEFAULT_CONCURRENCY, ({ type, resolver }) =>
+    lookup(domain, type, { resolver, transport, timeoutMs, retries }),
+  );
   if (flags.json) {
     printJson(results);
   } else {
@@ -192,11 +204,13 @@ function finishCheck(
 async function checkAction(domain: string, flags: CheckFlags): Promise<void> {
   const target = parseTarget(flags);
   const timeoutMs = parseTimeoutMs(flags.timeout);
+  const retries = parseRetries(flags.retries);
   const rule = buildRuleOrExit(flags);
   const result = await lookup(domain, target.type, {
     resolver: target.resolver,
     transport: target.transport,
     timeoutMs,
+    retries,
   });
   const values = answerValues(result);
   if (result.error !== undefined) {
@@ -230,6 +244,7 @@ async function checkAction(domain: string, flags: CheckFlags): Promise<void> {
 
 async function waitAction(domain: string, flags: WaitFlags): Promise<void> {
   const target = parseTarget(flags);
+  const retries = parseRetries(flags.retries);
   const rule = buildRuleOrExit(flags);
   const intervalMs = parseDuration(flags.interval ?? '30s');
   const timeoutMs = Math.min(parseDuration(flags.timeout ?? '30m'), MAX_WAIT_TIMEOUT_MS);
@@ -240,6 +255,7 @@ async function waitAction(domain: string, flags: WaitFlags): Promise<void> {
     const result = await lookup(domain, target.type, {
       resolver: target.resolver,
       transport: target.transport,
+      retries,
     });
     if (result.error !== undefined) {
       if (flags.json) {
@@ -292,14 +308,17 @@ async function waitAction(domain: string, flags: WaitFlags): Promise<void> {
 
 function buildProgram(): Command {
   const p = new Command();
-  p.name('dns-checker').description('DNS lookup, checking and watching for AI agents');
+  p.name('dns-checker')
+    .description('DNS lookup, checking and watching for AI agents')
+    .version(VERSION, '-V, --version', 'print the version');
   p.command('lookup')
     .description('Look up DNS records for a domain')
     .argument('<domain>', 'domain name to look up')
     .option('-t, --type <types...>', 'record types, comma or space separated (default A)')
     .option('-r, --resolver <names...>', 'resolvers: system, a registry name, all (global presets), world (location-tagged resolvers), or a literal IP (default system)')
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
-    .option('--timeout <ms>', 'per-lookup timeout in milliseconds', '5000')
+    .option('--timeout <ms>', 'per-attempt timeout in milliseconds', String(DEFAULT_TIMEOUT_MS))
+    .option('--retries <n>', 'retries per resolver on timeout or SERVFAIL (UDP)', String(DEFAULT_RETRIES))
     .option('--strict', 'exit 1 when every lookup errors', false)
     .option('--expect <values...>', 'expected value set; resolvers that differ are flagged')
     .option('--json', 'emit results as JSON', false)
@@ -312,7 +331,8 @@ function buildProgram(): Command {
     .option('-t, --type <type>', 'record type', 'A')
     .option('-r, --resolver <name>', 'resolver: system, a registry name, or a literal IP', 'system')
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
-    .option('--timeout <ms>', 'lookup timeout in milliseconds', '5000')
+    .option('--timeout <ms>', 'per-attempt timeout in milliseconds', String(DEFAULT_TIMEOUT_MS))
+    .option('--retries <n>', 'retries on timeout or SERVFAIL (UDP)', String(DEFAULT_RETRIES))
     .option('--expect <values...>', 'match when the value set equals this set')
     .option('--expect-absent <values...>', 'match when none of these values are present')
     .option('--contains <value>', 'match when any value contains this substring')
@@ -329,6 +349,7 @@ function buildProgram(): Command {
     .option('-t, --type <type>', 'record type', 'A')
     .option('-r, --resolver <name>', 'resolver: system, a registry name, or a literal IP', 'system')
     .option('--transport <mode>', 'transport: auto, udp, doh or system', 'auto')
+    .option('--retries <n>', 'retries per lookup on timeout or SERVFAIL (UDP)', String(DEFAULT_RETRIES))
     .option('--interval <duration>', 'poll interval', '30s')
     .option('--timeout <duration>', 'overall wait limit, capped at 24h', '30m')
     .option('--expect <values...>', 'match when the value set equals this set')
@@ -366,6 +387,7 @@ function buildProgram(): Command {
     parseResolvers: parseMultiResolvers,
     parseTransport,
     parseTimeoutMs,
+    parseRetries,
     splitList,
   });
   registerWatchCommands(p);

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { Resolver as DnsResolver } from 'node:dns/promises';
 import * as dnsPromises from 'node:dns/promises';
 import { normalizeAnswers } from './normalize.js';
@@ -16,10 +17,25 @@ export interface LookupOptions {
   resolver?: string;
   transport?: TransportPreference;
   timeoutMs?: number;
+  retries?: number;
+  port?: number;
   signal?: AbortSignal;
 }
 
-const DEFAULT_TIMEOUT_MS = 5000;
+export const DEFAULT_TIMEOUT_MS = 2000;
+export const DEFAULT_RETRIES = 2;
+
+const RETRYABLE_CODES: ReadonlySet<string> = new Set([
+  'ETIMEOUT',
+  'ETIMEDOUT',
+  'ESERVFAIL',
+  'EREFUSED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EAI_AGAIN',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+]);
 
 const RECORD_TYPE_SET: ReadonlySet<string> = new Set(RECORD_TYPES);
 
@@ -36,7 +52,12 @@ function withDeadline<T>(task: () => Promise<T>, opts: DeadlineOptions): Promise
     rejectDeadline = reject;
   });
   const timer = setTimeout(
-    () => rejectDeadline?.(new Error(`${opts.label} timed out after ${opts.timeoutMs}ms`)),
+    () =>
+      rejectDeadline?.(
+        Object.assign(new Error(`${opts.label} timed out after ${opts.timeoutMs}ms`), {
+          code: 'ETIMEOUT',
+        }),
+      ),
     opts.timeoutMs,
   );
   const onAbort = (): void => {
@@ -149,15 +170,55 @@ async function withNsReferral(
   }
 }
 
+function isRetryableError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && RETRYABLE_CODES.has(code);
+}
+
+function serverAddress(ip: string, port: number | undefined): string {
+  if (port === undefined) {
+    return ip;
+  }
+  return isIP(ip) === 6 ? `[${ip}]:${port}` : `${ip}:${port}`;
+}
+
+interface AttemptCounter {
+  attempts: number;
+}
+
+async function udpLookupWithRetries(
+  domain: string,
+  type: RecordType,
+  ip: string,
+  opts: { timeoutMs: number; retries: number; port?: number; signal?: AbortSignal },
+  counter: AttemptCounter,
+): Promise<DnsAnswer[]> {
+  for (;;) {
+    counter.attempts += 1;
+    try {
+      return await udpLookup(domain, type, ip, opts.timeoutMs, opts.signal, opts.port);
+    } catch (error) {
+      if (
+        counter.attempts > opts.retries ||
+        opts.signal?.aborted === true ||
+        !isRetryableError(error)
+      ) {
+        throw error;
+      }
+    }
+  }
+}
+
 async function udpLookup(
   domain: string,
   type: RecordType,
   ip: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  port: number | undefined,
 ): Promise<DnsAnswer[]> {
-  const resolver = new DnsResolver({ timeout: timeoutMs });
-  resolver.setServers([ip]);
+  const resolver = new DnsResolver({ timeout: timeoutMs, tries: 1 });
+  resolver.setServers([serverAddress(ip, port)]);
   const direct = (): Promise<DnsAnswer[]> => queryUdp(resolver, domain, type);
   const task = type === 'NS' ? () => withNsReferral(direct, domain, ip, timeoutMs) : direct;
   return withDeadline(task, {
@@ -204,6 +265,7 @@ export async function lookup(domain: string, type: RecordType, opts: LookupOptio
     throw new Error(`unsupported record type: ${String(type)}`);
   }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const retries = Math.max(0, Math.floor(opts.retries ?? DEFAULT_RETRIES));
   const preference = opts.transport ?? 'auto';
   let server = resolveServer(opts.resolver ?? 'system');
   if (preference === 'system' && !server.system) {
@@ -229,25 +291,33 @@ export async function lookup(domain: string, type: RecordType, opts: LookupOptio
       onCancel: () => undefined,
       label: 'system lookup',
     });
-    return { ...base, answers: sortAnswers(answers) };
+    return { ...base, answers: sortAnswers(answers), attempts: 1 };
   }
+  const counter: AttemptCounter = { attempts: 0 };
   try {
     if (transport === 'doh') {
+      counter.attempts = 1;
       const outcome = await dohLookup(server.doh as string, domain, type, timeoutMs, opts.signal);
       if (outcome.error !== undefined) {
-        return { ...base, answers: [], error: outcome.error };
+        return { ...base, answers: [], error: outcome.error, attempts: 1 };
       }
-      return { ...base, answers: sortAnswers(outcome.answers) };
+      return { ...base, answers: sortAnswers(outcome.answers), attempts: 1 };
     }
     const ip = server.ips?.[0];
     if (ip === undefined) {
       throw new Error(`resolver "${server.name}" has no IP address for UDP`);
     }
-    const answers = await udpLookup(domain, type, ip, timeoutMs, opts.signal);
-    return { ...base, answers: sortAnswers(answers) };
+    const answers = await udpLookupWithRetries(
+      domain,
+      type,
+      ip,
+      { timeoutMs, retries, port: opts.port, signal: opts.signal },
+      counter,
+    );
+    return { ...base, answers: sortAnswers(answers), attempts: counter.attempts };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { ...base, answers: [], error: message };
+    return { ...base, answers: [], error: message, attempts: Math.max(1, counter.attempts) };
   }
 }
 

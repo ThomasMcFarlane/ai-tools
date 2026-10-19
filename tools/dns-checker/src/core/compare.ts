@@ -11,6 +11,7 @@ export interface CompareRow {
   transport: string;
   status: CompareStatus;
   answers: DnsAnswer[];
+  attempts?: number;
   error?: string;
 }
 
@@ -97,6 +98,7 @@ export function buildGroup(results: LookupResult[], expected?: string[]): Compar
       transport: result.transport,
       status,
       answers: result.answers,
+      ...(result.attempts !== undefined ? { attempts: result.attempts } : {}),
       ...(result.error !== undefined ? { error: result.error } : {}),
     };
   });

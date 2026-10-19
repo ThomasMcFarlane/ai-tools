@@ -126,4 +126,21 @@ describe('normalizeAnswers', () => {
     expect(normalizeAnswers('A', [])).toEqual([]);
     expect(normalizeAnswers('SOA', { broken: true })).toEqual([]);
   });
+
+  it('strips trailing dots and lowercases names so DoH and UDP answers agree', () => {
+    expect(
+      normalizeAnswers('MX', { Answer: [{ data: '0 MX1-EU1.ppe-hosted.com.', TTL: 5 }] }),
+    ).toEqual([{ value: '0 mx1-eu1.ppe-hosted.com', ttl: 5 }]);
+    expect(normalizeAnswers('NS', { Answer: [{ data: 'cloe.ns.cloudflare.com.', TTL: 5 }] })).toEqual([
+      { value: 'cloe.ns.cloudflare.com', ttl: 5 },
+    ]);
+    expect(normalizeAnswers('CNAME', ['WWW.Example.com.'])).toEqual([{ value: 'www.example.com', ttl: 0 }]);
+    expect(normalizeAnswers('PTR', ['host.example.com.'])).toEqual([{ value: 'host.example.com', ttl: 0 }]);
+    expect(
+      normalizeAnswers('SRV', { Answer: [{ data: '10 20 5060 sip.example.com.', TTL: 1 }] }),
+    ).toEqual([{ value: '10 20 5060 sip.example.com', ttl: 1 }]);
+    expect(normalizeAnswers('TXT', { Answer: [{ data: 'Keep.Case.', TTL: 1 }] })).toEqual([
+      { value: 'Keep.Case.', ttl: 1 },
+    ]);
+  });
 });

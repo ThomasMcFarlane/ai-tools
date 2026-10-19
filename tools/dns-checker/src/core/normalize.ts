@@ -89,7 +89,36 @@ function arrayAnswers(type: RecordType, items: unknown[]): DnsAnswer[] {
   return answers;
 }
 
+function canonicalName(name: string): string {
+  const trimmed = name.endsWith('.') && name.length > 1 ? name.slice(0, -1) : name;
+  return trimmed.toLowerCase();
+}
+
+function canonicalValue(type: RecordType, value: string): string {
+  switch (type) {
+    case 'NS':
+    case 'CNAME':
+    case 'PTR':
+      return canonicalName(value);
+    case 'MX':
+    case 'SRV': {
+      const parts = value.split(' ');
+      const last = parts.pop();
+      return last === undefined ? value : [...parts, canonicalName(last)].join(' ');
+    }
+    default:
+      return value;
+  }
+}
+
 export function normalizeAnswers(type: RecordType, raw: unknown): DnsAnswer[] {
+  return rawAnswers(type, raw).map((entry) => ({
+    ...entry,
+    value: canonicalValue(type, entry.value),
+  }));
+}
+
+function rawAnswers(type: RecordType, raw: unknown): DnsAnswer[] {
   if (raw === null || raw === undefined) {
     return [];
   }
