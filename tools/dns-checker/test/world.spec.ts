@@ -111,12 +111,12 @@ describe('lookup -r world', () => {
     expect(cloudflare).not.toHaveProperty('location');
   });
 
-  it('prints city and country code next to the resolver name', async () => {
+  it('shows city and country code once in the comparison table', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     await run(['node', 'dns-checker', 'lookup', 'example.com', '-r', 'nic-cz,cloudflare']);
-    const lines = log.mock.calls.map((call) => call[0] as string);
-    expect(lines).toContain('example.com A via nic-cz (Prague, CZ)');
-    expect(lines).toContain('example.com A via cloudflare');
+    const output = log.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(output.match(/Prague, CZ/g)).toHaveLength(1);
+    expect(output).not.toMatch(/cloudflare \(/);
   });
 
   it('rejects world for single-resolver commands', async () => {

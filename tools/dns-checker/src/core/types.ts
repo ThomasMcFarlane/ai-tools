@@ -22,7 +22,6 @@ export interface LookupResult {
   transport: Transport;
   answers: DnsAnswer[];
   checkedAt: string;
-  location?: ResolverLocation;
   error?: string;
   location?: ResolverLocation;
 }
