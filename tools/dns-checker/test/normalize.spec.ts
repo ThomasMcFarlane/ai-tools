@@ -40,6 +40,32 @@ describe('normalizeAnswers', () => {
     ]);
   });
 
+  it('normalises TXT quoting identically across transports', () => {
+    const doh = (data: string) => normalizeAnswers('TXT', { Answer: [{ data, TTL: 5 }] });
+    const expected = [{ value: 'v=spf1 include:example.com ~all', ttl: 5 }];
+    expect(doh('"v=spf1 include:example.com ~all"')).toEqual(expected);
+    expect(doh('v=spf1 include:example.com ~all')).toEqual(expected);
+    expect(doh('"v=spf1 include:" "example.com ~all"')).toEqual(expected);
+    expect(normalizeAnswers('TXT', [['v=spf1 include:', 'example.com ~all']])).toEqual([
+      { value: 'v=spf1 include:example.com ~all', ttl: 0 },
+    ]);
+    expect(normalizeAnswers('TXT', [['v=spf1 include:example.com ~all']])).toEqual([
+      { value: 'v=spf1 include:example.com ~all', ttl: 0 },
+    ]);
+  });
+
+  it('unescapes quotes inside DoH TXT strings', () => {
+    expect(normalizeAnswers('TXT', { Answer: [{ data: '"say \\"hi\\" and \\\\ done"', TTL: 1 }] })).toEqual([
+      { value: 'say "hi" and \\ done', ttl: 1 },
+    ]);
+  });
+
+  it('keeps bare DoH TXT values containing quotes', () => {
+    expect(normalizeAnswers('TXT', { Answer: [{ data: 'a "b" c', TTL: 1 }] })).toEqual([
+      { value: 'a "b" c', ttl: 1 },
+    ]);
+  });
+
   it('formats MX records', () => {
     expect(
       normalizeAnswers('MX', [
