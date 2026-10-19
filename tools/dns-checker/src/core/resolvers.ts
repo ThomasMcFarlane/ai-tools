@@ -1,10 +1,19 @@
 import { isIP } from 'node:net';
 
+export interface ResolverLocation {
+  city: string;
+  country: string;
+  countryCode: string;
+  lat: number;
+  lon: number;
+}
+
 export interface ResolverDef {
   name: string;
   label: string;
   ips: string[];
   doh?: string;
+  location?: ResolverLocation;
 }
 
 export const RESOLVERS: Record<string, ResolverDef> = {
@@ -51,6 +60,7 @@ export interface ResolvedServer {
   ips?: string[];
   doh?: string;
   system?: boolean;
+  location?: ResolverLocation;
 }
 
 export function resolveServer(input: string): ResolvedServer {

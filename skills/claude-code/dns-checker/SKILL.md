@@ -97,3 +97,34 @@ When the record matches, the daemon runs `claude -p "<event prompt>"` asking the
 | 1 | No match, not found, or every lookup errored (`lookup --strict`) |
 | 2 | Error |
 | 124 | Timed out (`wait`) |
+
+## Presenting results across resolvers and locations
+
+When a task compares resolvers or locations, run the lookup with `--json` and present the result as a markdown table instead of pasting raw output. One table per record type, one row per resolver, located resolvers first and grouped by country.
+
+```sh
+dns-checker lookup example.com -t A -r cloudflare google quad9 --expect 203.0.113.10 --json
+```
+
+Each result in the JSON has `resolver`, `type`, `answers` (`value`, `ttl`), optional `error` and, for location-tagged resolvers, `location` (`city`, `country`, `countryCode`, `lat`, `lon`). Resolvers without `location` (anycast presets such as cloudflare and google) have no place on a map: list them in a separate "Anycast" group.
+
+Table template (replace the example values):
+
+```markdown
+**example.com A** expected `203.0.113.10`
+
+| Location | Resolver | Answer | Status | TTL |
+| --- | --- | --- | --- | --- |
+| US, New York | 8.8.8.8 | `203.0.113.10` | ✅ match | 300 |
+| DE, Berlin | 9.9.9.9 | **`198.51.100.7`** | ❌ differs | 300 |
+| JP, Tokyo | 77.88.8.8 | timed out after 5000ms | ⚠️ error | - |
+| Anycast | cloudflare | `203.0.113.10` | ✅ match | 300 |
+
+**Summary:** 2 match, 1 differs, 1 error. Differences: Berlin (DE) still serves the old address.
+```
+
+- Status is `match` when the answer set equals the expected set (`--expect`), or, without `--expect`, the most common answer set across resolvers; otherwise `differs`. A failed lookup is `error`, never `differs`.
+- Bold the answers that differ so they stand out, and list matching answers plainly.
+- Always end with a one-line summary (N match, M differ, K error), naming the locations or countries that differ.
+- Sort by country code, then city; TTL is the lowest TTL among the answers.
+- To give the user an interactive world map, run `dns-checker map example.com -r <resolvers> --expect <values> -o dns-map.html` (or `dns-checker map --input results.json`), or add `--serve --port 8787` to serve it on localhost. The page is self-contained and works offline.
