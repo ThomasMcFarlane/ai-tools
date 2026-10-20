@@ -11,3 +11,10 @@ ETA: 2026-11-30 18:00 ICT
 | DNS-4 | Add --version | done | claude | dns-checker-retries | | 2026-10-20 18:00 ICT | `dns-checker --version` fails with `error: unknown option '--version'` in the 0.2.0 binary. Print the package version, including from the compiled binary. Done in #47; released as dns-checker-v0.2.1. |
 | DNS-5 | Normalise trailing dots before comparing | done | claude | dns-checker-retries | | 2026-10-20 18:00 ICT | DoH answers (cloudflare, google) end in a trailing dot, so identical NS and MX answers count as differ against UDP resolvers. Strip the trailing dot and lowercase names before comparing and displaying. Done in #47; released as dns-checker-v0.2.1. |
 | DNS-6 | Normalise TXT quoting before comparing | done | claude | dns-checker-txt-quotes | | 2026-10-20 18:00 ICT | Cloudflare DoH returns TXT strings wrapped in double quotes ("v=spf1 ...") while UDP resolvers and Google return them bare, so identical TXT answers count as differ (seen on phoenixcourt.vc TXT: cloudflare differs from google, quad9, opendns and the authoritative server with the same 5 values). Strip the wrapping quotes (and join split TXT chunks consistently) before comparing, like the trailing-dot fix in DNS-5. Done in #48; released as dns-checker-v0.2.2. |
+
+## 2. Housekeeping
+ETA: 2026-10-21 18:00 ICT
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| OPS-1 | CLUSTER-287 hq0 disk cleanup for this repository | done | claude | cluster-287-cleanup | | 2026-10-21 18:00 ICT | Finished the merged task worktrees board-owner-gate-explicit (#12), fix-action-bundle (#14) and epic-eta-lint (#40); removed downloaded resolver lists and vendored type copies from .data scratch. Kept scripts, notes, results and the tasks-board plugin config. |
