@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { applyDecisions, callKey, collectTexts, compact, hash, prescore, resultKey, signalLines, textKey } from './compact'
+import { applyDecisions, callKey, collectTexts, compact, hash, noteHead, prescore, resultKey, signalLines, textKey } from './compact'
 import { compressWords } from './squeeze'
+import { hasNote } from './state'
 import type { JevAsker, Message, Scores } from './types'
 
 const long = (n: number, ch = 'x') => ch.repeat(n)
@@ -58,8 +59,8 @@ describe('tool pruning', () => {
     expect(results[1]?.text.startsWith(long(300, 'r'))).toBe(true)
     expect(out.flatMap((m) => m.toolUses).map((t) => t.tool_use_id)).toEqual(['k', 'r'])
     expect(out.length).toBe(messages.length - 1)
-    const note = out.find((m) => m.text.includes('dropped Read call'))
-    expect(note?.text).toBe('[jev-compaction dropped Read call: {"file_path":"/src/d.ts"}; re-run if needed]')
+    const note = out.find((m) => m.text.includes('jev dropped Read'))
+    expect(note?.text).toBe('[jev dropped Read: /src/d.ts]')
   })
 
   test('two noul questions are asked per candidate call', async () => {
@@ -249,9 +250,9 @@ describe('safety of the rebuild', () => {
     expect(uses).toEqual(['e', 'w'])
     expect(stats).toMatchObject({ callsDropped: 2, resultsTruncated: 2 })
     expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id)).toEqual(['e', 'w'])
-    expect(out.some((m) => m.text.includes('dropped Bash call: {"path":"b"}'))).toBe(true)
-    expect(out.some((m) => m.text.includes('dropped mcp__files__read_file call'))).toBe(true)
-    expect(out.some((m) => m.text.includes('dropped Edit call'))).toBe(false)
+    expect(out.some((m) => m.text.includes('[jev dropped Bash: b]'))).toBe(true)
+    expect(out.some((m) => m.text.includes('jev dropped mcp__files__read_file'))).toBe(true)
+    expect(out.some((m) => m.text.includes('jev dropped Edit'))).toBe(false)
   })
 
   test('a message that holds non-text content is never rebuilt, and neither are its neighbours in the pair', async () => {
@@ -548,5 +549,25 @@ describe('text compression safety', () => {
     await compact([user('start'), assistant(text), user('ok'), ...tail()], jev.ask)
     expect(jev.asked).toContain('text_m1')
     expect(jev.asked.some((n) => n.startsWith('sent_m1_'))).toBe(true)
+  })
+})
+
+describe('dropped-call notes', () => {
+  const old = '[jev-compaction dropped Read call: {"file_path":"/a"}; re-run if needed]'
+  const fresh = '[jev dropped Read: /a]'
+
+  test('hasNote recognises the old and the new format', () => {
+    expect(hasNote(old)).toBe(true)
+    expect(hasNote(`text\n${fresh}`)).toBe(true)
+    expect(hasNote('plain text')).toBe(false)
+  })
+
+  test('head: Bash command, other tool field, JSON fallback, whitespace, cap', () => {
+    expect(noteHead('Bash', { command: 'ls\n  -la', description: 'x' })).toBe('ls -la')
+    expect(noteHead('Grep', { pattern: 'foo', path: '/p' })).toBe('foo')
+    expect(noteHead('Read', { file_path: '/src/a.ts' })).toBe('/src/a.ts')
+    expect(noteHead('Other', { n: 1 })).toBe('{"n":1}')
+    expect(noteHead('Bash', { command: 'a'.repeat(80) })).toBe('a'.repeat(80))
+    expect(noteHead('Bash', { command: 'a'.repeat(81) })).toBe(`${'a'.repeat(80)}…`)
   })
 })

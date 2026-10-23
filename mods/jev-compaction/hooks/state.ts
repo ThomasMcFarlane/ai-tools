@@ -3,7 +3,7 @@ import type { Message, Options, Protect, ToolCall } from './types'
 
 /** The notes this mod leaves in cut text; an item that carries one is never judged or cut again. */
 const NOTE =
-  /\[jev-compaction truncated \d+ chars|\[… \d+ chars omitted by jev-compaction …\]|\[earlier assistant message omitted by jev-compaction:|\[jev-compaction dropped |\[… \d+ sentences? omitted by jev-compaction …\]/
+  /\[jev-compaction truncated \d+ chars|\[… \d+ chars omitted by jev-compaction …\]|\[earlier assistant message omitted by jev-compaction:|\[jev-compaction dropped |\[jev dropped [^\]\n]*\]|\[… \d+ sentences? omitted by jev-compaction …\]/
 export const hasNote = (text: string) => NOTE.test(text)
 
 export const STATE_CONTEXT =
