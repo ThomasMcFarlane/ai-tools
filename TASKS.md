@@ -18,3 +18,11 @@ ETA: 2026-10-21 18:00 ICT
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | OPS-1 | CLUSTER-287 hq0 disk cleanup for this repository | done | claude | cluster-287-cleanup | | 2026-10-21 18:00 ICT | Finished the merged task worktrees board-owner-gate-explicit (#12), fix-action-bundle (#14) and epic-eta-lint (#40); removed downloaded resolver lists and vendored type copies from .data scratch. Kept scripts, notes, results and the tasks-board plugin config. |
+
+## 3. jev-compaction
+ETA: 2026-10-23 14:00 ICT
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| JEV-1 | Shorten dropped-call notes | done | claude | jev-note-collapse | | 2026-10-23 14:00 ICT | Each dropped tool call left `[jev-compaction dropped <tool> call: <raw JSON head>; re-run if needed]` in history, one transcript row per call (about 40 to 45 tokens each). Now `[jev dropped <tool>: <readable head>]` (Bash command, else path, pattern, URL, query or prompt; 80-char cap), roughly half the tokens; old format still recognised so compacted text is never cut twice. Done in #50; version 0.2.2. |
+| JEV-2 | Collapse runs of dropped-call notes into one expandable row | dropped | claude | jev-note-collapse | | | Dropped: the engine gives `AssistantMessage` render props no `isExpanded` and no view of neighbouring rows, so a run cannot be merged into one row with a ctrl+o expand; owner chose the shorter note (3.JEV-1) instead, 2026-10-23. |

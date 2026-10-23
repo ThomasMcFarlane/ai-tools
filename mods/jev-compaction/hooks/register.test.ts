@@ -100,7 +100,7 @@ test('soft compaction is applied when Jev frees enough, with the documented requ
   const r = await compact($, 'plugin')
   expect(isBuiltin(r)).toBe(false)
   expect(r.messages!.length).toBe(19)
-  expect(r.messages!.filter((m) => m.text.startsWith('[jev-compaction dropped Read call')).length).toBe(12)
+  expect(r.messages!.filter((m) => m.text.startsWith('[jev dropped Read:')).length).toBe(12)
   expect(r.messages![0]!.handle).toBe('h0')
   expect(r.messages!.filter((m) => m.text.includes('jev-compaction')).every((m) => m.handle === undefined)).toBe(true)
   expect(requests.length).toBeGreaterThan(0)

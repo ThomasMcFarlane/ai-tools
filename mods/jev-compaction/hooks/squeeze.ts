@@ -91,7 +91,7 @@ function classify(text: string): { raw: string; kind: Kind }[] {
 
 const UNITS =
   '%|°|ms|µs|us|ns|s|secs?|seconds?|min|mins|minutes?|h|hrs?|hours?|days?|weeks?|months?|years?|[kKMGT]i?B|kb|mb|gb|tb|bytes?|bits?|px|pt|rem|em|cm|mm|km|kg|mg|g|lbs?|[kMG]?Hz|chars?|characters?|lines?|tokens?|files?|items?|rows?|requests?|messages?|times|x|k|m'
-const NOTE_SPAN = String.raw`\[[^\]\n]*jev-compaction[^\]\n]*\]|\[… \d+ [a-z]+ cut on entry …\]`
+const NOTE_SPAN = String.raw`\[[^\]\n]*jev-compaction[^\]\n]*\]|\[jev dropped [^\]\n]*\]|\[… \d+ [a-z]+ cut on entry …\]`
 const CODE_SPAN = '`[^`\\n]*`'
 const TAIL = String.raw`(?=[.,;:!?)\]]*(?:\s|$))`
 const URL_SPAN = String.raw`\b(?:https?|ftp|file|ssh|git):\/\/\S+?${TAIL}|\bwww\.\S+?${TAIL}`

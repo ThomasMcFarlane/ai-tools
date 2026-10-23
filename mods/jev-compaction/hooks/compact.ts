@@ -255,15 +255,25 @@ function rewriteText(message: Message, action: TextAction | undefined, index: nu
   return { ...out, text }
 }
 
-const droppedNote = (tool: string, input: Record<string, unknown>) => {
-  let head = ''
-  try {
-    head = (JSON.stringify(input) ?? '').slice(0, 80)
-  } catch {
-    head = '[unserializable input]'
+const HEAD_KEYS = ['file_path', 'pattern', 'path', 'url', 'query', 'prompt', 'description']
+const HEAD_CHARS = 80
+
+/** The human-readable start of a call's input: the command of Bash, else the most telling string field, else compact JSON. */
+export function noteHead(tool: string, input: Record<string, unknown>): string {
+  const field = (key: string) => (typeof input[key] === 'string' && input[key] !== '' ? (input[key] as string) : undefined)
+  let raw = field(tool === 'Bash' ? 'command' : '') ?? HEAD_KEYS.map(field).find((x) => x !== undefined)
+  if (raw === undefined) {
+    try {
+      raw = JSON.stringify(input) ?? ''
+    } catch {
+      raw = '[unserializable input]'
+    }
   }
-  return `[jev-compaction dropped ${tool} call: ${head}; re-run if needed]`
+  const flat = raw.replace(/\s+/g, ' ').trim()
+  return flat.length > HEAD_CHARS ? `${flat.slice(0, HEAD_CHARS)}…` : flat
 }
+
+const droppedNote = (tool: string, input: Record<string, unknown>) => `[jev dropped ${tool}: ${noteHead(tool, input)}]`
 
 /**
  * Rebuilds the conversation. A dropped call leaves a one-line note in its assistant message and
