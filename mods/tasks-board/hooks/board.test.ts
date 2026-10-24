@@ -802,7 +802,38 @@ describe('fixBoard', () => {
     expect(fix('| 1 | t | todo | | | | | line one\nline two |').text).toContain('| 1 | t | todo | | | | | line one line two |')
   })
   test('pads short rows', () => {
-    expect(fix('| 1 | t | todo | | | | n |').text).toContain('| 1 | t | todo | | | | n | |')
+    expect(fix('| 1 | t | todo | | | | |').text).toContain('| 1 | t | todo | | | | | |')
+    expect(fix('| 1 | t | todo | | | | 2026-10-25 03:00 ICT |').text).toContain('| 1 | t | todo | | | | 2026-10-25 03:00 ICT | |')
+  })
+  test('pads a short row before prose in the last cell so it lands in Notes', () => {
+    const r = fix('| 1 | t | todo | | | | some prose |')
+    expect(r.text).toContain('| 1 | t | todo | | | | | some prose |')
+    expect(fixBoard(r.text).changes).toEqual([])
+  })
+  test('drops empty trailing surplus cells instead of merging them', () => {
+    const r = fix('| 1 | t | todo | | | | | n | |\n| 2 | t | todo | | | | | n | | |\n| 3 | t | todo | | | | | a | b | |')
+    expect(r.text).toContain('| 1 | t | todo | | | | | n |\n| 2 | t | todo | | | | | n |\n')
+    expect(r.text).toContain('| 3 | t | todo | | | | | a \\| b |')
+    expect(r.text).not.toContain('\\| |')
+  })
+  test('drops one empty cell before Notes when it is the only empty between Status and Notes', () => {
+    const r = fix('| 1 | t | todo | me | br | 1.2 | 2026-10-25 03:00 ICT | | note |')
+    expect(r.text).toContain('| 1 | t | todo | me | br | 1.2 | 2026-10-25 03:00 ICT | note |')
+    // Several legitimately empty cells: ambiguous, so merge.
+    expect(fix('| 2 | t | todo | | | | | | note |').text).toContain('| 2 | t | todo | | | | | \\| note |')
+    expect(fixBoard(r.text).changes).toEqual([])
+  })
+  test('a non-task table after a task table is neither linted nor fixed', () => {
+    const other = '| Name | Value |\n|---|---|\n| a | b |\n| c |\n'
+    for (const gap of ['\n', 'Some prose.\n\n']) {
+      const t = `## 1. E\n\n${HDR}| 1 | t | todo | | | | | n |\n${gap}${other}`
+      expect(fixBoard(t).text).toBe(t)
+      expect(fixBoard(t).changes).toEqual([])
+      expect(lintBoard(t).findings.map(f => f.rule)).not.toContain('cell-count')
+    }
+    const t = `## 1. E\n\n${HDR}| 1 | t | todo | | | | | n |\n\n| a | b |\n`
+    expect(lintBoard(t).findings.map(f => f.rule)).not.toContain('cell-count')
+    expect(fixBoard(t).text).toBe(t)
   })
   test('merges surplus cells into Notes as escaped pipes', () => {
     const r = fix('| 1 | t | todo | | | | | a | b |  c |')

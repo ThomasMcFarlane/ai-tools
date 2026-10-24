@@ -247,7 +247,11 @@ function lintBoard(text2) {
       items += 1;
       firstItem ||= no;
     }
-    if (!line.startsWith("|")) continue;
+    if (!line.startsWith("|")) {
+      col = void 0;
+      prev = [];
+      continue;
+    }
     const c = cells(line);
     const before = prev;
     prev = c;
@@ -324,6 +328,8 @@ function fixBoard(text2) {
   items.forEach((item, k) => {
     const seg = raw.slice(item.no - 1, k + 1 < items.length ? items[k + 1].no - 1 : raw.length);
     if (!item.text.startsWith("|")) {
+      col = void 0;
+      prevHeader = false;
       out.push(...seg);
       return;
     }
@@ -373,13 +379,28 @@ function fixBoard(text2) {
     const n = headerCells.length;
     const why = [...joined];
     let cs = rc;
+    const notesLast = /^(notes|acceptance)/i.test(headerCells[n - 1] ?? "");
     if (cs.length < n) {
-      cs = [...cs, ...Array(n - cs.length).fill("")];
-      why.push(`added ${n - rc.length} empty cell(s)`);
+      const last = cs[cs.length - 1] ?? "";
+      const toNotes = notesLast && last !== "" && !ETA_FORMAT.test(last);
+      const pad = Array(n - cs.length).fill("");
+      cs = toNotes ? [...cs.slice(0, -1), ...pad, last] : [...cs, ...pad];
+      why.push(`added ${n - rc.length} empty cell(s)${toNotes ? " before Notes" : ""}`);
     } else if (cs.length > n) {
-      if (/^(notes|acceptance)/i.test(headerCells[n - 1] ?? "")) {
-        cs = [...cs.slice(0, n - 1), cs.slice(n - 1).join(" \\| ")];
-        why.push(`merged ${rc.length - n} surplus cell(s) into Notes as escaped pipes`);
+      if (notesLast) {
+        while (cs.length > n && cs[cs.length - 1] === "") cs = cs.slice(0, -1);
+        if (cs.length < rc.length) why.push(`dropped ${rc.length - cs.length} empty trailing cell(s)`);
+        if (cs.length > n) {
+          const extra = cs.length - n;
+          const gaps = cs.map((x, i) => i > col.status && i < cs.length - 1 && x === "" ? i : -1).filter((i) => i >= 0);
+          if (gaps.length === extra) {
+            cs = cs.filter((_, i) => !gaps.includes(i));
+            why.push(`dropped ${extra} empty surplus cell(s) before Notes`);
+          } else {
+            why.push(`merged ${cs.length - n} surplus cell(s) into Notes as escaped pipes`);
+            cs = [...cs.slice(0, n - 1), cs.slice(n - 1).join(" \\| ").trim()];
+          }
+        }
       } else {
         out.push(...seg);
         changes.push(`line ${item.no}: ${rc.length} cells, header has ${n}; cannot fix safely, left unchanged`);
@@ -403,7 +424,10 @@ function epicEtaWarnings(text2, now = /* @__PURE__ */ new Date()) {
     if (!e) continue;
     const eta = /^ETA:\s*(.*\S)\s*$/.exec(line);
     if (eta && e.eta === void 0) e.eta = eta[1];
-    if (!line.startsWith("|")) continue;
+    if (!line.startsWith("|")) {
+      col = void 0;
+      continue;
+    }
     const c = cells(line);
     if (/^(#|id)$/i.test(c[0] ?? "")) {
       col = columnsOf(c);
