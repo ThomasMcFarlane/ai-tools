@@ -75,6 +75,9 @@ test('the pane is labelled and filled from the picked board, not the session dir
   const { clock, opened } = setup(on, { cwd: '/work/a' })
   await $.session.start({ cwd: '/work/a', surface: 'terminal', isInteractive: true })
   await clock.settle()
+  // The pane opens unasked only once a render reports the fullscreen (sidebar) layout.
+  await $.ui.mount({ plugin: 'tasks-board', surface: 'terminal', component: 'AbovePrompt', props: {}, viewport: { columns: 120, rows: 60, isFullscreen: true } }).catch((e: Error) => expect(String(e)).toContain('no implementation for ui.render')) // nothing beneath the mod draws the prompt; only the layout report matters
+  await clock.settle()
   expect(opened.at(-1)).toBe('Board · a')
   await board($, '/work/b/TASKS.md')
   expect(opened.at(-1)).toBe('Board · b')
