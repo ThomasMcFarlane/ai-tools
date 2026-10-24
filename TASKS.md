@@ -28,11 +28,11 @@ ETA: 2026-10-23 14:00 ICT
 | 9 | Collapse runs of dropped-call notes into one expandable row | dropped | claude | jev-note-collapse | | | Dropped: the engine gives `AssistantMessage` render props no `isExpanded` and no view of neighbouring rows, so a run cannot be merged into one row with a ctrl+o expand; owner chose the shorter note (3.8) instead, 2026-10-23. Was JEV-2. |
 
 ## 4. tasks-board
-ETA: 2026-10-25 03:00 ICT
+ETA: 2026-10-25 03:30 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 10 | Numeric board IDs, <epic>.<task> references, cleanup PR self-merge | done | claude | board-numeric-ids | | 2026-10-24 23:00 ICT | Lint rule numeric-id, renumbering in the format agent prompt, agent merges the cleanup PR when CI is green; ships as tasks-board-check-v3 and tasks-board 0.7.0. Done in #51 (642c550); tagged tasks-board-check-v3.0.0, tasks-board-check-v3 and tasks-board-v0.7.0; skill docs in ThomasMcFarlane/.ais#82. |
 | 11 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated |
-| 12 | Fix the failing pane-label target test | todo | | | | | target.test.ts "the pane is labelled and filled from the picked board, not the session directory": expected "Board · a", got undefined<br>Fails on main 9517976 too (95 pass, 1 fail) |
+| 12 | Fix the failing pane-label target test | done | claude | pane-label-test | | 2026-10-25 03:30 ICT | Test stale since #41 (42a78a5): pane auto-opens only after a render reports the sidebar layout<br>Test-only fix: mount AbovePrompt with isFullscreen before asserting<br>claude plugin test 111 pass, 0 fail |
 | 13 | Fix fixer edge cases: trailing prose tables, empty surplus cells, short rows | done | claude | fixboard-edges | | 2026-10-25 03:00 ICT | Done in #55 (6846c92)<br>Tags tasks-board-check-v4.0.1, tasks-board-check-v4, tasks-board-v0.8.1 |
