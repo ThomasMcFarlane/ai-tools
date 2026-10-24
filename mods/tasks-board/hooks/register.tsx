@@ -6,7 +6,7 @@ import type { WorktreeBoard } from './board'
 import type { BoardConfig } from './config'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
-import { ETA_W, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
+import { ETA_W, fixBoard, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
 
 const PANE = 'tasks-board'
 const empty = { numW: 3, repo: '', path: '', mtimeMs: 0, size: 0, checkedAt: 0, tasks: [], error: '' }
@@ -53,6 +53,23 @@ async function readBoard($: EngineInterface, path: string, ref?: { wt: string; s
 }
 
 const union = (a: string[], b: string[]) => [...new Set([...a, ...b])]
+
+// Mechanical table fixes after the agent edits a board, then the findings it still has to fix. argv, never shell text.
+const WRITE_IF_UNCHANGED = "const fs=require('fs');const [p,n,t]=process.argv.slice(1);if(fs.readFileSync(p,'utf8').length!==Number(n))process.exit(3);fs.writeFileSync(p,t)"
+const ARGV_MAX = 100_000
+async function tidyBoard($: EngineInterface, path: string): Promise<void> {
+  let text = String(await $.fs.read(path))
+  const fixed = fixBoard(text)
+  if (fixed.text !== text) {
+    if (fixed.text.length > ARGV_MAX) $.ui.status('tasks-board: board too large to auto-fix; run tasks-board-check --fix TASKS.md')
+    else {
+      const w = await $.process.run(['node', '-e', WRITE_IF_UNCHANGED, path, String(text.length), fixed.text], { timeoutMs: 20000 })
+      if (w.exitCode === 0) text = fixed.text
+    }
+  }
+  const found = lintBoard(text).findings
+  if (found.length) $.ui.status(`tasks-board: ${found.length} problem(s), first line ${found[0]!.line} [${found[0]!.rule}]: ${found[0]!.message}`.slice(0, 160))
+}
 
 // The git main worktree of the checkout at `dir` (the first `git worktree list` entry), or ''.
 async function mainWorktree($: EngineInterface, dir: string): Promise<string> {
@@ -496,6 +513,7 @@ export const register: Register = (on, options) => {
     // A board failure must never fail an Edit or Write that already ran.
     try {
       if (rows.length) await update($, touched, t => union(t, rows))
+      await tidyBoard($, path)
       await refresh($, true)
     } catch (err) {
       $.ui.status(`tasks-board: ${String(err).slice(0, 60)}`)

@@ -49,8 +49,9 @@ const DONE_PHRASES = ['client_side_done', 'root_cause_fixed', 'runtime_validated
 const DONE_WORDS = ['rejected', 'declined', 'deployed', 'configured', 'done', 'complete', 'completed', 'closed', 'merged', 'recorded', 'published', 'accepted', 'fixed', 'shipped', 'released', 'resolved', 'superseded', 'implemented', 'dropped', 'cancelled', 'canceled', 'wontfix', 'abandoned', 'obsolete', "won't"]
 
 // Splits on unescaped pipes only; `\|` inside a cell is a literal pipe.
-const cells = (line: string): string[] =>
-  line.trim().replace(/^\|/, '').replace(/(?<!\\)\|\s*$/, '').split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, '|'))
+const rawCells = (line: string): string[] =>
+  line.trim().replace(/^\|/, '').replace(/(?<!\\)\|\s*$/, '').split(/(?<!\\)\|/).map(c => c.trim())
+const cells = (line: string): string[] => rawCells(line).map(c => c.replace(/\\\|/g, '|'))
 
 /** A table row with no closing pipe continues on the following lines until one ends with a pipe; they are joined with a space. */
 export function joinRowsNumbered(lines: string[]): { text: string; no: number }[] {
@@ -663,10 +664,35 @@ const ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?:
 
 export type LintIssue = { line: number; rule: string; message: string }
 
+export const TASK_MAX = 100
+export const NOTES_MAX = 400
+export const PROSE_MAX = 400
+
+const STATUS_WORDS = 'active|open|done|closed|in[ -]progress|backlog|archive|todo|current|new|blocked|parked'
+const RANGE = String.raw`\d(?:\d|to|and|\s|[.,/()–—-])*`
+const DATE_END = String.raw`(?:\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?\s+[a-z]{3,9}\s+\d{4})\)?\s*$`
+/** Deny-list of epic names that describe position, status or date rather than the work. Mirrored in FORMAT.md. */
+export const EPIC_NAME_DENY: RegExp[] = [
+  /^(?:active|backlog|archive|misc|miscellaneous|todo|additional|in-progress)\b(?!-\w)/i,
+  /^(?:open|done|new|other|general|board|tasks|current|in progress)(?:\s+(?:work|tasks|items|issues|board|follow-ups))?$/i,
+  /^authoritative current status/i,
+  new RegExp(String.raw`^follow[- ]?ups?(?:\s+\(?${RANGE})?$`, 'i'),
+  /\bonwards\b/i,
+  /\brows added\b/i,
+  /\btasks?\s+\d/i,
+  /\b\d+\s+to\s+\d+/i,
+  new RegExp(String.raw`^(?:${STATUS_WORDS})\s*(?::|\s[-–—]\s|[–—])`, 'i'),
+  new RegExp(DATE_END, 'i'),
+]
+export const isVagueEpicName = (name: string): boolean => EPIC_NAME_DENY.some(re => re.test(name.trim()))
+
 /**
  * Checks a board against the canonical "epic tables" format (see FORMAT.md). `findings` carry the line and the
  * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, dropped, superseded, duplicate-id, padded-cell, epic-number, epic-unique, depends, numeric-id (canonical table rows only).
  */
+const cellCountMessage = (expected: number, actual: number) =>
+  `row has ${actual} cells but the header has ${expected}; escape literal pipes in a cell as \\|`
+
 export function lintBoard(text: string): { canonical: boolean; issues: string[]; findings: LintIssue[] } {
   const findings: LintIssue[] = []
   const add = (line: number, rule: string, message: string) => findings.push({ line, rule, message })
@@ -677,7 +703,8 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   const seenIds = new Set<string>()
   let prev: string[] = []
   // `##` headings that hold a task table are epics; they need a unique `<N>. ` number.
-  const epics: { no: number; num?: string; hasTable: boolean }[] = []
+  const epics: { no: number; num?: string; name: string; hasTable: boolean; open: boolean; walls: number[] }[] = []
+  let headerLen = 0
   const refs = new Set<string>()
   const deps: { no: number; value: string }[] = []
   const superseders: { no: number; ref: string }[] = []
@@ -687,7 +714,8 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   })
   for (const { text: line, no } of joinRowsNumbered(raw)) {
     const heading = /^##\s+(.*)$/.exec(line)
-    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1]!.trim())?.[1], hasTable: false })
+    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1]!.trim())?.[1], name: heading[1]!.trim().replace(/^\d+\.\s+/, ''), hasTable: false, open: false, walls: [] })
+    if (!heading && !line.startsWith('|') && !/^#{1,6}\s/.test(line) && line.length > PROSE_MAX) epics[epics.length - 1]?.walls.push(no)
     if (/^- \[( |x|X)\]/.test(line)) {
       items += 1
       firstItem ||= no
@@ -698,14 +726,25 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     prev = c
     if (c.length > 0 && c.every(x => /^:?-{2,}:?$/.test(x))) {
       if (!/^(#|id)$/i.test(before[0] ?? '')) col = undefined
+      else if (col && c.length !== headerLen) add(no, 'cell-count', cellCountMessage(headerLen, c.length))
       continue
     }
     if (/^(#|id)$/i.test(c[0] ?? '')) {
       col = columnsOf(c)
+      headerLen = c.length
       if (col && epics.length > 0) epics[epics.length - 1]!.hasTable = true
       canonicalTable = col !== undefined && c.join('|') === CANON_HEADER.join('|')
       if (col && !canonicalTable) add(no, 'header', `non-canonical header: | ${c.join(' | ')} |`)
       continue
+    }
+    if (col && c.length !== headerLen) add(no, 'cell-count', cellCountMessage(headerLen, c.length))
+    if (col && normaliseStatus(c[col.status] ?? '') !== 'done') {
+      const e = epics[epics.length - 1]
+      if (e) e.open = true
+      const t = c[col.task] ?? ''
+      const n = c[col.notes] ?? ''
+      if (t.length > TASK_MAX) add(no, 'long-cell', `Task cell is ${t.length} characters (max ${TASK_MAX} on open rows): keep Task a short title; put detail in Notes, long evidence in the PR or commit, not the board`)
+      if (n.length > NOTES_MAX) add(no, 'long-cell', `Notes cell is ${n.length} characters (max ${NOTES_MAX} on open rows): keep a few short facts separated by <br>; put long evidence in the PR or commit, not the board`)
     }
     if (col && ID.test(c[col.id] ?? '')) {
       if (seenIds.has(c[col.id]!)) add(no, 'duplicate-id', `duplicate ID ${c[col.id]}`)
@@ -732,6 +771,11 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     else if (seenNums.has(e.num)) add(e.no, 'epic-unique', `duplicate epic number ${e.num}`)
     if (e.num !== undefined) seenNums.add(e.num)
   }
+  for (const e of epics.filter(x => x.hasTable && x.open)) {
+    if (isVagueEpicName(e.name))
+      add(e.no, 'epic-name', `epic name "${e.name}" is not descriptive: name the outcome or area (for example "Sailfish card parity with mobile web"), not its position, status or date`)
+    for (const w of e.walls) add(w, 'wall-of-text', `line over ${PROSE_MAX} characters under an epic with open rows: break it into a short list`)
+  }
   for (const d of deps)
     for (const ref of d.value.split(',').map(x => x.trim())) {
       if (!/^\d+\.\d+$/.test(ref)) add(d.no, 'depends', `Depends entry not an <epic>.<task> reference: "${ref}"`)
@@ -741,6 +785,92 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   if (items > 0) add(firstItem, 'checklist', `${items} checklist items instead of table rows`)
   findings.sort((a, b) => a.line - b.line)
   return { canonical: findings.length === 0, issues: [...new Set(findings.map(f => f.message))], findings }
+}
+
+/**
+ * Mechanical, safe repairs for task tables only (header recognised by columnsOf); everything else is returned
+ * byte-identical. Joins multi-line rows, strips padding, pads short rows, merges surplus cells of a Notes-last
+ * table into the last cell as escaped pipes, and turns `<br/>` into `<br>`. Rows with too many cells in other
+ * tables are reported and left alone. Idempotent.
+ */
+export function fixBoard(text: string): { text: string; changes: string[] } {
+  const raw = text.split('\n')
+  const items = joinRowsNumbered(raw)
+  const out: string[] = []
+  const changes: string[] = []
+  let col: Cols | undefined
+  let headerCells: string[] = []
+  let prevHeader = false
+  items.forEach((item, k) => {
+    const seg = raw.slice(item.no - 1, k + 1 < items.length ? items[k + 1]!.no - 1 : raw.length)
+    if (!item.text.startsWith('|')) {
+      out.push(...seg)
+      return
+    }
+    const eol = seg[seg.length - 1]!.endsWith('\r') ? '\r' : ''
+    const rc = rawCells(item.text)
+    const c = rc.map(x => x.replace(/\\\|/g, '|'))
+    const wasHeader = prevHeader
+    prevHeader = false
+    const emit = (cs: string[], why: string[]) => {
+      const line = `|${cs.map(x => (x === '' ? ' ' : ` ${x} `)).join('|')}|${eol}`
+      if (seg.length === 1 && seg[0] === line) out.push(line)
+      else {
+        out.push(line)
+        changes.push(`line ${item.no}: ${why.length ? why.join(', ') : 'normalised padding'}`)
+      }
+    }
+    const joined = seg.length > 1 ? ['joined multi-line row'] : []
+    if (c.length > 0 && c.every(x => /^:?-{2,}:?$/.test(x))) {
+      if (!wasHeader || !col) {
+        col = undefined
+        out.push(...seg)
+        return
+      }
+      const sep = `|${'---|'.repeat(headerCells.length)}${eol}`
+      if (seg.length === 1 && seg[0] === sep) out.push(sep)
+      else {
+        out.push(sep)
+        changes.push(`line ${item.no}: normalised separator row`)
+      }
+      return
+    }
+    if (/^(#|id)$/i.test(c[0] ?? '')) {
+      col = columnsOf(c)
+      headerCells = rc
+      if (!col) {
+        out.push(...seg)
+        return
+      }
+      prevHeader = true
+      emit(rc, joined)
+      return
+    }
+    if (!col) {
+      out.push(...seg)
+      return
+    }
+    const n = headerCells.length
+    const why = [...joined]
+    let cs = rc
+    if (cs.length < n) {
+      cs = [...cs, ...Array<string>(n - cs.length).fill('')]
+      why.push(`added ${n - rc.length} empty cell(s)`)
+    } else if (cs.length > n) {
+      if (/^(notes|acceptance)/i.test(headerCells[n - 1] ?? '')) {
+        cs = [...cs.slice(0, n - 1), cs.slice(n - 1).join(' \\| ')]
+        why.push(`merged ${rc.length - n} surplus cell(s) into Notes as escaped pipes`)
+      } else {
+        out.push(...seg)
+        changes.push(`line ${item.no}: ${rc.length} cells, header has ${n}; cannot fix safely, left unchanged`)
+        return
+      }
+    }
+    const br = cs.map(x => x.replace(/<br\s*\/>/gi, '<br>'))
+    if (br.some((x, i) => x !== cs[i])) why.push('normalised <br>')
+    emit(br, why)
+  })
+  return { text: out.join('\n'), changes }
 }
 
 const TZ_HOURS: Record<string, number> = { ICT: 7, UTC: 0, GMT: 0, BST: 1 }
@@ -782,10 +912,10 @@ export function epicEtaWarnings(text: string, now: Date = new Date()): LintIssue
 
 /**
  * The findings that should fail CI. `canonical` fails on every rule; `lenient` (for boards not yet migrated)
- * only on duplicate ids and padded cells.
+ * only on duplicate ids, padded cells and wrong cell counts.
  */
 export const checkBoard = (text: string, mode: 'canonical' | 'lenient'): LintIssue[] =>
-  lintBoard(text).findings.filter(f => mode === 'canonical' || f.rule === 'duplicate-id' || f.rule === 'padded-cell')
+  lintBoard(text).findings.filter(f => mode === 'canonical' || f.rule === 'duplicate-id' || f.rule === 'padded-cell' || f.rule === 'cell-count')
 
 export const FIX_WINDOW_MS = 24 * 60 * 60 * 1000
 
