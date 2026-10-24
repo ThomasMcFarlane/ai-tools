@@ -273,7 +273,18 @@ export function noteHead(tool: string, input: Record<string, unknown>): string {
   return flat.length > HEAD_CHARS ? `${flat.slice(0, HEAD_CHARS)}…` : flat
 }
 
-const droppedNote = (tool: string, input: Record<string, unknown>) => `[jev dropped ${tool}: ${noteHead(tool, input)}]`
+/** Dropped calls behind one note: the count per tool, and the note of a lone call. */
+type Tally = { n: number; tools: Map<string, number>; single: string }
+
+function tallyOf(calls: readonly { tool: string; input: Record<string, unknown> }[]): Tally {
+  const tools = new Map<string, number>()
+  for (const c of calls) tools.set(c.tool, (tools.get(c.tool) ?? 0) + 1)
+  const first = calls[0]
+  return { n: calls.length, tools, single: first ? `[jev dropped ${first.tool}: ${noteHead(first.tool, first.input)}]` : '' }
+}
+
+const tallyNote = (t: Tally) =>
+  t.n === 1 ? t.single : `[jev dropped ${t.n} calls: ${[...t.tools].map(([tool, k]) => `${tool} ×${k}`).join(', ')}]`
 
 /**
  * Rebuilds the conversation. A dropped call leaves a one-line note in its assistant message and
@@ -290,6 +301,8 @@ export function applyDecisions(
   shrink?: Shrink,
 ): Message[] {
   const out: Message[] = []
+  // Rebuilt assistant messages that hold nothing but a drop note; runs of them collapse into the first.
+  const noteOnly = new Map<Message, Tally>()
   messages.forEach((message, index) => {
     const dropped = (id: string) => tools.get(id) === 'drop_call'
     const rewritten = rewriteText(message, texts.get(index), index, shrink)
@@ -303,8 +316,9 @@ export function applyDecisions(
       }
     } else text = message.text
     const gone = message.toolUses.filter((t) => dropped(t.tool_use_id))
-    if (gone.length > 0) {
-      text = [text, ...gone.map((t) => droppedNote(t.tool, t.input))].filter((x) => x !== '').join('\n')
+    const tally = gone.length > 0 ? tallyOf(gone) : undefined
+    if (tally) {
+      text = [text, tallyNote(tally)].filter((x) => x !== '').join('\n')
       if (counts) counts.dropped += gone.length
     }
     const toolUses = message.toolUses.filter((t) => !dropped(t.tool_use_id))
@@ -329,6 +343,19 @@ export function applyDecisions(
     if (text.trim().length === 0 && toolUses.length === 0 && toolResults.length === 0) return
     const rebuilt: Message = { role: message.role, text, toolUses }
     if (toolResults.length > 0) rebuilt.toolResults = toolResults
+    if (tally && rebuilt.role === 'assistant' && toolUses.length === 0 && toolResults.length === 0 && text === tallyNote(tally)) {
+      const prev = out[out.length - 1]
+      const run = prev && noteOnly.get(prev)
+      if (prev && run) {
+        for (const [tool, k] of tally.tools) run.tools.set(tool, (run.tools.get(tool) ?? 0) + k)
+        run.n += tally.n
+        out[out.length - 1] = { ...prev, text: tallyNote(run) }
+        noteOnly.set(out[out.length - 1], run)
+        noteOnly.delete(prev)
+        return
+      }
+      noteOnly.set(rebuilt, tally)
+    }
     out.push(rebuilt)
   })
   return out
