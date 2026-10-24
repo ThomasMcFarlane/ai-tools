@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 // ../../mods/tasks-board/hooks/board.ts
 var ETA = /(?<![-_/.A-Za-z])ETA(?:\s*[:=]\s*|\s+(?=[\d~]))((?:[\d~]|[Tt]oday|[Tt]omorrow|Mon|Tue|Wed|Thu|Fri|Sat|Sun)[^.;|]{0,39})/;
@@ -36,7 +36,8 @@ var normaliseStatus = (s, ownerPaused2 = false) => {
 };
 var DONE_PHRASES = ["client_side_done", "root_cause_fixed", "runtime_validated", "re_landed"];
 var DONE_WORDS = ["rejected", "declined", "deployed", "configured", "done", "complete", "completed", "closed", "merged", "recorded", "published", "accepted", "fixed", "shipped", "released", "resolved", "superseded", "implemented", "dropped", "cancelled", "canceled", "wontfix", "abandoned", "obsolete", "won't"];
-var cells = (line) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+var rawCells = (line) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|\s*$/, "").split(/(?<!\\)\|/).map((c) => c.trim());
+var cells = (line) => rawCells(line).map((c) => c.replace(/\\\|/g, "|"));
 function joinRowsNumbered(lines) {
   const out = [];
   let buf;
@@ -200,6 +201,26 @@ var ACTIVE_MS = 30 * 60 * 1e3;
 var FORMAT_STATUSES = ["todo", "in_progress", "in_review", "blocked", "blocked_on_owner", "parked", "done", "dropped", "superseded"];
 var CANON_HEADER = ["ID", "Task", "Status", "Owner", "Branch", "Depends", "ETA", "Notes"];
 var ETA_FORMAT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:[A-Z]{2,5}|UTC[+-]\d{2}(?::?\d{2})?|[+-]\d{2}:\d{2})$/;
+var TASK_MAX = 100;
+var NOTES_MAX = 400;
+var PROSE_MAX = 400;
+var STATUS_WORDS = "active|open|done|closed|in[ -]progress|backlog|archive|todo|current|new|blocked|parked";
+var RANGE = String.raw`\d(?:\d|to|and|\s|[.,/()–—-])*`;
+var DATE_END = String.raw`(?:\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?\s+[a-z]{3,9}\s+\d{4})\)?\s*$`;
+var EPIC_NAME_DENY = [
+  /^(?:active|backlog|archive|misc|miscellaneous|todo|additional|in-progress)\b(?!-\w)/i,
+  /^(?:open|done|new|other|general|board|tasks|current|in progress)(?:\s+(?:work|tasks|items|issues|board|follow-ups))?$/i,
+  /^authoritative current status/i,
+  new RegExp(String.raw`^follow[- ]?ups?(?:\s+\(?${RANGE})?$`, "i"),
+  /\bonwards\b/i,
+  /\brows added\b/i,
+  /\btasks?\s+\d/i,
+  /\b\d+\s+to\s+\d+/i,
+  new RegExp(String.raw`^(?:${STATUS_WORDS})\s*(?::|\s[-–—]\s|[–—])`, "i"),
+  new RegExp(DATE_END, "i")
+];
+var isVagueEpicName = (name) => EPIC_NAME_DENY.some((re) => re.test(name.trim()));
+var cellCountMessage = (expected, actual) => `row has ${actual} cells but the header has ${expected}; escape literal pipes in a cell as \\|`;
 function lintBoard(text2) {
   const findings = [];
   const add = (line, rule, message) => findings.push({ line, rule, message });
@@ -210,6 +231,7 @@ function lintBoard(text2) {
   const seenIds = /* @__PURE__ */ new Set();
   let prev = [];
   const epics = [];
+  let headerLen = 0;
   const refs = /* @__PURE__ */ new Set();
   const deps = [];
   const superseders = [];
@@ -219,7 +241,8 @@ function lintBoard(text2) {
   });
   for (const { text: line, no } of joinRowsNumbered(raw)) {
     const heading = /^##\s+(.*)$/.exec(line);
-    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1].trim())?.[1], hasTable: false });
+    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1].trim())?.[1], name: heading[1].trim().replace(/^\d+\.\s+/, ""), hasTable: false, open: false, walls: [] });
+    if (!heading && !line.startsWith("|") && !/^#{1,6}\s/.test(line) && line.length > PROSE_MAX) epics[epics.length - 1]?.walls.push(no);
     if (/^- \[( |x|X)\]/.test(line)) {
       items += 1;
       firstItem ||= no;
@@ -230,14 +253,25 @@ function lintBoard(text2) {
     prev = c;
     if (c.length > 0 && c.every((x) => /^:?-{2,}:?$/.test(x))) {
       if (!/^(#|id)$/i.test(before[0] ?? "")) col = void 0;
+      else if (col && c.length !== headerLen) add(no, "cell-count", cellCountMessage(headerLen, c.length));
       continue;
     }
     if (/^(#|id)$/i.test(c[0] ?? "")) {
       col = columnsOf(c);
+      headerLen = c.length;
       if (col && epics.length > 0) epics[epics.length - 1].hasTable = true;
       canonicalTable = col !== void 0 && c.join("|") === CANON_HEADER.join("|");
       if (col && !canonicalTable) add(no, "header", `non-canonical header: | ${c.join(" | ")} |`);
       continue;
+    }
+    if (col && c.length !== headerLen) add(no, "cell-count", cellCountMessage(headerLen, c.length));
+    if (col && normaliseStatus(c[col.status] ?? "") !== "done") {
+      const e = epics[epics.length - 1];
+      if (e) e.open = true;
+      const t = c[col.task] ?? "";
+      const n = c[col.notes] ?? "";
+      if (t.length > TASK_MAX) add(no, "long-cell", `Task cell is ${t.length} characters (max ${TASK_MAX} on open rows): keep Task a short title; put detail in Notes, long evidence in the PR or commit, not the board`);
+      if (n.length > NOTES_MAX) add(no, "long-cell", `Notes cell is ${n.length} characters (max ${NOTES_MAX} on open rows): keep a few short facts separated by <br>; put long evidence in the PR or commit, not the board`);
     }
     if (col && ID.test(c[col.id] ?? "")) {
       if (seenIds.has(c[col.id])) add(no, "duplicate-id", `duplicate ID ${c[col.id]}`);
@@ -264,6 +298,11 @@ function lintBoard(text2) {
     else if (seenNums.has(e.num)) add(e.no, "epic-unique", `duplicate epic number ${e.num}`);
     if (e.num !== void 0) seenNums.add(e.num);
   }
+  for (const e of epics.filter((x) => x.hasTable && x.open)) {
+    if (isVagueEpicName(e.name))
+      add(e.no, "epic-name", `epic name "${e.name}" is not descriptive: name the outcome or area (for example "Sailfish card parity with mobile web"), not its position, status or date`);
+    for (const w of e.walls) add(w, "wall-of-text", `line over ${PROSE_MAX} characters under an epic with open rows: break it into a short list`);
+  }
   for (const d of deps)
     for (const ref of d.value.split(",").map((x) => x.trim())) {
       if (!/^\d+\.\d+$/.test(ref)) add(d.no, "depends", `Depends entry not an <epic>.<task> reference: "${ref}"`);
@@ -273,6 +312,85 @@ function lintBoard(text2) {
   if (items > 0) add(firstItem, "checklist", `${items} checklist items instead of table rows`);
   findings.sort((a, b) => a.line - b.line);
   return { canonical: findings.length === 0, issues: [...new Set(findings.map((f) => f.message))], findings };
+}
+function fixBoard(text2) {
+  const raw = text2.split("\n");
+  const items = joinRowsNumbered(raw);
+  const out = [];
+  const changes = [];
+  let col;
+  let headerCells = [];
+  let prevHeader = false;
+  items.forEach((item, k) => {
+    const seg = raw.slice(item.no - 1, k + 1 < items.length ? items[k + 1].no - 1 : raw.length);
+    if (!item.text.startsWith("|")) {
+      out.push(...seg);
+      return;
+    }
+    const eol = seg[seg.length - 1].endsWith("\r") ? "\r" : "";
+    const rc = rawCells(item.text);
+    const c = rc.map((x) => x.replace(/\\\|/g, "|"));
+    const wasHeader = prevHeader;
+    prevHeader = false;
+    const emit = (cs2, why2) => {
+      const line = `|${cs2.map((x) => x === "" ? " " : ` ${x} `).join("|")}|${eol}`;
+      if (seg.length === 1 && seg[0] === line) out.push(line);
+      else {
+        out.push(line);
+        changes.push(`line ${item.no}: ${why2.length ? why2.join(", ") : "normalised padding"}`);
+      }
+    };
+    const joined = seg.length > 1 ? ["joined multi-line row"] : [];
+    if (c.length > 0 && c.every((x) => /^:?-{2,}:?$/.test(x))) {
+      if (!wasHeader || !col) {
+        col = void 0;
+        out.push(...seg);
+        return;
+      }
+      const sep = `|${"---|".repeat(headerCells.length)}${eol}`;
+      if (seg.length === 1 && seg[0] === sep) out.push(sep);
+      else {
+        out.push(sep);
+        changes.push(`line ${item.no}: normalised separator row`);
+      }
+      return;
+    }
+    if (/^(#|id)$/i.test(c[0] ?? "")) {
+      col = columnsOf(c);
+      headerCells = rc;
+      if (!col) {
+        out.push(...seg);
+        return;
+      }
+      prevHeader = true;
+      emit(rc, joined);
+      return;
+    }
+    if (!col) {
+      out.push(...seg);
+      return;
+    }
+    const n = headerCells.length;
+    const why = [...joined];
+    let cs = rc;
+    if (cs.length < n) {
+      cs = [...cs, ...Array(n - cs.length).fill("")];
+      why.push(`added ${n - rc.length} empty cell(s)`);
+    } else if (cs.length > n) {
+      if (/^(notes|acceptance)/i.test(headerCells[n - 1] ?? "")) {
+        cs = [...cs.slice(0, n - 1), cs.slice(n - 1).join(" \\| ")];
+        why.push(`merged ${rc.length - n} surplus cell(s) into Notes as escaped pipes`);
+      } else {
+        out.push(...seg);
+        changes.push(`line ${item.no}: ${rc.length} cells, header has ${n}; cannot fix safely, left unchanged`);
+        return;
+      }
+    }
+    const br = cs.map((x) => x.replace(/<br\s*\/>/gi, "<br>"));
+    if (br.some((x, i) => x !== cs[i])) why.push("normalised <br>");
+    emit(br, why);
+  });
+  return { text: out.join("\n"), changes };
 }
 var TZ_HOURS = { ICT: 7, UTC: 0, GMT: 0, BST: 1 };
 function epicEtaWarnings(text2, now = /* @__PURE__ */ new Date()) {
@@ -304,7 +422,7 @@ function epicEtaWarnings(text2, now = /* @__PURE__ */ new Date()) {
   }
   return out;
 }
-var checkBoard = (text2, mode) => lintBoard(text2).findings.filter((f) => mode === "canonical" || f.rule === "duplicate-id" || f.rule === "padded-cell");
+var checkBoard = (text2, mode) => lintBoard(text2).findings.filter((f) => mode === "canonical" || f.rule === "duplicate-id" || f.rule === "padded-cell" || f.rule === "cell-count");
 var FIX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
 // src/check.ts
@@ -319,9 +437,11 @@ function check(text2, format2 = "canonical") {
 var args = process.argv.slice(2);
 var path = "TASKS.md";
 var format = "canonical";
+var fix = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
-  if (a === "--format" || a.startsWith("--format=")) {
+  if (a === "--fix") fix = true;
+  else if (a === "--format" || a.startsWith("--format=")) {
     const v = a === "--format" ? args[++i] : a.slice(9);
     if (v !== "canonical" && v !== "lenient") {
       console.error(`unknown --format "${v}" (canonical or lenient)`);
@@ -336,6 +456,19 @@ try {
 } catch (e) {
   console.error(`cannot read ${path}: ${e.message}`);
   process.exit(2);
+}
+if (fix) {
+  const fixed = fixBoard(text);
+  for (const c of fixed.changes) console.log(`${path}: fixed ${c}`);
+  if (fixed.text !== text) {
+    try {
+      writeFileSync(path, fixed.text);
+    } catch (e) {
+      console.error(`cannot write ${path}: ${e.message}`);
+      process.exit(2);
+    }
+  }
+  text = fixed.text;
 }
 var { problems, warnings, tasks, failed } = check(text, format);
 for (const p of problems) console.log(`${path}:${p.line}: [${p.rule}] ${p.message}`);

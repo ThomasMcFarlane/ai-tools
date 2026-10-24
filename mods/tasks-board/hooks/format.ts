@@ -62,7 +62,26 @@ Do not write "Previous status: <old>." in Notes: the "Dropped:", "Superseded by"
   an ID get the next free integers. A repeated ID is renumbered the same way.
 - Cells are not padded: no run of two or more spaces next to a pipe.
 - Prose that is not a task (status notes, decisions, conventions) is kept verbatim above the first epic, or
-  under its own heading. Nothing is deleted.`
+  under its own heading. Prose sections and closed rows (done, dropped, superseded) are never deleted. When
+  condensing open rows, keep the facts and evidence links; narrative history may be cut because git history keeps it.
+
+Writing rows (the check fails on these; length limits apply only to open rows, the epic-name rule only to epics with open rows):
+- Epic names are descriptive and focused: name the outcome or area of work, never its position, status or date.
+  Bad: "Active", "Backlog", "Follow-ups 1.140 to 1.155", "Task 443 onwards", "Additional tracked work", "Open: Follow-ups",
+  "Archive: ... (2026-08-28)". Good: "Sailfish card parity with mobile web", "pgBackRest repo2 backups". Dates and status live in the
+  rows, not the heading. Rejected (case-insensitive): a name starting with Active, Backlog, Archive, Misc, Miscellaneous,
+  Todo, Additional, In-progress or Authoritative current status; a name that is exactly Open, Done, New, Other, General, Board, Tasks,
+  Current or In progress, optionally followed by work, tasks, items, issues, board or follow-ups ("Open banking" passes, "New tasks" fails); Follow-ups
+  (Followups, Follow ups) alone or followed by a number range or date; a name containing "onwards", "rows added", "task <n>",
+  "tasks <n>" or "<n> to <n>"; a status word followed by ":" or a dash at the start ("Open: ...", "Active - ...");
+  a name ending in a date ("(2026-08-31)", ", 2026-09-29", "(7 October 2026)").
+- Task is a short imperative title: 100 characters at most on open rows.
+- Notes are concise: a few short facts separated by <br> (the pane shows each on its own line), 400 characters at most on open
+  rows: current state, blocker, PR link, evidence. No narrative history or step-by-step logs; long evidence goes in the PR, the
+  commit or a linked file.
+- Prose under an epic is a short list, not paragraphs: no line over 400 characters while the epic has open rows.
+- Every row has exactly the header's number of cells; escape literal pipes in a cell as \\|. Run the fixer for the mechanical
+  problems (multi-line rows, padding, missing or surplus cells, <br/>): tasks-board-check --fix TASKS.md.`
 
 export const FIX_PR_TITLE = 'TASKS.md: canonical board format'
 
@@ -79,9 +98,12 @@ Rules:
 - Before rewriting, search the repository for board checkers and conventions: \`git grep -l -i 'TASKS.md'\` across scripts, tools, CI workflows, AGENTS.md, CLAUDE.md and docs. Some repos enforce their board format in CI.
 - In the same PR, update those checkers, their tests and the documented conventions to the canonical format, and run them locally. Then wait for CI to finish and fix what it reports.
 - If a checker cannot be migrated safely, leave the board unchanged, open no PR, and report why.
-- Preserve every task and every piece of text; delete nothing.
+- Preserve every task, every closed row and every prose section; delete nothing except narrative history condensed out of open rows (git keeps it).
 - Number the epics in file order starting at 1, keeping any existing number (\`Task 12\`, \`12.\`) and never renumbering. Rewrite every Depends cell to comma-separated \`<epic>.<task>\` references. Renumber task IDs as the format says: non-numeric and repeated IDs get the next free integer (add \`Was <old ID>.\` to Notes and rewrite every reference to them, including \`<epic>.<old>\` mentions in Notes); epic numbers stay. Leave other Notes prose as written.
-- If the repository's CI uses \`ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1\` or \`@tasks-board-check-v2\`, change it to \`@tasks-board-check-v3\` in the same PR (this change ships as the v3 action).
+- If the repository's CI uses \`ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1\`, \`@tasks-board-check-v2\` or \`@tasks-board-check-v3\`, change it to \`@tasks-board-check-v4\` in the same PR (this change ships as the v4 action).
+- Rename the vague name of every epic that has open rows to a descriptive one (outcome or area of work, not position, status or date), keeping its number. Split an epic that mixes unrelated work only if that is trivial; otherwise just rename it.
+- Condense every open row to the limits: Task a short title (100 characters), Notes a few short facts separated by \`<br>\` (400 characters), keeping facts and evidence links and cutting narrative history. Break any line over 400 characters under an epic with open rows into a short list.
+- Run \`node <ai-tools>/actions/tasks-board-check/dist/index.js --fix TASKS.md\` (the fixer) for mechanical table problems, then the check without \`--fix\`, and repeat until it passes.
 - Verify with a script, kept outside the repository, that every original ID is present exactly once afterwards (as itself or via its \`Was <old ID>.\` note), and that the open and done counts match before and after.
 - Commit, push, and run \`gh pr create\` titled "${FIX_PR_TITLE}". Put a line in the PR body stating that this is an automated board cleanup and that the agent that opened it merges it as soon as CI is green, without waiting for the owner.
 - Wait for CI and fix what it reports. Once all checks pass and the PR is mergeable, merge it yourself with \`gh pr merge\`, using a merge method the repository allows, and delete the branch.

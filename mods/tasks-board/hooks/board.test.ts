@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
+import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, fixBoard, isVagueEpicName, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
 
@@ -117,7 +117,7 @@ describe('formatting agent prompt', () => {
     expect(p).toContain('gh pr merge')
     expect(p).toContain('merges it as soon as CI is green')
     expect(p).toContain('## <N>. <Epic name>')
-    expect(p).toContain('@tasks-board-check-v3')
+    expect(p).toContain('@tasks-board-check-v4')
     expect(p).toContain('<epic>.<task>')
     expect(p).not.toContain('Additional rules')
   })
@@ -611,7 +611,7 @@ describe('lint rules for CI', () => {
     const board = (...h: string[]) => '# Tasks\n\n## Conventions\n\nprose\n\n' + h.map((x, i) => `## ${x}\n${tbl}${row(`${i + 1}`)}`).join('\n')
     expect(lintBoard(board('1. One', '2. Two')).findings).toEqual([])
     expect(lintBoard(board('One', '2. Two')).findings.map(f => f.rule)).toEqual(['epic-number'])
-    expect(lintBoard(board('Task 5: One')).findings.map(f => f.rule)).toEqual(['epic-number'])
+    expect(lintBoard(board('Task 5: One')).findings.map(f => f.rule)).toEqual(['epic-number', 'epic-name'])
     expect(lintBoard(board('1. One', '1. Two')).findings.map(f => `${f.rule}:${f.line}`)).toEqual(['epic-unique:13'])
     expect(checkBoard(board('One', '1. Two', '1. Three'), 'lenient')).toEqual([])
     expect(checkBoard(board('One'), 'canonical').map(f => f.rule)).toEqual(['epic-number'])
@@ -750,4 +750,81 @@ test('epicEta is the latest canonical ETA of open rows', () => {
   const r = (eta: string, status = 'todo') => ({ eta, status }) as never
   expect(epicEta([r('2026-10-11 18:00 ICT'), r('2026-12-01 09:00 ICT', 'done'), r('2026-10-20 08:00 ICT'), r('soon')])).toBe('2026-10-20 08:00 ICT')
   expect(epicEta([r('soon'), r('later')])).toBe('soon')
+})
+
+describe('board quality rules', () => {
+  const HDR = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+  const board = (row: string, head = '## 1. Sailfish card parity') => `# Tasks\n\n${head}\n\n${HDR}${row}\n`
+  const rules = (t: string) => lintBoard(t).findings.map(f => f.rule)
+  const open = '| 1 | t | todo | | | | | n |'
+
+  test('cell-count flags short and long rows, also when lenient', () => {
+    expect(rules(board('| 1 | t | todo | | | | n |'))).toContain('cell-count')
+    expect(rules(board('| 1 | t | todo | | | | | a | b |'))).toContain('cell-count')
+    expect(rules(board('| 1 | t | todo | | | | | a \\| b |'))).not.toContain('cell-count')
+    const f = lintBoard(board('| 1 | t | todo | | | | n |')).findings.find(x => x.rule === 'cell-count')!
+    expect(f.message).toContain('7 cells but the header has 8')
+    expect(f.message).toContain('\\|')
+    expect(checkBoard(board('| 1 | t | done | | | | n |'), 'lenient').map(x => x.rule)).toEqual(['cell-count'])
+  })
+  test('epic-name denies positional, status and dated names only for epics with open rows', () => {
+    for (const n of ['Active', 'Open: Follow-ups', 'Backlog', 'Follow-ups', 'Follow-ups 1.140 to 1.155', 'Followups 2026-09-01', 'Task 443 onwards', 'Additional tracked work', 'Authoritative current status', 'Archive: old (2026-08-28)', 'Active - things', 'Active — things', 'Cards (7 October 2026)', 'Cards - in-progress 2026-09-25', 'Cards, 2026-09-29', 'Rows added later', 'Tasks 5 to 9', 'Misc', 'Open', 'New tasks', 'Other work', 'Done', 'Current', 'In progress', 'Todo list', 'Active Directory', 'Done - things', 'Open: things', 'In-progress work'])
+      expect(isVagueEpicName(n), n).toBe(true)
+    for (const n of ['Sailfish card parity with mobile web', 'pgBackRest repo2 backups', 'tasks-board', 'Node 22.1 upgrade', 'Open banking', 'New user onboarding', 'Other-currency payouts', 'General Ledger export', 'Board game night'])
+      expect(isVagueEpicName(n), n).toBe(false)
+    expect(rules(board(open, '## 1. Active'))).toContain('epic-name')
+    expect(rules(board(open.replace('todo', 'done'), '## 1. Active'))).not.toContain('epic-name')
+    expect(lintBoard(board(open, '## 1. Backlog')).findings.find(f => f.rule === 'epic-name')!.message).toContain('epic name "Backlog" is not descriptive')
+  })
+  test('long-cell applies to open rows only', () => {
+    const long = (st: string, task: string, notes: string) => board(`| 1 | ${task} | ${st} | | | | | ${notes} |`)
+    expect(rules(long('todo', 'x'.repeat(101), 'n'))).toContain('long-cell')
+    expect(rules(long('todo', 'x'.repeat(100), 'y'.repeat(400)))).not.toContain('long-cell')
+    expect(rules(long('todo', 't', 'y'.repeat(401)))).toContain('long-cell')
+    expect(rules(long('done', 'x'.repeat(500), 'y'.repeat(500)))).not.toContain('long-cell')
+  })
+  test('wall-of-text only under epics with open rows', () => {
+    const wall = `${'w'.repeat(401)}\n`
+    expect(rules(board(open) + wall)).toContain('wall-of-text')
+    expect(rules(board(open) + `- ${'w'.repeat(398)}\n`)).not.toContain('wall-of-text')
+    expect(rules(board(open.replace('todo', 'done')) + wall)).not.toContain('wall-of-text')
+  })
+})
+
+describe('fixBoard', () => {
+  const HDR = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+  const fix = (rows: string) => fixBoard(`intro  |  keep\n\n## 1. E\n\n${HDR}${rows}\n\nafter  \n`)
+  test('strips padding and normalises the separator', () => {
+    const r = fixBoard('| ID  |  Task | Status | Owner | Branch | Depends | ETA | Notes |\n| --- | :-- | --- | --- | --- | --- | --- | --- |\n|  1 | t   | todo | | | | |  n |\n')
+    expect(r.text).toBe('| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 1 | t | todo | | | | | n |\n')
+  })
+  test('joins multi-line rows', () => {
+    expect(fix('| 1 | t | todo | | | | | line one\nline two |').text).toContain('| 1 | t | todo | | | | | line one line two |')
+  })
+  test('pads short rows', () => {
+    expect(fix('| 1 | t | todo | | | | n |').text).toContain('| 1 | t | todo | | | | n | |')
+  })
+  test('merges surplus cells into Notes as escaped pipes', () => {
+    const r = fix('| 1 | t | todo | | | | | a | b |  c |')
+    expect(r.text).toContain('| 1 | t | todo | | | | | a \\| b \\| c |')
+    expect(lintBoard(r.text).findings.map(f => f.rule)).not.toContain('cell-count')
+  })
+  test('leaves surplus cells alone when the last column is not Notes', () => {
+    const t = '| ID | Task | Status | Owner |\n|---|---|---|---|\n| 1 | t | todo | a | b |\n'
+    const r = fixBoard(t)
+    expect(r.text).toBe(t)
+    expect(r.changes[0]).toContain('cannot fix safely')
+  })
+  test('converts self-closing br', () => {
+    expect(fix('| 1 | t | todo | | | | | a<br/>b<br />c |').text).toContain('a<br>b<br>c')
+  })
+  test('leaves prose and non-task tables untouched, and is idempotent', () => {
+    const other = '| a  |  b |\n|--|--|\n|  x | y  | z |\n'
+    const t = `intro  |  keep\n\n${other}\n## 1. E\n\n${HDR}| 1 | t | todo | | | | n |\n| 2 |  t  | todo | | | | | a | b<br/> |\n\nafter  \n`
+    const r = fixBoard(t)
+    expect(r.text.startsWith(`intro  |  keep\n\n${other}`)).toBe(true)
+    expect(r.text.endsWith('\nafter  \n')).toBe(true)
+    expect(fixBoard(r.text).text).toBe(r.text)
+    expect(fixBoard(r.text).changes).toEqual([])
+  })
 })

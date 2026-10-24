@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { check } from '../src/check.ts';
 import { epicEtaWarnings } from '../../../mods/tasks-board/hooks/board.ts';
@@ -110,5 +113,40 @@ describe('epicEtaWarnings', () => {
     expect(epicEtaWarnings(T('ETA: 2026-10-14 18:00 ICT'), now)[0]!.message).toContain('past');
     expect(epicEtaWarnings(T('ETA: 2026-10-14 18:00 ICT', 'done'), now)).toEqual([]);
     expect(epicEtaWarnings(T('', 'done'), now)).toEqual([]);
+  });
+});
+
+describe('board quality rules', () => {
+  const row = (r: string, head = '## 1. Card parity') => `${head}\n\n${H}${r}\n`;
+
+  it('fails on a wrong cell count, even when lenient', () => {
+    expect(check(row('| 1 | t | todo | a | | | n |'), 'lenient').failed).toBe(true);
+    expect(check(row('| 1 | t | todo | a | | | | n |')).failed).toBe(false);
+  });
+
+  it('fails on a vague epic name with open rows only', () => {
+    expect(check(row('| 1 | t | todo | a | | | | |', '## 1. Active')).failed).toBe(true);
+    expect(check(row('| 1 | t | done | a | | | | |', '## 1. Active')).failed).toBe(false);
+  });
+
+  it('fails on long open cells and walls of text', () => {
+    expect(check(row(`| 1 | ${'x'.repeat(101)} | todo | a | | | | |`)).failed).toBe(true);
+    expect(check(row(`| 1 | t | todo | a | | | | ${'y'.repeat(401)} |`)).failed).toBe(true);
+    expect(check(row(`| 1 | t | done | a | | | | ${'y'.repeat(401)} |`)).failed).toBe(false);
+    expect(check(row('| 1 | t | todo | a | | | | |') + 'w'.repeat(401) + '\n').failed).toBe(true);
+  });
+});
+
+describe('--fix', () => {
+  it('rewrites the file in place and exits with the check result', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'board-'));
+    const file = join(dir, 'TASKS.md');
+    writeFileSync(file, '## 1. Card parity\n\n' + H + '|  1 | t | todo | a | | | | n |\n');
+    const r = spawnSync('node', ['--experimental-strip-types', 'src/cli.ts', '--fix', file], {
+      encoding: 'utf8',
+    });
+    expect(r.status).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('| 1 | t | todo | a | | | | n |');
+    expect(r.stdout).toContain('fixed line 5');
   });
 });

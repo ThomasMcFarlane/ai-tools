@@ -52,7 +52,34 @@
   CI; if a checker cannot be migrated safely, change nothing.
 - Cells are not padded: no run of two or more spaces next to a pipe.
 - Prose that is not a task (status notes, decisions, conventions) is kept verbatim above the first epic, or
-  under its own heading. Nothing is deleted.
+  under its own heading. Prose sections and closed rows (`done`, `dropped`, `superseded`) are never deleted. When
+  condensing open rows, keep the facts and evidence links; narrative history may be cut because git history keeps it.
+
+## Writing rows
+
+The check fails on all of these. The length limits apply only to open rows (status not `done`, `dropped` or
+`superseded`); the epic-name rule applies only to epics with at least one open row.
+
+- Epic names are descriptive and focused: name the outcome or area of work, never its position, status or date.
+  Bad: "Active", "Backlog", "Follow-ups 1.140 to 1.155", "Task 443 onwards", "Additional tracked work", "Open:
+  Follow-ups", "Archive: ... (2026-08-28)". Good: "Sailfish card parity with mobile web", "pgBackRest repo2
+  backups". Dates and status live in the rows, not the heading. The check rejects a name that (case-insensitive):
+  starts with `Active`, `Backlog`, `Archive`, `Misc`, `Miscellaneous`, `Todo`, `Additional`, `In-progress` or
+  `Authoritative current status`; is exactly `Open`, `Done`, `New`, `Other`, `General`, `Board`, `Tasks`, `Current` or
+  `In progress`, optionally followed by `work`, `tasks`, `items`, `issues`, `board` or `follow-ups` (`Open banking`
+  and `New user onboarding` pass, `New tasks` fails); is `Follow-ups` (or `Followups`, `Follow ups`) alone or followed by a number range or date; contains `onwards`,
+  `rows added`, `task <n>`, `tasks <n>` or `<n> to <n>`; starts with a status word followed
+  by `:` or a dash (`Open: ...`, `Active - ...`); or ends with a date (`(2026-08-31)`, `, 2026-09-29`,
+  `(7 October 2026)`). The patterns are `EPIC_NAME_DENY` in `hooks/board.ts`.
+- Task is a short imperative title: 100 characters at most on open rows.
+- Notes are concise: a few short facts separated by `<br>` (the pane shows each on its own line), 400 characters at
+  most on open rows: current state, blocker, PR link, evidence. No narrative history or step-by-step logs; long
+  evidence goes in the PR, the commit or a linked file.
+- Prose under an epic is a short list, not paragraphs: no line over 400 characters while the epic has open rows.
+- Every row has exactly the header's number of cells. Escape literal pipes in a cell as `\|`. The fixer repairs the
+  mechanical problems (joins multi-line rows, strips padding, pads short rows, merges surplus Notes cells as escaped
+  pipes, turns `<br/>` into `<br>`): run `tasks-board-check --fix TASKS.md`. The mod runs it on every agent edit of
+  `TASKS.md`.
 
 ## Legacy statuses
 
