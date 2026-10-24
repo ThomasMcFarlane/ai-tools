@@ -149,4 +149,17 @@ describe('--fix', () => {
     expect(readFileSync(file, 'utf8')).toContain('| 1 | t | todo | a | | | | n |');
     expect(r.stdout).toContain('fixed line 5');
   });
+
+  it('leaves a trailing non-task table alone and is idempotent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'board-'));
+    const file = join(dir, 'TASKS.md');
+    const body = '## 1. Card parity\n\n' + H + '| 1 | t | todo | a | | | | n | |\n\nProse.\n\n| Name | Value |\n|---|---|\n| a |\n';
+    writeFileSync(file, body);
+    const run = () => spawnSync('node', ['--experimental-strip-types', 'src/cli.ts', '--fix', file], { encoding: 'utf8' });
+    run();
+    const once = readFileSync(file, 'utf8');
+    expect(once).toBe(body.replace('| n | |', '| n |'));
+    run();
+    expect(readFileSync(file, 'utf8')).toBe(once);
+  });
 });
