@@ -5,20 +5,23 @@ export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
 ## <N>. <Epic name>
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| PZ-001 | … | in_progress | agent-name | feat/pz-001 | 1.PZ-000 | 2026-10-10 14:00 ICT | … |
+| 12 | … | in_progress | agent-name | feat/task-12 | 1.11 | 2026-10-10 14:00 ICT | … |
 
 - One ## heading per epic; one table per epic, with exactly the header above. The heading is "## <N>. <Epic name>",
   N a positive integer unique on the board. Numbers are stable: never renumber or reuse one; a new epic takes the
   highest number + 1. Headings that hold no task table (Conventions, Identities, archive notes) are not epics and
   are not numbered.
 - Each epic has an "ETA: YYYY-MM-DD HH:MM <TZ>" line directly under its heading, kept current (roughly the latest ETA of its open rows). The checker only warns when it is missing, malformed, or in the past while the epic has open rows.
-- A task's reference is <epic>.<task>, e.g. 3.579 or 2.PZ-001. The ID column keeps the task's own ID verbatim.
-  Depends cells hold comma-separated references in that form, each resolving to an existing row.
+- Epic numbers and task IDs are positive integers (^[1-9]\\d*$), each independently unique: epic numbers among
+  epics, task IDs across the whole board (not per epic). A task's reference is <epic>.<task>, e.g. 3.579; the ID
+  column holds the task's own integer ID. Whenever an agent mentions a task anywhere (Depends, Notes, commit
+  messages, PR titles and bodies, chat, reports) it uses <epic>.<task>, never a bare task ID. Depends cells hold
+  comma-separated references in that form, each resolving to an existing row.
 - Status is exactly one of:
   - todo: not started; nobody has picked it up (Owner empty or "owner").
   - in_progress: an agent is working on it now. Owner is that agent; ETA is required.
   - in_review: a PR is open and waits on CI, review or merge. Link the PR in Notes; ETA is the expected merge.
-  - blocked: cannot proceed because of something other than the owner's input: another row (name its ID in
+  - blocked: cannot proceed because of something other than the owner's input: another row (name its reference in
     Depends), an agent prerequisite, a failing dependency, CI, an external service or a quota. Notes say what it
     waits on.
   - blocked_on_owner: only when the owner (the person running the agents) must give input: a decision, an
@@ -53,8 +56,10 @@ Do not write "Previous status: <old>." in Notes: the "Dropped:", "Superseded by"
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one.
 - ETA is YYYY-MM-DD HH:MM <timezone> (a timezone abbreviation, e.g. ICT, or an offset such as +07:00), or empty.
-- Existing IDs are kept verbatim (numbers, PZ-001, CF-…). Checklist items without an ID get new IDs
-  <REPOPREFIX>-<n>, continuing from the board's highest number.
+- Existing numeric IDs are kept. Any non-numeric ID (PZ-001, CF-3, 12a, 1.2, ...) is renumbered to the next free
+  integer, continuing from the board's highest numeric ID in file order; its Notes gain "Was <old ID>." and every
+  reference to it (Depends, "Superseded by", <epic>.<old> mentions in Notes) is rewritten. Checklist items without
+  an ID get the next free integers. A repeated ID is renumbered the same way.
 - Cells are not padded: no run of two or more spaces next to a pipe.
 - Prose that is not a task (status notes, decisions, conventions) is kept verbatim above the first epic, or
   under its own heading. Nothing is deleted.`
@@ -75,10 +80,10 @@ Rules:
 - In the same PR, update those checkers, their tests and the documented conventions to the canonical format, and run them locally. Then wait for CI to finish and fix what it reports.
 - If a checker cannot be migrated safely, leave the board unchanged, open no PR, and report why.
 - Preserve every task and every piece of text; delete nothing.
-- Number the epics in file order starting at 1, keeping any existing number (\`Task 12\`, \`12.\`) and never renumbering. Rewrite every Depends cell to comma-separated \`<epic>.<task>\` references. Leave Notes prose as written.
-- If the repository's CI uses \`ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1\`, change it to \`@tasks-board-check-v2\` in the same PR.
-- If an ID appears twice, renumber the later duplicate to the next free ID in that board's numbering and note its old ID in Notes.
-- Verify with a script, kept outside the repository, that every original ID is present exactly once afterwards, and that the open and done counts match before and after.
-- Commit, push, and run \`gh pr create\` titled "${FIX_PR_TITLE}".
-- Do NOT merge the PR.
-- Report the PR URL.${extra ? `\n\nAdditional rules:\n${extra}` : ''}`
+- Number the epics in file order starting at 1, keeping any existing number (\`Task 12\`, \`12.\`) and never renumbering. Rewrite every Depends cell to comma-separated \`<epic>.<task>\` references. Renumber task IDs as the format says: non-numeric and repeated IDs get the next free integer (add \`Was <old ID>.\` to Notes and rewrite every reference to them, including \`<epic>.<old>\` mentions in Notes); epic numbers stay. Leave other Notes prose as written.
+- If the repository's CI uses \`ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v1\` or \`@tasks-board-check-v2\`, change it to \`@tasks-board-check-v3\` in the same PR (this change ships as the v3 action).
+- Verify with a script, kept outside the repository, that every original ID is present exactly once afterwards (as itself or via its \`Was <old ID>.\` note), and that the open and done counts match before and after.
+- Commit, push, and run \`gh pr create\` titled "${FIX_PR_TITLE}". Put a line in the PR body stating that this is an automated board cleanup and that the agent that opened it merges it as soon as CI is green, without waiting for the owner.
+- Wait for CI and fix what it reports. Once all checks pass and the PR is mergeable, merge it yourself with \`gh pr merge\`, using a merge method the repository allows, and delete the branch.
+- If CI cannot be made green, leave the PR open and report why.
+- Report the PR URL and the merge result.${extra ? `\n\nAdditional rules:\n${extra}` : ''}`

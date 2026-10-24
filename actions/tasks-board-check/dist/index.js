@@ -244,10 +244,11 @@ function lintBoard(text2) {
       seenIds.add(c[col.id]);
     }
     if (!col || !canonicalTable || !ID.test(c[col.id] ?? "")) continue;
+    if (!/^[1-9]\d*$/.test(c[col.id])) add(no, "numeric-id", `task ID "${c[col.id]}" is not a positive integer; renumber it (see FORMAT.md)`);
     if (!FORMAT_STATUSES.includes(c[col.status] ?? "")) add(no, "status", `status "${c[col.status]}" is not one of ${FORMAT_STATUSES.join(", ")}; see FORMAT.md, Legacy statuses`);
     else if (c[col.status] === "dropped" && !/^Dropped: \S/.test(c.slice(col.notes).join(" | "))) add(no, "dropped", 'dropped row needs Notes starting "Dropped: <reason>."');
     else if (c[col.status] === "superseded") {
-      const ref = /^Superseded by (\d+\.[^\s,;]*[^\s,;.])/.exec(c.slice(col.notes).join(" | "))?.[1];
+      const ref = /^Superseded by (\d+\.\d+)(?![\w-]|\.\d)/.exec(c.slice(col.notes).join(" | "))?.[1];
       if (ref === void 0) add(no, "superseded", 'superseded row needs Notes starting "Superseded by <epic>.<task>."');
       else superseders.push({ no, ref });
     }
@@ -265,7 +266,7 @@ function lintBoard(text2) {
   }
   for (const d of deps)
     for (const ref of d.value.split(",").map((x) => x.trim())) {
-      if (!/^\d+\..+$/.test(ref)) add(d.no, "depends", `Depends entry not an <epic>.<task> reference: "${ref}"`);
+      if (!/^\d+\.\d+$/.test(ref)) add(d.no, "depends", `Depends entry not an <epic>.<task> reference: "${ref}"`);
       else if (!refs.has(ref)) add(d.no, "depends", `Depends reference ${ref} matches no row`);
     }
   for (const s of superseders) if (!refs.has(s.ref)) add(s.no, "superseded", `Superseded by reference ${s.ref} matches no row`);
