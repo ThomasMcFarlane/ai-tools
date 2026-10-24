@@ -32,4 +32,4 @@ ETA: 2026-10-24 23:00 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 10 | Numeric board IDs, <epic>.<task> references, cleanup PR self-merge | in_progress | claude | board-numeric-ids | | 2026-10-24 23:00 ICT | Lint rule numeric-id, renumbering in the format agent prompt, agent merges the cleanup PR when CI is green; ships as tasks-board-check-v3 and tasks-board 0.7.0. |
+| 10 | Numeric board IDs, <epic>.<task> references, cleanup PR self-merge | done | claude | board-numeric-ids | | 2026-10-24 23:00 ICT | Lint rule numeric-id, renumbering in the format agent prompt, agent merges the cleanup PR when CI is green; ships as tasks-board-check-v3 and tasks-board 0.7.0. Done in #51 (642c550); tagged tasks-board-check-v3.0.0, tasks-board-check-v3 and tasks-board-v0.7.0; skill docs in ThomasMcFarlane/.ais#82. |
