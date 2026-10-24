@@ -250,8 +250,7 @@ describe('safety of the rebuild', () => {
     expect(uses).toEqual(['e', 'w'])
     expect(stats).toMatchObject({ callsDropped: 2, resultsTruncated: 2 })
     expect(out.flatMap((m) => m.toolResults ?? []).map((r) => r.tool_use_id)).toEqual(['e', 'w'])
-    expect(out.some((m) => m.text.includes('[jev dropped Bash: b]'))).toBe(true)
-    expect(out.some((m) => m.text.includes('jev dropped mcp__files__read_file'))).toBe(true)
+    expect(out.some((m) => m.text === '[jev dropped 2 calls: Bash ×1, mcp__files__read_file ×1]')).toBe(true)
     expect(out.some((m) => m.text.includes('jev dropped Edit'))).toBe(false)
   })
 
@@ -569,5 +568,45 @@ describe('dropped-call notes', () => {
     expect(noteHead('Other', { n: 1 })).toBe('{"n":1}')
     expect(noteHead('Bash', { command: 'a'.repeat(80) })).toBe('a'.repeat(80))
     expect(noteHead('Bash', { command: 'a'.repeat(81) })).toBe(`${'a'.repeat(80)}…`)
+  })
+})
+
+describe('drop note collapsing', () => {
+  const bash = (id: string, tool = 'Bash'): Message[] => [
+    assistant('', { toolUses: [{ tool_use_id: id, tool, input: { command: `cmd ${id}` }, text: 'r' }] }),
+    user('', { toolResults: [{ tool_use_id: id, text: 'r', isError: false }] }),
+  ]
+  const dropAll = (messages: Message[], ids: string[]) => {
+    const counts = { truncated: 0, dropped: 0, abridged: 0, stubbed: 0 }
+    const out = applyDecisions(messages, new Map(ids.map((id) => [id, 'drop_call' as const])), new Map(), 300, counts)
+    return { out, counts }
+  }
+
+  test('a single drop keeps the one-call form', () => {
+    const { out, counts } = dropAll([user('go'), ...bash('a')], ['a'])
+    expect(out.map((m) => m.text)).toEqual(['go', '[jev dropped Bash: cmd a]'])
+    expect(counts.dropped).toBe(1)
+  })
+
+  test('several drops in one message make one tallied note', () => {
+    const calls = ['a', 'b', 'c'].map((id, i) => ({ tool_use_id: id, tool: i < 2 ? 'Bash' : 'Read', input: { command: id, file_path: id }, text: 'r' }))
+    const m = assistant('', { toolUses: calls })
+    const { out, counts } = dropAll([user('go'), m], ['a', 'b', 'c'])
+    expect(out[1]?.text).toBe('[jev dropped 3 calls: Bash ×2, Read ×1]')
+    expect(counts.dropped).toBe(3)
+  })
+
+  test('a run of note-only messages collapses into the first', () => {
+    const messages = [user('go'), ...bash('a'), ...bash('b'), ...bash('c', 'Read'), assistant('done')]
+    const { out, counts } = dropAll(messages, ['a', 'b', 'c'])
+    expect(out.map((m) => m.text)).toEqual(['go', '[jev dropped 3 calls: Bash ×2, Read ×1]', 'done'])
+    expect(counts.dropped).toBe(3)
+  })
+
+  test('a message with real text or a kept tool use breaks the run', () => {
+    const messages = [user('go'), ...bash('a'), assistant('keep this'), ...bash('b'), ...bash('c'), ...bash('k'), user('end')]
+    const { out } = dropAll(messages, ['a', 'b', 'c'])
+    expect(out.map((m) => m.text)).toEqual(['go', '[jev dropped Bash: cmd a]', 'keep this', '[jev dropped 2 calls: Bash ×2]', '', '', 'end'])
+    expect(out[4]?.toolUses.length).toBe(1)
   })
 })
