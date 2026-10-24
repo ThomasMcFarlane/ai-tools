@@ -113,9 +113,11 @@ describe('formatting agent prompt', () => {
     expect(p).toContain('org/app')
     expect(p).toContain('/x/TASKS.md')
     expect(p).toContain('board-format-20261009')
-    expect(p).toContain('Do NOT merge')
+    expect(p).not.toContain('Do NOT merge')
+    expect(p).toContain('gh pr merge')
+    expect(p).toContain('merges it as soon as CI is green')
     expect(p).toContain('## <N>. <Epic name>')
-    expect(p).toContain('tasks-board-check-v2')
+    expect(p).toContain('@tasks-board-check-v3')
     expect(p).toContain('<epic>.<task>')
     expect(p).not.toContain('Additional rules')
   })
@@ -463,8 +465,8 @@ const CANON = `# Tasks
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| PZ-001 | First | in_progress | claude-1 | feat/pz-001 | 1.PZ-002 | 2026-10-10 14:00 ICT | n |
-| PZ-002 | Second | blocked_on_owner | | | | | approve |
+| 1 | First | in_progress | claude-1 | feat/pz-001 | 1.2 | 2026-10-10 14:00 ICT | n |
+| 2 | Second | blocked_on_owner | | | | | approve |
 `
 
 describe('canonical format', () => {
@@ -472,7 +474,7 @@ describe('canonical format', () => {
     expect(lintBoard(CANON)).toEqual({ canonical: true, issues: [], findings: [] })
     const t = parseBoard(CANON)
     expect(t[0]!.eta).toBe('2026-10-10 14:00 ICT')
-    expect(t[0]!.depends).toBe('1.PZ-002')
+    expect(t[0]!.depends).toBe('1.2')
     expect(t[0]!.branch).toBe('feat/pz-001')
     expect(t[1]!.branch).toBeUndefined()
     expect(slimTasks(t)[0]!.branch).toBeUndefined()
@@ -582,7 +584,7 @@ test('changedSinceFork keeps new rows and rows that differ from the fork point',
 })
 
 describe('lint rules for CI', () => {
-  const GOOD = '# Tasks\n\n## 1. E\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| A-1 | one | todo | | | | 2026-10-10 14:00 ICT | n |\n| A-2 | two | done | | | | 2026-10-10 14:00 UTC+07:00 | n |\n'
+  const GOOD = '# Tasks\n\n## 1. E\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 1 | one | todo | | | | 2026-10-10 14:00 ICT | n |\n| 2 | two | done | | | | 2026-10-10 14:00 UTC+07:00 | n |\n'
   test('timezone abbreviations and offsets are accepted', () => {
     expect(lintBoard(GOOD).findings).toEqual([])
     for (const eta of ['2026-10-10 14:00 UTC', '2026-10-10 14:00 BST', '2026-10-10 14:00 +07:00', '2026-10-10 14:00 UTC-05', '2026-10-10 14:00 UTC+0530']) {
@@ -592,21 +594,21 @@ describe('lint rules for CI', () => {
     expect(lintBoard(GOOD.replace('2026-10-10 14:00 ICT', '10 Oct 14:00 ICT')).findings[0]!.rule).toBe('eta')
   })
   test('findings carry the line and the rule', () => {
-    const f = lintBoard(GOOD.replace('| A-2 |', '| A-1 |')).findings
-    expect(f).toEqual([{ line: 8, rule: 'duplicate-id', message: 'duplicate ID A-1' }])
+    const f = lintBoard(GOOD.replace('| 2 |', '| 1 |')).findings
+    expect(f).toEqual([{ line: 8, rule: 'duplicate-id', message: 'duplicate ID 1' }])
     expect(lintBoard(GOOD.replace('todo', 'wip')).findings).toEqual([{ line: 7, rule: 'status', message: 'status "wip" is not one of todo, in_progress, in_review, blocked, blocked_on_owner, parked, done, dropped, superseded; see FORMAT.md, Legacy statuses' }])
     expect(lintBoard(GOOD).issues).toEqual([])
   })
   test('padded cells are reported on their line', () => {
-    const f = lintBoard(GOOD.replace('| A-1 | one   |', '| A-1 | one   |')).findings
+    const f = lintBoard(GOOD.replace('| 1 | one   |', '| 1 | one   |')).findings
     expect(f).toEqual([])
-    const padded = GOOD.replace('| A-1 | one |', '| A-1 |  one  |')
+    const padded = GOOD.replace('| 1 | one |', '| 1 |  one  |')
     expect(lintBoard(padded).findings.map(x => `${x.line}:${x.rule}`)).toEqual(['7:padded-cell'])
   })
   test('epic headings need a number, unique on the board; prose headings are exempt', () => {
     const tbl = '\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
     const row = (id: string, dep = '') => `| ${id} | t | todo | | |${dep ? ` ${dep} ` : ''}| | n |\n`
-    const board = (...h: string[]) => '# Tasks\n\n## Conventions\n\nprose\n\n' + h.map((x, i) => `## ${x}\n${tbl}${row(`A-${i + 1}`)}`).join('\n')
+    const board = (...h: string[]) => '# Tasks\n\n## Conventions\n\nprose\n\n' + h.map((x, i) => `## ${x}\n${tbl}${row(`${i + 1}`)}`).join('\n')
     expect(lintBoard(board('1. One', '2. Two')).findings).toEqual([])
     expect(lintBoard(board('One', '2. Two')).findings.map(f => f.rule)).toEqual(['epic-number'])
     expect(lintBoard(board('Task 5: One')).findings.map(f => f.rule)).toEqual(['epic-number'])
@@ -617,13 +619,24 @@ describe('lint rules for CI', () => {
   test('Depends entries are <epic>.<task> references that resolve to a row', () => {
     const tbl = '\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
     const row = (id: string, dep = '') => `| ${id} | t | todo | | |${dep ? ` ${dep} ` : ''}| | n |\n`
-    const board = (dep: string) => `# Tasks\n\n## 1. One${tbl}${row('A-1', dep)}${row('12')}\n## 2. Two${tbl}${row('PZ-001')}`
-    expect(lintBoard(board('2.PZ-001, 1.12')).findings).toEqual([])
-    expect(lintBoard(board('PZ-001')).findings.map(f => f.rule)).toEqual(['depends'])
-    expect(lintBoard(board('1.PZ-001')).findings.map(f => f.message)).toEqual(['Depends reference 1.PZ-001 matches no row'])
-    expect(lintBoard(board('2.PZ-001, 9')).findings.map(f => f.rule)).toEqual(['depends'])
+    const board = (dep: string) => `# Tasks\n\n## 1. One${tbl}${row('11', dep)}${row('12')}\n## 2. Two${tbl}${row('13')}`
+    expect(lintBoard(board('2.13, 1.12')).findings).toEqual([])
+    expect(lintBoard(board('13')).findings.map(f => f.rule)).toEqual(['depends'])
+    expect(lintBoard(board('1.99')).findings.map(f => f.message)).toEqual(['Depends reference 1.99 matches no row'])
+    expect(lintBoard(board('2.13, 9')).findings.map(f => f.rule)).toEqual(['depends'])
+    expect(lintBoard(board('2.PZ-001')).findings.map(f => f.rule)).toEqual(['depends'])
+    expect(checkBoard(board('13'), 'lenient')).toEqual([])
+    expect(checkBoard(board('13'), 'canonical').map(f => f.rule)).toEqual(['depends'])
+  })
+  test('numeric-id: canonical table IDs must be positive integers', () => {
+    const tbl = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
+    const board = (id: string) => `# Tasks\n\n## 1. E\n\n${tbl}| ${id} | t | todo | | | | | n |\n`
+    expect(lintBoard(board('12')).findings).toEqual([])
+    for (const id of ['PZ-001', 'CF-3', '12a', '1.2', '0', '007'])
+      expect(lintBoard(board(id)).findings.map(f => f.rule)).toContain('numeric-id')
+    expect(lintBoard(board('PZ-001')).findings[0]!.message).toBe('task ID "PZ-001" is not a positive integer; renumber it (see FORMAT.md)')
+    expect(checkBoard(board('PZ-001'), 'canonical').map(f => f.rule)).toEqual(['numeric-id'])
     expect(checkBoard(board('PZ-001'), 'lenient')).toEqual([])
-    expect(checkBoard(board('PZ-001'), 'canonical').map(f => f.rule)).toEqual(['depends'])
   })
   test('checkBoard: canonical fails on everything, lenient only on duplicates and padding', () => {
     const old = '| # | Task | Status | Owner | Notes |\n|---|---|---|---|---|\n| 1 | a | todo | | n |\n| 1 | b | todo | | n |\n- [ ] item\n'
@@ -675,7 +688,7 @@ test('rows with an ETA keep equal width', () => {
 
 test('parked is a canonical status, parses as parked, is never owner-blocked and is excluded from epicEta', () => {
   const CH = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
-  const text = `# Tasks\n\n## 1. E\n\n${CH}| A-1 | a | parked | | | | | Parked by owner 2026-10-09: hold; resumes when web is done |\n`
+  const text = `# Tasks\n\n## 1. E\n\n${CH}| 1 | a | parked | | | | | Parked by owner 2026-10-09: hold; resumes when web is done |\n`
   expect(lintBoard(text).findings).toEqual([])
   const rows = parseBoard(text)
   expect(rows.map(t => t.status)).toEqual(['parked'])
@@ -686,7 +699,7 @@ test('parked is a canonical status, parses as parked, is never owner-blocked and
 
 describe('legacy statuses', () => {
   const CH = '| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n'
-  const board = (status: string, notes: string) => `# Tasks\n\n## 1. E\n\n${CH}| A-1 | a | ${status} | | | | | ${notes} |\n`
+  const board = (status: string, notes: string) => `# Tasks\n\n## 1. E\n\n${CH}| 1 | a | ${status} | | | | | ${notes} |\n`
   test('dropped is canonical only with a Dropped: prefix', () => {
     expect(lintBoard(board('dropped', 'Dropped: superseded by 2.B-1.')).findings).toEqual([])
     const bad = lintBoard(board('dropped', 'not needed'))
@@ -694,10 +707,11 @@ describe('legacy statuses', () => {
     expect(checkBoard(board('dropped', 'gone'), 'canonical').map(f => f.rule)).toEqual(['dropped'])
   })
   test('superseded needs "Superseded by <epic>.<task>." naming an existing row', () => {
-    const two = (notes: string) => `# Tasks\n\n## 1. E\n\n${CH}| A-1 | a | superseded | | | | | ${notes} |\n| A-2 | b | todo | | | | | |\n`
-    expect(lintBoard(two('Superseded by 1.A-2.')).findings).toEqual([])
+    const two = (notes: string) => `# Tasks\n\n## 1. E\n\n${CH}| 1 | a | superseded | | | | | ${notes} |\n| 2 | b | todo | | | | | |\n`
+    expect(lintBoard(two('Superseded by 1.2.')).findings).toEqual([])
     expect(lintBoard(board('superseded', 'replaced')).findings.map(f => f.rule)).toEqual(['superseded'])
-    expect(lintBoard(two('Superseded by 1.A-9.')).findings.map(f => f.message)).toEqual(['Superseded by reference 1.A-9 matches no row'])
+    expect(lintBoard(two('Superseded by 1.9.')).findings.map(f => f.message)).toEqual(['Superseded by reference 1.9 matches no row'])
+    expect(lintBoard(two('Superseded by 1.A-2.')).findings.map(f => f.rule)).toEqual(['superseded'])
     expect(parseBoard(two('Superseded by 1.A-2.')).map(t => t.status)).toEqual(['done', 'todo'])
   })
   test('n/a is rejected by lint and not auto-mapped to done', () => {

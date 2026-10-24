@@ -5,7 +5,7 @@
 ## <N>. <Epic name>
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| PZ-001 | … | in_progress | agent-name | feat/pz-001 | 1.PZ-000 | 2026-10-10 14:00 ICT | … |
+| 12 | … | in_progress | agent-name | feat/task-12 | 1.11 | 2026-10-10 14:00 ICT | … |
 ```
 
 - One `##` heading per epic; one table per epic, with exactly the header above. The heading is `## <N>. <Epic name>`,
@@ -13,10 +13,11 @@
   highest number + 1. Headings that hold no task table (Conventions, Identities, archive notes) are not epics and are
   not numbered. The parser still reads the older `Task <n>: <name>` form, but it is not canonical.
 - Each epic has an `ETA: YYYY-MM-DD HH:MM <TZ>` line directly under its heading, kept current (roughly the latest ETA of its open rows). The checker only warns when it is missing, malformed, or in the past while the epic has open rows.
-- A task's reference is `<epic>.<task>`, e.g. `3.579` or `2.PZ-001`; the ID column keeps the task's own ID verbatim
-  (unique across the board). Agents use the reference everywhere they name a task: Depends, Notes, commit messages,
-  PR titles and bodies, chat and reports. Depends cells hold comma-separated references in that form, each
-  resolving to an existing row.
+- Epic numbers and task IDs are positive integers (`^[1-9]\d*$`), each independently unique: epic numbers among
+  epics, task IDs across the whole board (not per epic). A task's reference is `<epic>.<task>`, e.g. `3.579`; the ID
+  column holds the task's own integer ID. Whenever an agent mentions a task anywhere (Depends, Notes, commit
+  messages, PR titles and bodies, chat, reports) it uses `<epic>.<task>`, never a bare task ID. Depends cells hold
+  comma-separated references in that form, each resolving to an existing row.
 - Status is exactly one of the following.
   - `todo`: not started; nobody has picked it up (Owner empty or `owner`).
   - `in_progress`: an agent is working on it now. Owner is that agent; ETA is required.
@@ -42,9 +43,10 @@
   registered worktree or open PR whose branch or task folder matches the row's owner or id); otherwise empty.
   Never invent one. The board pane does not display it.
 - ETA is `YYYY-MM-DD HH:MM <timezone>` (a timezone abbreviation such as `ICT`, or an offset such as `+07:00`), or empty.
-- Existing IDs are kept verbatim (numbers, `PZ-001`, `CF-…`). A repeated ID is renumbered to the next free one, with
-  the old ID noted in Notes. Checklist items without an ID get new IDs `<REPOPREFIX>-<n>`, continuing from the
-  board's highest number.
+- Existing numeric IDs are kept. Any non-numeric ID (`PZ-001`, `CF-3`, `12a`, `1.2`, ...) is renumbered to the next
+  free integer, continuing from the board's highest numeric ID in file order; its Notes gain `Was <old ID>.` and
+  every reference to it (Depends, `Superseded by`, `<epic>.<old>` mentions in Notes) is rewritten. Checklist items
+  without an ID get the next free integers. A repeated ID is renumbered the same way.
 - Repos may enforce their board format in CI (a checker script run by a workflow). The formatting change must
   migrate those checkers, their tests and the documented conventions in the same PR, run them locally and wait for
   CI; if a checker cannot be migrated safely, change nothing.
