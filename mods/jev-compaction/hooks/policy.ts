@@ -41,9 +41,9 @@ export type Config = {
 }
 
 export const DEFAULTS: Config = {
-  triggerTokens: 400_000,
-  targetTokens: 256_000,
-  hardTokens: 500_000,
+  triggerTokens: 200_000,
+  targetTokens: 120_000,
+  hardTokens: 250_000,
   triggerPercent: 60,
   targetPercent: 40,
   hardPercent: 85,

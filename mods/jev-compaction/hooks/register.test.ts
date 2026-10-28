@@ -24,6 +24,8 @@ type Setup = {
 }
 
 const KEY = 'k-secret-123'
+// The 0.2 thresholds: tests that check mechanics at 400k to 500k keep them, independent of the defaults.
+const OLD = { triggerTokens: 400_000, targetTokens: 256_000, hardTokens: 500_000 }
 const BUILTIN: Message = { role: 'user', text: 'BUILTIN SUMMARY', toolUses: [] }
 
 // A transcript of `calls` tool calls with 30k-character results between a first message and a six-message tail.
@@ -114,7 +116,7 @@ test('soft compaction is applied when Jev frees enough, with the documented requ
   expect([...toasts, ...logs].join('\n')).not.toContain(KEY)
 })
 
-test('soft compaction is deferred when Jev keeps everything, and scores are reused next time', async ($, on) => {
+test('soft compaction is deferred when Jev keeps everything, and scores are reused next time', { options: OLD }, async ($, on) => {
   const { requests, toasts } = await boot($, on, { p: 1 })
   const first = await compact($, 'plugin')
   expect(first.skip).toMatch(/deferred/)
@@ -212,7 +214,7 @@ test('hard ceiling: /jev-compact now falls back to the built-in summary above th
   expect((await compact($, 'manual')).skip).toMatch(/deferred/)
 })
 
-test('auto: applied below the hard limit, built-in summary above it', async ($, on) => {
+test('auto: applied below the hard limit, built-in summary above it', { options: OLD }, async ($, on) => {
   await boot($, on, { p: 0, tokens: 600_000 })
   expect(isBuiltin(await compact($, 'auto'))).toBe(false)
 })
@@ -232,7 +234,7 @@ test('manual: built-in summary when Jev keeps everything', async ($, on) => {
   expect(isBuiltin(await compact($, 'manual'))).toBe(true)
 })
 
-test('no key: soft defers, auto and manual fall back, and Jev is never called', async ($, on) => {
+test('no key: soft defers, auto and manual fall back, and Jev is never called', { options: OLD }, async ($, on) => {
   const { requests, toasts } = await boot($, on, { env: { HOME: '/home/u' } })
   expect((await compact($, 'plugin')).skip).toMatch(/no Jev API key/)
   expect(isBuiltin(await compact($, 'auto'))).toBe(true)
@@ -241,7 +243,7 @@ test('no key: soft defers, auto and manual fall back, and Jev is never called', 
   expect(toasts.length).toBe(3)
 })
 
-test('a Jev error defers a soft compaction, falls back otherwise, and the key stays out of every message', async ($, on) => {
+test('a Jev error defers a soft compaction, falls back otherwise, and the key stays out of every message', { options: OLD }, async ($, on) => {
   const { toasts, logs } = await boot($, on, { status: 500 })
   const soft = await compact($, 'plugin')
   expect(soft.skip).toMatch(/Jev request failed \(500\)/)
@@ -284,7 +286,7 @@ test('/jev-compact stats reports the session totals', async ($, on) => {
 
 const reply = () => ({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' }) as never
 
-test('periodic trigger: compacts at the trigger, not below, and waits for 50000 tokens of regrowth after an attempt', async ($, on) => {
+test('periodic trigger: compacts at the trigger, not below, and waits for 50000 tokens of regrowth after an attempt', { options: OLD }, async ($, on) => {
   const { compactCalls, usage } = await boot($, on, { core: () => ({ skip: 'deferred by test' }) })
   const turn = async (tokens: number) => {
     usage.tokens = tokens
@@ -335,6 +337,22 @@ test('calibration: the real count after an applied compaction sets the ratio, an
   expect(Math.abs(after(toasts.at(-1)) - (466 - (2.5 * raw) / 1000))).toBeLessThanOrEqual(2)
 })
 
+test('default thresholds: a 1M session compacts from 200k, and at 250k the regrowth guard no longer waits', async ($, on) => {
+  const { compactCalls, usage } = await boot($, on, { core: () => ({ skip: 'deferred by test' }) })
+  const turn = async (tokens: number) => {
+    usage.tokens = tokens
+    await $.turn.complete(reply())
+  }
+  await turn(199_000)
+  expect(compactCalls.length).toBe(0)
+  await turn(200_000)
+  expect(compactCalls.length).toBe(1)
+  await turn(249_000)
+  expect(compactCalls.length).toBe(1)
+  await turn(250_000)
+  expect(compactCalls.length).toBe(2)
+})
+
 test('periodic trigger on a small window uses percentages', async ($, on) => {
   const { compactCalls, usage } = await boot($, on, { window: 200_000 })
   usage.window = 200_000
@@ -368,7 +386,7 @@ const settle = async (clock: { advance: (ms: number) => Promise<void> }, done: (
   for (let i = 0; i < 40 && !done(); i++) await clock.advance(100)
 }
 
-test('a Jev request that never answers times out: soft defers, auto and manual fall back', { options: { jevTimeoutMs: 50 } }, async ($, on) => {
+test('a Jev request that never answers times out: soft defers, auto and manual fall back', { options: { ...OLD, jevTimeoutMs: 50 } }, async ($, on) => {
   const { clock, requests } = await boot($, on, { hang: true })
   for (const [trigger, check] of [
     ['plugin', (r: { messages?: Message[]; skip?: string }) => expect(r.skip).toMatch(/timed out after 50 ms/)],
@@ -384,7 +402,7 @@ test('a Jev request that never answers times out: soft defers, auto and manual f
   expect(requests).toEqual([])
 })
 
-test('/compact with instructions goes to the built-in summary; a possibly cut transcript defers the soft compaction and leaves auto and manual to it', async ($, on) => {
+test('/compact with instructions goes to the built-in summary; a possibly cut transcript defers the soft compaction and leaves auto and manual to it', { options: OLD }, async ($, on) => {
   const { requests } = await boot($, on, { p: 0 })
   expect(isBuiltin(await compact($, 'manual', { instructions: 'keep the plan' }))).toBe(true)
   const many = Array.from({ length: 4096 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'x', toolUses: [] }))
@@ -424,7 +442,7 @@ test('with an image in a user message no user text is abridged', async ($, on) =
   expect(r.messages.some((m) => m.handle === 'long')).toBe(true)
 })
 
-test('pre-scoring: a finished turn within 100k of the trigger scores part of the backlog off the critical path, and remembers it', async ($, on) => {
+test('pre-scoring: a finished turn within 100k of the trigger scores part of the backlog off the critical path, and remembers it', { options: OLD }, async ($, on) => {
   const { requests, usage, logs, compactCalls, clock } = await boot($, on, { p: 0.9, rows: transcript(40) })
   usage.tokens = 250_000
   await $.turn.complete(reply())
@@ -439,7 +457,7 @@ test('pre-scoring: a finished turn within 100k of the trigger scores part of the
   expect(compactCalls.length).toBe(0)
 })
 
-test('pre-scoring is throttled: five turns at 350k with a new tool pair each make at most one request', async ($, on) => {
+test('pre-scoring is throttled: five turns at 350k with a new tool pair each make at most one request', { options: OLD }, async ($, on) => {
   const rows = transcript(40)
   const { requests, usage, clock } = await boot($, on, { p: 0.9, rows, hang: false })
   usage.tokens = 350_000

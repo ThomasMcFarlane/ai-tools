@@ -4,14 +4,23 @@ import { keyFromFile, parseEnvFile, redact } from './key'
 import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, rawFreed, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Judgement } from './policy'
 
+// The 0.2 thresholds: the tests below were written against them and check the mechanics, not the defaults.
+const WIDE = { ...DEFAULTS, triggerTokens: 400_000, targetTokens: 256_000, hardTokens: 500_000 }
+
 describe('thresholds', () => {
   test('a 1M window uses the absolute token defaults', () => {
-    expect(thresholdsFor(DEFAULTS, 1_000_000)).toEqual({ trigger: 400_000, target: 256_000, hard: 500_000, softMinFreed: 30_000 })
+    expect(thresholdsFor(DEFAULTS, 1_000_000)).toEqual({ trigger: 200_000, target: 120_000, hard: 250_000, softMinFreed: 30_000 })
+  })
+  test('the defaults act before the engine: target below trigger below hard limit, all under its auto point (~366k on a 400k autoCompactWindow)', () => {
+    const t = thresholdsFor(DEFAULTS, 1_000_000)
+    expect(t.target).toBeLessThan(t.trigger)
+    expect(t.trigger).toBeLessThan(t.hard)
+    expect(t.hard).toBeLessThan(366_000)
   })
   test('a small window uses percentages', () => {
     expect(thresholdsFor(DEFAULTS, 200_000)).toEqual({ trigger: 120_000, target: 80_000, hard: 170_000, softMinFreed: 50_000 })
     expect(thresholdsFor(DEFAULTS, 300_000).trigger).toBe(180_000)
-    expect(thresholdsFor(DEFAULTS, 300_001).trigger).toBe(400_000)
+    expect(thresholdsFor(DEFAULTS, 300_001).trigger).toBe(200_000)
   })
   test('userConfig numbers override the defaults, junk is ignored', () => {
     const config = resolveConfig({ triggerTokens: 350_000, minFreedTokens: 'x', model: 'jev-x', keyFile: '' })
@@ -23,7 +32,7 @@ describe('thresholds', () => {
 })
 
 describe('periodic trigger and regrowth guard', () => {
-  const t = thresholdsFor(DEFAULTS, 1_000_000)
+  const t = thresholdsFor(WIDE, 1_000_000)
   test('fires at the trigger, not below', () => {
     expect(shouldTrigger(399_999, t, 0, 25_000)).toBe(false)
     expect(shouldTrigger(400_000, t, 0, 25_000)).toBe(true)
@@ -61,7 +70,7 @@ describe('policy levels', () => {
     isNow: false,
     tokensBefore: 420_000,
     tokensAfter: 300_000,
-    thresholds: thresholdsFor(DEFAULTS, 1_000_000),
+    thresholds: thresholdsFor(WIDE, 1_000_000),
     minFreedTokens: 20_000,
   }
   test('soft: applied when it reaches the target', () => {
