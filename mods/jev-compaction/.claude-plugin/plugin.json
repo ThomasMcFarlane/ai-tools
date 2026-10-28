@@ -1,6 +1,6 @@
 {
   "name": "jev-compaction",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "Thomas McFarlane"
   },
@@ -246,6 +246,48 @@
       "type": "string",
       "title": "Goal",
       "description": "Ongoing task description given to Jev; default the last user prompts.",
+      "required": false
+    },
+    "rotate": {
+      "type": "boolean",
+      "title": "Rotation: automatic trigger",
+      "description": "Rotate the session in place when it is due (after rotateAfterHours, or after rotateHighTurns turns at rotateHighTokens or more): the model writes a handover, then old messages are replaced by it. Off by default; `/jev-compact rotate dry` previews and `/jev-compact rotate` applies one rotation by hand.",
+      "default": false,
+      "required": false
+    },
+    "rotateAfterHours": {
+      "type": "number",
+      "title": "Rotation: hours",
+      "description": "Rotate once this many hours have passed since the session started or last rotated.",
+      "default": 72,
+      "required": false
+    },
+    "rotateHighTurns": {
+      "type": "number",
+      "title": "Rotation: high turns",
+      "description": "Rotate after this many main turns at rotateHighTokens or more since the last rotation.",
+      "default": 100,
+      "required": false
+    },
+    "rotateHighTokens": {
+      "type": "number",
+      "title": "Rotation: high-turn size (tokens)",
+      "description": "A main turn ending at this many context tokens or more counts as a high turn.",
+      "default": 250000,
+      "required": false
+    },
+    "rotateKeepMessages": {
+      "type": "number",
+      "title": "Rotation: messages kept",
+      "description": "How many of the newest messages a rotation keeps beside the first message and the handover (never fewer than 10).",
+      "default": 40,
+      "required": false
+    },
+    "rotateBudgetTokens": {
+      "type": "number",
+      "title": "Rotation: kept-message budget (tokens)",
+      "description": "Estimated tokens the kept messages may use; above it fewer are kept, down to 10.",
+      "default": 40000,
       "required": false
     }
   }
