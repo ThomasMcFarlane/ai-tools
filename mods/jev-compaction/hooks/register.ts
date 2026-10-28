@@ -517,7 +517,8 @@ async function onHandover($: EngineInterface, input: Record<string, unknown>): P
   const h = parseHandover(input)
   if (typeof h === 'string') return `error: ${h}; call the tool again with every field`
   const rot = await readRotation($)
-  if (!rot.phase) return 'error: no rotation is waiting for a handover; call this tool only when jev-compaction asks for one'
+  // Not before the request: a phase started by /jev-compact rotate asks only at the next turn end.
+  if (!rot.phase?.asked) return 'error: no rotation is waiting for a handover; call this tool only when jev-compaction asks for one'
   const handoffPath = `${h.handoverDir}/HANDOFF.md`
   const promptsPath = `${h.handoverDir}/PROMPTS.md`
   await $.fs.write(promptsPath, promptsFile((await $.state.get(LEDGER)).value ?? []))
@@ -572,6 +573,7 @@ export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: 
       agents,
       shells: unfinishedShells(e.messages),
       when: await $.clock.now(),
+      dry,
       config,
     }
     const readPrompts = () => $.fs.read(h.promptsPath).then((t) => String(t), () => undefined)
