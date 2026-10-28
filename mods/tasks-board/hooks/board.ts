@@ -953,3 +953,39 @@ export const shouldLaunchFix = (a: {
   record: { at: number } | undefined
   now: number
 }): boolean => a.autofix && !a.canonical && a.repo !== undefined && (a.record === undefined || a.now - a.record.at >= FIX_WINDOW_MS)
+
+/**
+ * Sets the ETA cell of one row (reference `<epic>.<task>`) in a canonical epic table and nothing else. Returns the new text and
+ * the changed line (for a patch write), or an error naming what was not found.
+ */
+export function setEta(text: string, ref: string, eta: string): { text: string; at: number; was: string; now: string } | { error: string } {
+  const m = /^([1-9]\d*)\.([1-9]\d*)$/.exec(ref.trim())
+  if (!m) return { error: `"${ref}" is not a task reference <epic>.<task>` }
+  const lines = text.split('\n')
+  let epic = ''
+  let cols: { id: number; eta: number } | undefined
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const h = /^##\s+(\d+)\.\s/.exec(line)
+    if (h) {
+      epic = h[1]!
+      cols = undefined
+      continue
+    }
+    if (!line.startsWith('|') || /^[\s|:-]+$/.test(line)) continue
+    const pipes: number[] = []
+    for (let k = 0; k < line.length; k++) if (line[k] === '|' && line[k - 1] !== '\\') pipes.push(k)
+    const cell = (c: number) => (c >= 0 && c + 1 < pipes.length ? line.slice(pipes[c]! + 1, pipes[c + 1]) : undefined)
+    const names = pipes.slice(0, -1).map((_, c) => cell(c)!.trim())
+    if (names.some(n => /^id$/i.test(n)) && names.some(n => /^eta$/i.test(n))) {
+      cols = { id: names.findIndex(n => /^id$/i.test(n)), eta: names.findIndex(n => /^eta$/i.test(n)) }
+      continue
+    }
+    if (epic !== m[1] || !cols || cell(cols.id)?.trim() !== m[2]) continue
+    if (cell(cols.eta) === undefined) return { error: `row ${ref} has no ETA cell` }
+    const now = `${line.slice(0, pipes[cols.eta]! + 1)} ${eta} ${line.slice(pipes[cols.eta + 1]!)}`
+    lines[i] = now
+    return { text: lines.join('\n'), at: i, was: line, now }
+  }
+  return { error: `no row ${ref} in the board` }
+}
