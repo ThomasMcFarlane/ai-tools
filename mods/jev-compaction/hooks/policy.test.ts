@@ -1,17 +1,26 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { keyFromFile, parseEnvFile, redact } from './key'
-import { DEFAULTS, estimateAfter, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, rawFreed, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Judgement } from './policy'
+
+// The 0.2 thresholds: the tests below were written against them and check the mechanics, not the defaults.
+const WIDE = { ...DEFAULTS, triggerTokens: 400_000, targetTokens: 256_000, hardTokens: 500_000 }
 
 describe('thresholds', () => {
   test('a 1M window uses the absolute token defaults', () => {
-    expect(thresholdsFor(DEFAULTS, 1_000_000)).toEqual({ trigger: 400_000, target: 256_000, hard: 500_000, softMinFreed: 100_000 })
+    expect(thresholdsFor(DEFAULTS, 1_000_000)).toEqual({ trigger: 200_000, target: 120_000, hard: 250_000, softMinFreed: 30_000 })
+  })
+  test('the defaults act before the engine: target below trigger below hard limit, all under its auto point (~366k on a 400k autoCompactWindow)', () => {
+    const t = thresholdsFor(DEFAULTS, 1_000_000)
+    expect(t.target).toBeLessThan(t.trigger)
+    expect(t.trigger).toBeLessThan(t.hard)
+    expect(t.hard).toBeLessThan(366_000)
   })
   test('a small window uses percentages', () => {
     expect(thresholdsFor(DEFAULTS, 200_000)).toEqual({ trigger: 120_000, target: 80_000, hard: 170_000, softMinFreed: 50_000 })
     expect(thresholdsFor(DEFAULTS, 300_000).trigger).toBe(180_000)
-    expect(thresholdsFor(DEFAULTS, 300_001).trigger).toBe(400_000)
+    expect(thresholdsFor(DEFAULTS, 300_001).trigger).toBe(200_000)
   })
   test('userConfig numbers override the defaults, junk is ignored', () => {
     const config = resolveConfig({ triggerTokens: 350_000, minFreedTokens: 'x', model: 'jev-x', keyFile: '' })
@@ -23,7 +32,7 @@ describe('thresholds', () => {
 })
 
 describe('periodic trigger and regrowth guard', () => {
-  const t = thresholdsFor(DEFAULTS, 1_000_000)
+  const t = thresholdsFor(WIDE, 1_000_000)
   test('fires at the trigger, not below', () => {
     expect(shouldTrigger(399_999, t, 0, 25_000)).toBe(false)
     expect(shouldTrigger(400_000, t, 0, 25_000)).toBe(true)
@@ -61,7 +70,7 @@ describe('policy levels', () => {
     isNow: false,
     tokensBefore: 420_000,
     tokensAfter: 300_000,
-    thresholds: thresholdsFor(DEFAULTS, 1_000_000),
+    thresholds: thresholdsFor(WIDE, 1_000_000),
     minFreedTokens: 20_000,
   }
   test('soft: applied when it reaches the target', () => {
@@ -85,8 +94,8 @@ describe('policy levels', () => {
     expect(judge({ ...base, trigger: 'auto', thresholds: small, tokensBefore: 167_000, tokensAfter: 167_000 }).act).toBe('next')
   })
   test('soft: freeing less than the soft minimum above the target is deferred, enough is applied', () => {
-    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 330_000 }).act).toBe('skip')
-    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 320_000 }).act).toBe('apply')
+    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 390_001 }).act).toBe('skip')
+    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 390_000 }).act).toBe('apply')
   })
   test('manual: applied when it frees the minimum, else built-in summary', () => {
     expect(judge({ ...base, trigger: 'manual', tokensAfter: 399_999 }).act).toBe('apply')
@@ -125,6 +134,24 @@ describe('policy levels', () => {
     expect(estimateAfter(400_000, 350_000, 250_000)).toBe(371_429)
     expect(estimateAfter(400_000, 0, 0)).toBe(400_000)
     expect(estimateAfter(10_000, 900_000, 0)).toBe(0)
+  })
+  test('the ratio scales the tokens freed', () => {
+    expect(Math.round(rawFreed(350_000, 250_000))).toBe(28_571)
+    expect(estimateAfter(400_000, 350_000, 250_000, DEFAULT_RATIO)).toBe(342_857)
+    expect(estimateAfter(400_000, 350_000, 250_000, 3)).toBe(314_286)
+  })
+  test('calibration: the live gap (~33k estimated, ~108k real) moves the ratio towards the real one, step by step', () => {
+    // 302k before, raw estimate 33k: the next request showed 194k
+    const once = calibrate(DEFAULT_RATIO, 302_000, 33_000, 194_000)
+    expect(once).toBe((2 + 108_000 / 33_000) / 2)
+    expect(calibrate(once, 302_000, 33_000, 194_000)).toBeGreaterThan(once)
+    expect(estimateAfter(302_000, 33_000 * 3.5, 0, calibrate(once, 302_000, 33_000, 194_000))).toBeLessThan(210_000)
+  })
+  test('calibration: a low reading holds the ratio at 1 or more, a /clear or a tiny estimate is ignored, 6 is the ceiling', () => {
+    expect(calibrate(1, 300_000, 30_000, 299_000)).toBe(1)
+    expect(calibrate(2, 300_000, 30_000, 5_000)).toBe(2)
+    expect(calibrate(2, 300_000, 4_000, 250_000)).toBe(2)
+    expect(calibrate(6, 300_000, 30_000, 60_000)).toBe(6)
   })
 })
 

@@ -24,6 +24,8 @@ declare module 'claude-code' {
       stats: JevCompactionStats
       // context tokens of the last attempt that did not reach the target; 0 when none
       guard: number
+      // real tokens freed per token of the character estimate, learnt from the host's count after each applied compaction
+      ratio: number
       // whether the session is interactive, kept so a hot reload knows
       interactive: boolean
     }

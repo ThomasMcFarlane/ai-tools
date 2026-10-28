@@ -1,31 +1,31 @@
 {
   "name": "jev-compaction",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "author": {
     "name": "Thomas McFarlane"
   },
-  "description": "Periodic Jev-guided compaction of long sessions: prunes stale tool calls and results and shortens old message text to keep a 1M-context session in a 256k-400k band.",
+  "description": "Periodic Jev-guided compaction of long sessions: prunes stale tool calls and results and shortens old message text to keep a 1M-context session in a 120k-200k band, below the engine's own auto-compaction.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "triggerTokens": {
       "type": "number",
       "title": "Trigger (tokens)",
       "description": "Windows over 300k tokens: start a periodic compaction when the context reaches this many tokens.",
-      "default": 400000,
+      "default": 200000,
       "required": false
     },
     "targetTokens": {
       "type": "number",
       "title": "Target (tokens)",
       "description": "Windows over 300k tokens: a periodic compaction is applied when it brings the context to this size or less.",
-      "default": 256000,
+      "default": 120000,
       "required": false
     },
     "hardTokens": {
       "type": "number",
       "title": "Hard limit (tokens)",
       "description": "Windows over 300k tokens: at or above this size a compaction that does not end below it falls back to the built-in summary.",
-      "default": 500000,
+      "default": 250000,
       "required": false
     },
     "triggerPercent": {
@@ -60,7 +60,7 @@
       "type": "number",
       "title": "Periodic minimum freed (tokens)",
       "description": "Windows over 300k tokens: a periodic compaction that misses the target is applied only if it frees this many tokens (a rewrite costs a prompt-cache miss).",
-      "default": 100000,
+      "default": 30000,
       "required": false
     },
     "softMinFreedPercent": {
@@ -164,7 +164,7 @@
     "textCompression": {
       "type": "boolean",
       "title": "Compress old text",
-      "description": "During a compaction, cut padding, pleasantries and joining words from old text (user text only by the word filter) and let Jev drop sentences that carry nothing from long assistant messages.",
+      "description": "During a compaction, cut padding, pleasantries and joining words from old assistant text (user text stays verbatim) and let Jev drop sentences that carry nothing from long assistant messages.",
       "default": true,
       "required": false
     },
