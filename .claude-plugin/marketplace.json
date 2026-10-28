@@ -23,6 +23,11 @@
       "name": "jev-skills",
       "source": "./mods/jev-skills",
       "description": "Replaces the built-in skill listing with a Jev-picked shortlist per prompt, in a way that keeps the prompt cache valid."
+    },
+    {
+      "name": "context-diet",
+      "source": "./mods/context-diet",
+      "description": "Cuts repeated hook boilerplate: the caveman per-prompt reminder on every 10th prompt only, and short post-compaction SessionStart texts."
     }
   ]
 }
