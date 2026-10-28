@@ -112,5 +112,12 @@ Agents update the board as work goes, not at the end of the session.
   and on completion (`done` plus evidence).
 - Every `in_progress` and `in_review` row carries an ETA in `YYYY-MM-DD HH:MM <TZ>`. Revise it as soon as it
   slips; an open row with an ETA in the past is wrong and must be updated.
+- Set and refresh ETAs with the `eta` tool (`mcp__tasks-board__eta`, arguments `task` as `<epic>.<task>` and `eta` as
+  `+45m`, `+2h`, `14:30` or `YYYY-MM-DD HH:MM`, read as ICT). It edits only that row's ETA cell. The band above the
+  prompt shows each open row of the session with its ETA in ICT and UK time (BST or GMT, with the date when it
+  crosses midnight) and the time left, in red once the ETA has passed and in yellow when an `in_progress` row has not
+  changed for `staleMinutes` (default 30). It holds at most 4 lines and is hidden on terminals under 20 rows. A row
+  with a passed, stale or missing ETA is nudged in the next prompt's context, at most once per row per 15 minutes.
+  Everything is local: no network and no telemetry.
 - Add a row as soon as new work is discovered; never leave follow-up work only in chat, logs or PR comments.
 - Clear the blocker fields when unblocked.
