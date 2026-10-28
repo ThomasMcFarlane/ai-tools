@@ -72,9 +72,23 @@ Without a key a compaction is deferred (periodic) or left to the built-in summar
 - **Score memory.** Jev's probabilities are kept per session in `$.state`, keyed by a fingerprint of the tool and its input (for text: role and a hash of the text). A remembered score is reused unless it lies within 0.15 of a threshold it matters for.
 - **Reporting.** Every outcome is shown as a toast and a log line: sizes before and after, kept, truncated, dropped, abridged and stubbed counts, sentences dropped, characters saved by word compression and the number of Jev requests; or the reason for a deferral or fallback.
 
+## Session rotation
+
+A long session can also be **rotated in place**: the conversation becomes its first message, one built `ROTATION HANDOVER` message and the newest messages. It is a compaction, so the session id stays and background agents, task notifications, crons, `--resume` and task ownership survive. Rotation never falls through to the built-in summary: it applies or it skips.
+
+**The automatic trigger is off by default** (`rotate` false). Preview first with `/jev-compact rotate dry`, read `HANDOFF.preview.md` against the transcript, then rotate by hand with `/jev-compact rotate` or turn `rotate` on.
+
+1. **Ledger.** Every prompt the person sends from the composer or the Remote Control bridge (not meta prompts, peers, notifications or plugins) is kept verbatim in the session state. The first rotation of a process also reads the prompts from before that out of the transcript jsonl: `grep` streams the file and passes only user rows, so a transcript of any size is never read whole.
+2. **Handover.** When a main turn ends and a rotation is due (with `rotate` on: `rotateAfterHours` (72) since the session started or last rotated, or `rotateHighTurns` (100) main turns at `rotateHighTokens` (250000) or more), or at the turn end after `/jev-compact rotate` (the host refuses a prompt from inside a command), the mod asks the model to call `mcp__jev-compaction__handover` with goal, open tasks (title, state, next step, TASKS.md row), pull requests, agents, pending questions, decisions, paths and `handoverDir`, a folder under `.data/<org>/<project>/scratch/`. The tool writes `HANDOFF.md` and `PROMPTS.md` (every ledger prompt verbatim) there. No call within 2 turns: the rotation is skipped with a toast and the next automatic one waits 20 more turns.
+3. **Rewrite.** At the end of the handover turn the mod compacts. The handover message holds the handover, standing rules verbatim (older prompts matching always, never, don't, from now on, must, remember, prefer or instead, plus those Jev rates 0.3 or more as a standing instruction still in force), every prompt since the last rotation verbatim (over 4000 characters: head and tail, pointing to `PROMPTS.md`), the live agents from `$.agent.list()`, unfinished background shells and monitors from the transcript, and the paths of both files. The newest `rotateKeepMessages` (40) messages are kept, the cut moved back so no tool_result loses its tool_use, fewer (down to 10) while they are estimated above `rotateBudgetTokens` (40000).
+4. **Verification gate** (deterministic, before anything is applied): every rule and every prompt since the last rotation in the handover, every ledger prompt in `PROMPTS.md` as read back, every live agent id and unfinished shell id, every pull request URL of the dropped messages, the last line of every unanswered assistant question in the newest 50 messages, a goal, no orphan tool_result, the first message kept. Missing items are appended once (and `PROMPTS.md` written again) and checked again; still failing, the rotation is skipped with a toast and a log line.
+
+`/jev-compact rotate dry` runs the same build and gate, writes `HANDOFF.preview.md` (the handover message and the gate's result) and applies nothing. In the phoenix-court-group identity (`CLAUDE_CONFIG_DIR` ending in `phoenix-court-group`) rotation is a hard no-op: no ledger, no tool, no trigger, no command. The ledger and rotation state live in `$.state`, so a restart reads the prompts back from the transcript at the next rotation, and the time of the last rotation from the handover message.
+
 ## Commands
 
 - `/jev-compact now` compacts when your next turn ends (the host refuses it inside a command), with the `/compact` policy. Below the hard limit it never falls back to the built-in summary: if it frees too little it defers and leaves the conversation as it is. At or above the hard limit, when its result would still end at or above it, it falls back to the built-in summary.
+- `/jev-compact rotate [dry]` rotates the session once (see Session rotation); with `dry` it writes `HANDOFF.preview.md` and applies nothing.
 - `/jev-compact stats` shows the session totals: compactions applied, deferred and handed to the built-in summary, estimated tokens freed, Jev requests, sentences dropped, characters saved by word compression and characters saved on entry.
 - At session start the mod logs the thresholds in force (`jev-compaction: thresholds: trigger ..., target ..., hard limit ...`), so a session that runs on the defaults because its stored options were lost is visible in the log. The host clears `pluginConfigs` options when a plugin is uninstalled, and a reinstall starts from the defaults.
 
@@ -102,6 +116,9 @@ All options have defaults and are set in the plugin's config menu.
 | `entryTimeoutMs`, `entryResultMinChars`                            | 3000, 12000                          | Jev timeout on entry; tool output size from which it is trimmed |
 | `entryTrimCommands`                                                | build, test, install and log runners | Regular expression for Bash commands whose output may be trimmed |
 | `model`, `keyFile`, `goal`                                         | `jev-latest`, see above, last prompts | Jev model, key file, ongoing-task description               |
+| `rotate`                                                           | false                                | Rotate automatically when due                               |
+| `rotateAfterHours`, `rotateHighTurns`, `rotateHighTokens`          | 72, 100, 250000                      | When a rotation is due                                      |
+| `rotateKeepMessages`, `rotateBudgetTokens`                         | 40, 40000                            | Newest messages a rotation keeps, and their token budget    |
 
 ## Jev request
 
@@ -109,7 +126,7 @@ One `POST https://api.typesafe.ai/v1/systemone` per batch of questions, with `au
 
 ## Development
 
-The library is a port of fast-jev-compaction (state fitting, batching, decisions), extended to message text, with the score memory and levels of the optim-jev compacter. It uses no npm packages and no Node: the hook runs in the mod environment and reaches Jev with `$.http.fetch`.
+The library is a port of fast-jev-compaction (state fitting, batching, decisions), extended to message text, with the score memory and levels of the optim-jev compacter. It uses no npm packages and no Node: the hook runs in the mod environment and reaches Jev with `$.http.fetch`. The rotation backfill runs `grep`, which must be on the PATH.
 
 ```
 claude plugin validate mods/jev-compaction

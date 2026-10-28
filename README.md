@@ -180,7 +180,7 @@ ai-tools/
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
 │   ├── plan-view/     # Claude Code plugin: docked markdown preview of Claude's plan and the .md files it mentions
-│   ├── jev-compaction/  # Claude Code plugin: periodic Jev-guided compaction of long sessions
+│   ├── jev-compaction/  # Claude Code plugin: periodic Jev-guided compaction and in-place rotation of long sessions
 │   ├── jev-skills/      # Claude Code plugin: Jev-picked skill shortlist instead of the full skill listing
 │   └── context-diet/    # Claude Code plugin: trims repeated caveman, ponytail and superpowers hook context
 ├── actions/
