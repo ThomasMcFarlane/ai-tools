@@ -1,4 +1,4 @@
-import type { EngineInterface, Next, Register, SessionAppendInput, SessionCompactInput, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, Next, Register, SessionAppendInput, SessionCompactInput, SessionCompactResult, TurnCompleteInput } from 'claude-code'
 
 import { compact, prescore } from './compact'
 import { rewriteRow } from './entry'
@@ -7,6 +7,8 @@ import { jevAsker } from './jev'
 import { DEFAULT_KEY_FILE, keyFromFile, redact } from './key'
 import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, failure, guardAfter, judge, rawFreed, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Config, Verdict } from './policy'
+import { buildRotation, handoffFile, isRule, lastRotationOf, ledgerFromPrompt, ledgerFromRow, lineSplitter, parseHandover, promptsFile, REQUEST_MARKER, rotationDue, standingRules, unfinishedShells, verifyRotation } from './rotate'
+import type { LedgerEntry, RotationInput } from './rotate'
 import { goalFromMessages, truncate } from './state'
 import type { CompactResult, Protect } from './types'
 
@@ -15,6 +17,8 @@ const STATS = { plugin: 'jev-compaction', key: 'stats' } as const
 const INTERACTIVE = { plugin: 'jev-compaction', key: 'interactive' } as const
 const GUARD = { plugin: 'jev-compaction', key: 'guard' } as const
 const RATIO = { plugin: 'jev-compaction', key: 'ratio' } as const
+const LEDGER = { plugin: 'jev-compaction', key: 'ledger' } as const
+const ROTATION = { plugin: 'jev-compaction', key: 'rotation' } as const
 // How long after `/jev-compact now` the next /compact still counts as that request.
 const NOW_VALID_MS = 60_000
 const MAX_SCORES = 3000
@@ -154,6 +158,17 @@ async function attempt($: EngineInterface, e: SessionCompactInput, key: string, 
 }
 
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
+  // The rotation's own compaction (or a plugin compaction once the handover is in): it applies or skips, and never
+  // falls through to the built-in summary.
+  if (e.agentId === undefined && (rotating || e.trigger === 'plugin')) {
+    const rot = rotating ? undefined : await readRotation($)
+    const dry = rotating?.dry ?? (rot?.phase && rot.handover ? rot.phase.dry : undefined)
+    if (dry !== undefined) {
+      if (Array.isArray(e.messages)) return onRotate($, e, dry)
+      notify($, 'rotation skipped: the compaction carried no transcript')
+      return { skip: 'jev-compaction: rotation skipped, no transcript' }
+    }
+  }
   if (e.agentId !== undefined || e.trigger === 'precompute' || !Array.isArray(e.messages)) return next(e)
   const now = isNow && Date.now() - nowAt < NOW_VALID_MS && (e.trigger === 'plugin' || e.trigger === 'manual')
   isNow = false
@@ -214,6 +229,7 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
   compacting = true
   try {
     const { tokens, window } = (await $.session.usage()).context
+    if (await rotationTurn($, tokens)) return next(e)
     if (tokens !== undefined) {
       const t = thresholdsFor(config, window)
       let { value: guard = 0 } = await $.state.get(GUARD)
@@ -381,7 +397,240 @@ async function onCommand($: EngineInterface, args: string) {
     nowPending = true
     return { text: 'jev-compaction: will compact when your next turn ends (the host does not allow it from inside a command).' }
   }
-  return { text: 'Usage: /jev-compact now | stats' }
+  if (word === 'rotate') {
+    if (await isRotationOff($)) return { text: 'jev-compaction: rotation is off in this identity.' }
+    interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
+    if (!interactive) return { text: 'jev-compaction: /jev-compact rotate is not available in a non-interactive (headless) session.' }
+    return { text: `jev-compaction: ${await startRotation($, args.trim().split(/\s+/)[1] === 'dry', false)}` }
+  }
+  return { text: 'Usage: /jev-compact now | stats | rotate [dry]' }
+}
+
+// ---- Session rotation (hooks/rotate.ts holds the pure parts) ----
+
+const HANDOVER_TOOL = 'mcp__jev-compaction__handover'
+const LIVE = new Set(['pending', 'running', 'waiting', 'idle'])
+// A handover not given within this many main turns of the request is given up on; the next try waits 20 more turns.
+const PHASE_TURNS = 2
+const RETRY_TURNS = 20
+// Jev is asked about this many of the older prompts the rule regex does not match, the newest.
+const JEV_RULE_PROMPTS = 60
+const RULE_CONTEXT =
+  'A long coding session is being rotated: its old messages are replaced by a handover. `history` holds earlier prompts of the person, each by index `i`. Each question asks whether one prompt is a standing instruction (a rule about how to work, a preference, a prohibition) that is still in force, as opposed to a one-off task.'
+const HANDOVER_SCHEMA = {
+  type: 'object',
+  properties: {
+    goal: { type: 'string', description: 'What the session is working towards now.' },
+    openTasks: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, state: { type: 'string' }, next: { type: 'string', description: 'The next step.' }, row: { type: 'string', description: 'Its TASKS.md row, or "none".' } }, required: ['title', 'state', 'next', 'row'] } },
+    prs: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, state: { type: 'string' } }, required: ['url', 'state'] } },
+    agents: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, purpose: { type: 'string' }, onResult: { type: 'string', description: 'What to do with its result.' } }, required: ['id', 'purpose', 'onResult'] } },
+    pendingQuestions: { type: 'array', items: { type: 'string' }, description: 'Questions to the person not answered yet.' },
+    decisions: { type: 'array', items: { type: 'string' }, description: 'Decisions made and still in force.' },
+    paths: { type: 'array', items: { type: 'string' }, description: 'Files and folders the work depends on.' },
+    handoverDir: { type: 'string', description: 'A new folder under .data/<org>/<project>/scratch/ for HANDOFF.md and PROMPTS.md.' },
+  },
+  required: ['goal', 'openTasks', 'prs', 'agents', 'pendingQuestions', 'decisions', 'paths', 'handoverDir'],
+}
+
+const handoverPrompt = (dry: boolean) =>
+  `${REQUEST_MARKER}${dry ? ' (dry run: nothing will be applied)' : ''}\n\njev-compaction is about to rotate this session: the messages between the first one and the newest will be replaced by a handover built from your answer, and what it does not hold is lost. Call the ${HANDOVER_TOOL} tool now, once, and do nothing else this turn. Fill every field from the whole conversation: goal; openTasks (title, state, next step and TASKS.md row of every open task); prs (URL and state of every pull request still relevant); agents (id, purpose and what to do with the result of every background agent still running or idle); pendingQuestions (every question to the person not answered yet); decisions (decisions made and still in force); paths (files and folders the work depends on); handoverDir (a new folder under .data/<org>/<project>/scratch/, such as .data/<org>/<project>/scratch/<YYYYMMDD>-rotation). Be specific.`
+
+// True in the phoenix-court-group identity, where rotation does nothing at all: no ledger, no tool, no trigger.
+let rotationOff: boolean | undefined
+// Set while the compaction this mod asked for is a rotation.
+let rotating: { dry: boolean } | undefined
+
+async function isRotationOff($: EngineInterface): Promise<boolean> {
+  rotationOff ??= /(^|\/)phoenix-court-group\/*$/.test((await $.env.get('CLAUDE_CONFIG_DIR')) ?? '')
+  return rotationOff
+}
+
+const readRotation = async ($: EngineInterface) => ({ turns: 0, highTurns: 0, ...(await $.state.get(ROTATION)).value })
+
+/** The session's transcript jsonl: under the project folder named after the root, else whichever project holds it. */
+async function transcriptPath($: EngineInterface): Promise<string | undefined> {
+  const base = `${(await $.env.get('CLAUDE_CONFIG_DIR')) || `${(await $.env.get('HOME')) ?? ''}/.claude`}`.replace(/\/+$/, '')
+  const id = await $.session.id()
+  const guess = `${base}/projects/${(await $.session.root()).replace(/[^A-Za-z0-9]/g, '-')}/${id}.jsonl`
+  if (await $.fs.exists(guess)) return guess
+  for (const d of await $.fs.list(`${base}/projects`)) {
+    const path = `${base}/projects/${d.name}/${id}.jsonl`
+    if (d.kind === 'dir' && (await $.fs.exists(path))) return path
+  }
+  return undefined
+}
+
+/**
+ * The ledger with the prompts sent before it started, read from the transcript. grep streams the file and passes the
+ * user rows alone; the transcript can be hundreds of megabytes, far over what `$.fs.read` takes.
+ */
+async function backfill($: EngineInterface, ledger: LedgerEntry[]): Promise<LedgerEntry[]> {
+  const path = await transcriptPath($)
+  if (!path) throw new Error('transcript not found')
+  const before = ledger[0]?.at ?? Infinity
+  const found: LedgerEntry[] = []
+  const lines = lineSplitter((line) => {
+    const entry = ledgerFromRow(line)
+    if (entry && entry.at < before) found.push(entry)
+  })
+  for await (const chunk of $.process.spawn({ argv: ['grep', '-F', '"type":"user"', path] })) if (chunk.stream === 'stdout') lines.feed(chunk.text)
+  lines.end()
+  return [...found, ...ledger]
+}
+
+/**
+ * Phase 1: the ledger complete, the handover tool declared, and the prompt asking the model to call it. The host
+ * refuses `$.prompt.submit` inside a command, so from `/jev-compact rotate` the prompt goes at the next turn end.
+ */
+async function startRotation($: EngineInterface, dry: boolean, ask: boolean): Promise<string> {
+  const rot = await readRotation($)
+  if (rot.phase) return 'a rotation is already waiting for its handover.'
+  if (!rot.backfilled) {
+    try {
+      await $.state.set(LEDGER, await backfill($, (await $.state.get(LEDGER)).value ?? []))
+    } catch (err) {
+      // Without the older prompts the rotation would lose them: no rotation.
+      notify($, `rotation not started: ledger backfill failed: ${message(err)}`)
+      await $.state.set(ROTATION, { ...rot, retryAt: rot.turns + RETRY_TURNS })
+      return `rotation not started: ledger backfill failed: ${message(err)}`
+    }
+  }
+  await $.tool.register({ name: 'handover', description: 'Write the rotation handover (HANDOFF.md and PROMPTS.md). Call it only when jev-compaction asks for a handover.', inputSchema: HANDOVER_SCHEMA, isDeferred: false })
+  await $.state.set(ROTATION, { ...rot, backfilled: true, phase: { dry, turns: 0, asked: ask }, handover: undefined })
+  if (ask) askForHandover($, dry)
+  const when = ask ? 'asked for a handover' : 'will ask for a handover when your next turn ends'
+  return dry ? `${when}; the dry run writes HANDOFF.preview.md and applies nothing.` : `${when}; the rotation runs when the handover turn ends.`
+}
+
+function askForHandover($: EngineInterface, dry: boolean) {
+  void $.prompt.submit({ text: handoverPrompt(dry) }).catch((err: unknown) => $.ui.log(`jev-compaction: handover prompt not sent: ${message(err)}`))
+}
+
+/** The handover tool: checks the fields, writes PROMPTS.md (and HANDOFF.md unless a dry run) and keeps the handover. */
+async function onHandover($: EngineInterface, input: Record<string, unknown>): Promise<string> {
+  if (await isRotationOff($)) return 'error: rotation is off in this identity'
+  const h = parseHandover(input)
+  if (typeof h === 'string') return `error: ${h}; call the tool again with every field`
+  const rot = await readRotation($)
+  const handoffPath = `${h.handoverDir}/HANDOFF.md`
+  const promptsPath = `${h.handoverDir}/PROMPTS.md`
+  await $.fs.write(promptsPath, promptsFile((await $.state.get(LEDGER)).value ?? []))
+  if (!rot.phase?.dry) await $.fs.write(handoffPath, handoffFile(h))
+  await $.state.set(ROTATION, { ...rot, handover: { ...h, handoffPath, promptsPath } })
+  return rot.phase?.dry ? `Handover saved for a dry run; prompts in ${promptsPath}. Nothing will be applied.` : `Handover saved to ${handoffPath}, prompts to ${promptsPath}. The rotation runs when this turn ends.`
+}
+
+/** Jev's probability that each older prompt the regex missed is a standing rule; nothing when Jev cannot be asked. */
+async function jevRules($: EngineInterface, older: readonly LedgerEntry[]): Promise<Record<number, number>> {
+  const asked = older.map((p, i) => ({ p, i })).filter(({ p }) => !isRule(p.text)).slice(-JEV_RULE_PROMPTS)
+  if (asked.length === 0) return {}
+  const key = await resolveKey($)
+  if (!key) return {}
+  const questions = Object.fromEntries(asked.map(({ i }) => [`rule_${i}`, { type: 'noul' as const, instructions: `Is prompt ${i} a standing instruction of the person that is still in force?` }]))
+  try {
+    const answers = await asker($, key, config.jevTimeoutMs, Date.now(), config.jevTimeoutMs)({ context: RULE_CONTEXT, goal: '', history: asked.map(({ p, i }) => ({ i, role: 'user', text: truncate(p.text, 1000) })) }, questions)
+    return Object.fromEntries(asked.map(({ i }) => [i, answers[`rule_${i}`] ?? 0]))
+  } catch (err) {
+    $.ui.log(`jev-compaction: rule scoring skipped: ${redact(message(err), key)}`)
+    return {}
+  }
+}
+
+/** Phase 2: build, verify and apply (or, on a dry run, preview). Never the built-in summary. */
+async function onRotate($: EngineInterface, e: SessionCompactInput, dry: boolean): Promise<SessionCompactResult> {
+  try {
+    const rot = await readRotation($)
+    const h = rot.handover
+    if (!h) throw new Error('no handover')
+    const ledger = (await $.state.get(LEDGER)).value ?? []
+    const since = rot.rotatedAt ?? lastRotationOf(e.messages) ?? (await $.session.usage()).startedAt
+    const older = ledger.filter((p) => p.at < since)
+    const agents = (await $.agent.list()).filter((a) => LIVE.has(a.status)).map((a) => ({ id: a.id, description: a.description, status: a.status }))
+    const input: RotationInput = {
+      messages: e.messages,
+      handover: h,
+      handoffPath: h.handoffPath,
+      promptsPath: h.promptsPath,
+      recent: ledger.filter((p) => p.at >= since),
+      rules: standingRules(older, await jevRules($, older)),
+      agents,
+      shells: unfinishedShells(e.messages),
+      when: await $.clock.now(),
+      config,
+    }
+    const readPrompts = () => $.fs.read(h.promptsPath).then((t) => String(t), () => undefined)
+    let built = buildRotation(input)
+    let missing = verifyRotation(input, built, await readPrompts(), ledger)
+    if (missing.length > 0) {
+      // Once: append what can be appended, write PROMPTS.md again, and check again.
+      await $.fs.write(h.promptsPath, promptsFile(ledger)).catch(() => undefined)
+      built = buildRotation(input, missing.filter((m) => m.fixable).map((m) => m.item))
+      missing = verifyRotation(input, built, await readPrompts(), ledger)
+    }
+    const kept = `keeps the first message, the handover and the newest ${e.messages.length - built.start} of ${e.messages.length} messages`
+    const gate = missing.length > 0 ? `gate failed: ${missing.map((m) => m.item.slice(0, 200)).join('; ')}` : `gate passed; ${kept}`
+    if (dry) {
+      const path = `${h.handoverDir}/HANDOFF.preview.md`
+      await $.fs.write(path, `${built.text}\n\n## Dry run\n\n${missing.length > 0 ? `Gate failed:\n\n${missing.map((m) => `- ${m.item}`).join('\n')}` : `Gate passed; ${kept}.`}\n`)
+      notify($, `rotation dry run: preview at ${path}; ${missing.length > 0 ? 'gate failed' : 'gate passed'}; nothing applied`)
+      return { skip: `jev-compaction: rotation dry run, preview at ${path}` }
+    }
+    if (missing.length > 0) {
+      notify($, `rotation skipped: ${gate}`)
+      return { skip: `jev-compaction: rotation skipped, ${gate}` }
+    }
+    notify($, `rotated: ${kept}; handover in ${h.handoffPath}`)
+    return { messages: built.messages }
+  } catch (err) {
+    notify($, `rotation skipped: ${message(err)}`)
+    return { skip: `jev-compaction: rotation skipped, ${message(err)}` }
+  }
+}
+
+/** The rotation's part of a main turn end; true when it acted, so no periodic compaction runs at the same end. */
+async function rotationTurn($: EngineInterface, tokens: number | undefined): Promise<boolean> {
+  if (await isRotationOff($)) return false
+  const rot = await readRotation($)
+  rot.turns++
+  if (tokens !== undefined && tokens >= config.rotateHighTokens) rot.highTurns++
+  if (rot.phase) {
+    if (!rot.phase.asked) {
+      askForHandover($, rot.phase.dry)
+      rot.phase.asked = true
+    } else if (rot.handover) {
+      const dry = rot.phase.dry
+      rotating = { dry }
+      let result: SessionCompactResult | undefined
+      try {
+        result = await $.session.compact()
+      } catch (err) {
+        $.ui.log(`jev-compaction: rotation failed: ${message(err)}`)
+      } finally {
+        rotating = undefined
+      }
+      const applied = result !== undefined && !result.skip
+      if (applied) {
+        Object.assign(rot, { rotatedAt: await $.clock.now(), highTurns: 0, retryAt: undefined })
+        // Scores of the dropped rows are no use any more.
+        await $.state.set(SCORES, {})
+      } else if (!dry) rot.retryAt = rot.turns + RETRY_TURNS
+      Object.assign(rot, { phase: undefined, handover: undefined })
+    } else if (++rot.phase.turns >= PHASE_TURNS) {
+      notify($, `rotation skipped: no handover within ${PHASE_TURNS} turns; next try in ${RETRY_TURNS} turns`)
+      Object.assign(rot, { phase: undefined, retryAt: rot.turns + RETRY_TURNS })
+    }
+    await $.state.set(ROTATION, rot)
+    return true
+  }
+  if (config.rotate) {
+    // Read once a process: the last rotation (a resumed session's handover message says when), else the start.
+    rot.rotatedAt ??= lastRotationOf(await $.session.messages()) ?? (await $.session.usage()).startedAt
+  }
+  await $.state.set(ROTATION, rot)
+  if (!config.rotate || (rot.retryAt !== undefined && rot.turns < rot.retryAt)) return false
+  if (!rotationDue(await $.clock.now(), rot.rotatedAt ?? 0, rot.highTurns, config)) return false
+  await startRotation($, false, true)
+  return true
 }
 
 /** The thresholds in force, logged at session start, so a session running on the defaults shows. */
@@ -397,12 +646,14 @@ export const register: Register = (on, options) => {
   measuring = undefined
   cachedKey = undefined
   entryPausedUntil = 0
+  rotationOff = undefined
+  rotating = undefined
   on('session.start', async ($, e, next) => {
     interactive = (e as { isInteractive?: boolean }).isInteractive !== false
     await $.state.set(INTERACTIVE, interactive)
     $.ui.log(`jev-compaction: ${activeThresholds(config)}`)
     try {
-      await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now) or show totals (stats)', argumentHint: 'now | stats' })
+      await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now), show totals (stats), or rotate the session (rotate [dry])', argumentHint: 'now | stats | rotate [dry]' })
     } catch (err) {
       $.ui.log(`jev-compaction: command not registered: ${message(err)}`)
     }
@@ -412,4 +663,26 @@ export const register: Register = (on, options) => {
   on('session.append', ($, e, next) => onAppend($, e, next))
   on('session.compact', ($, e, next) => onCompact($, e, next))
   on('command.run', { command: 'jev-compact' }, ($, e) => onCommand($, e.args))
+  on('prompt.submit', async ($, e, next) => {
+    const text = ledgerFromPrompt(e)
+    if (text !== undefined) {
+      try {
+        if (!(await isRotationOff($))) {
+          const { value = [] } = await $.state.get(LEDGER)
+          // shortcut: the ledger grows for the session's life in $.state; cap it if a session's prompts reach megabytes.
+          await $.state.set(LEDGER, [...value, { at: await $.clock.now(), text }])
+        }
+      } catch (err) {
+        $.ui.log(`jev-compaction: prompt not recorded: ${message(err)}`)
+      }
+    }
+    return next(e)
+  })
+  on('tool.call', { tool: HANDOVER_TOOL }, async ($, e) => {
+    try {
+      return { result: await onHandover($, e as unknown as Record<string, unknown>) }
+    } catch (err) {
+      return { result: `error: ${message(err)}` }
+    }
+  })
 }

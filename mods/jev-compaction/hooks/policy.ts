@@ -38,6 +38,12 @@ export type Config = {
   entryTimeoutMs: number
   entryResultMinChars: number
   entryTrimCommands: string
+  rotate: boolean
+  rotateAfterHours: number
+  rotateHighTurns: number
+  rotateHighTokens: number
+  rotateKeepMessages: number
+  rotateBudgetTokens: number
 }
 
 export const DEFAULTS: Config = {
@@ -76,6 +82,13 @@ export const DEFAULTS: Config = {
   entryTimeoutMs: 3_000,
   entryResultMinChars: 12_000,
   entryTrimCommands: DEFAULT_TRIM_COMMANDS,
+  // Off until a dry run (`/jev-compact rotate dry`) has been reviewed.
+  rotate: false,
+  rotateAfterHours: 72,
+  rotateHighTurns: 100,
+  rotateHighTokens: 250_000,
+  rotateKeepMessages: 40,
+  rotateBudgetTokens: 40_000,
 }
 
 /** Windows above this use the absolute token thresholds, smaller ones percentages. */
