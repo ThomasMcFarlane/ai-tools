@@ -23,6 +23,9 @@ export type RotationConfig = { rotateAfterHours: number; rotateHighTurns: number
 export const MARKER = 'ROTATION HANDOVER'
 export const REQUEST_MARKER = 'ROTATION HANDOVER REQUEST'
 export const ABRIDGE_OVER = 4000
+// The only place a handover may be written: the person's .data scratch folders.
+export const DATA_ROOT = '/home/Storage/Projects/repositories/.data/'
+const HANDOVER_DIR = /^\/home\/Storage\/Projects\/repositories\/\.data\/[^/]+\/[^/]+\/scratch\/[^/]/
 const HEAD = 2000
 const TAIL = 1500
 const KEEP_FLOOR = 10
@@ -114,7 +117,7 @@ export function parseHandover(input: Record<string, unknown>): Handover | string
   if (!arr(input['agents'], ['id', 'purpose', 'onResult'])) return 'agents must be a list of { id, purpose, onResult }'
   for (const k of ['pendingQuestions', 'decisions', 'paths']) if (!arr(input[k], [])) return `${k} must be a list of strings`
   const dir = input['handoverDir']
-  if (!str(dir) || !/(^|\/)\.data\/[^/]+\/[^/]+\/scratch\/./.test(dir as string)) return 'handoverDir must be under .data/<org>/<project>/scratch/'
+  if (!str(dir) || (dir as string).split('/').some((s) => s === '..' || s === '.') || !HANDOVER_DIR.test(dir as string)) return `handoverDir must be an absolute folder under ${DATA_ROOT}<org>/<project>/scratch/, with no . or .. segment`
   const h = input as unknown as Handover
   return { goal: h.goal, openTasks: h.openTasks, prs: h.prs, agents: h.agents, pendingQuestions: h.pendingQuestions, decisions: h.decisions, paths: h.paths, handoverDir: h.handoverDir.replace(/\/+$/, '') }
 }
@@ -133,6 +136,19 @@ export function unfinishedShells(messages: readonly Message[]): string[] {
     }
   }
   return started.filter((id) => !messages.some((m) => m.role === 'user' && m.text.includes(`<task-id>${id}</task-id>`) && FINISHED.test(m.text)))
+}
+
+// User rows that are not typed prompts: tagged rows (notifications, reminders, commands), handovers, peers, plugins, skills.
+const NOT_TYPED = /^(<|ROTATION HANDOVER|Another Claude session sent a message|The [\w-]+ plugin sent a message|Base directory for this skill|Caveat: )/
+const squash = (text: string) => text.replace(/\s+/g, ' ').trim()
+
+/** Dropped user rows that read as typed prompts and that no ledger prompt covers (one holds the other, whitespace aside). */
+export function uncoveredPrompts(dropped: readonly Message[], ledger: readonly LedgerEntry[]): string[] {
+  const known = ledger.map((p) => squash(p.text)).filter((t) => t !== '')
+  return dropped
+    .filter((m) => m.role === 'user' && !(m.toolResults?.length) && m.text.trim() !== '' && !NOT_TYPED.test(m.text.trimStart()))
+    .map((m) => squash(m.text))
+    .filter((t) => !known.some((k) => t.includes(k) || k.includes(t)))
 }
 
 /** The last line of each assistant message in the newest 50 that asks a question no later prompt of the person answered. */
@@ -231,6 +247,8 @@ export function verifyRotation(r: RotationInput, built: Rotation, promptsText: s
   const dropped = r.messages.slice(1, built.start)
   const urls = new Set(dropped.flatMap((m) => [m.text, ...m.toolUses.map((u) => JSON.stringify(u.input) + (u.text ?? '')), ...(m.toolResults ?? []).map((t) => t.text)].flatMap((t) => t.match(PR_URL) ?? [])))
   for (const url of urls) if (!has(url)) missing.push({ item: `pull request ${url}`, fixable: true })
+  // A typed prompt the ledger never saw would be lost with its row: nothing to append it from, so the rotation stops.
+  for (const t of uncoveredPrompts(dropped, ledger)) missing.push({ item: `dropped prompt not in the ledger: ${t.slice(0, 200)}`, fixable: false })
   for (const q of unansweredQuestions(r.messages)) if (!r.handover.pendingQuestions.some((p) => p.includes(q)) && !has(q)) missing.push({ item: `pending question: ${q}`, fixable: true })
   if (r.handover.goal.trim() === '') missing.push({ item: 'goal is empty', fixable: false })
   if (built.messages[0] !== r.messages[0]) missing.push({ item: 'first message not kept', fixable: false })

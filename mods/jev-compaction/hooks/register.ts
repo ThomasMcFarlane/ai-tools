@@ -158,16 +158,11 @@ async function attempt($: EngineInterface, e: SessionCompactInput, key: string, 
 }
 
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
-  // The rotation's own compaction (or a plugin compaction once the handover is in): it applies or skips, and never
-  // falls through to the built-in summary.
-  if (e.agentId === undefined && (rotating || e.trigger === 'plugin')) {
-    const rot = rotating ? undefined : await readRotation($)
-    const dry = rotating?.dry ?? (rot?.phase && rot.handover ? rot.phase.dry : undefined)
-    if (dry !== undefined) {
-      if (Array.isArray(e.messages)) return onRotate($, e, dry)
-      notify($, 'rotation skipped: the compaction carried no transcript')
-      return { skip: 'jev-compaction: rotation skipped, no transcript' }
-    }
+  // The rotation's own compaction, and no other: it applies or skips, and never falls through to the built-in summary.
+  if (rotating && e.agentId === undefined && e.trigger !== 'precompute') {
+    if (Array.isArray(e.messages)) return onRotate($, e, rotating.dry)
+    notify($, 'rotation skipped: the compaction carried no transcript')
+    return { skip: 'jev-compaction: rotation skipped, no transcript' }
   }
   if (e.agentId !== undefined || e.trigger === 'precompute' || !Array.isArray(e.messages)) return next(e)
   const now = isNow && Date.now() - nowAt < NOW_VALID_MS && (e.trigger === 'plugin' || e.trigger === 'manual')
@@ -401,7 +396,9 @@ async function onCommand($: EngineInterface, args: string) {
     if (await isRotationOff($)) return { text: 'jev-compaction: rotation is off in this identity.' }
     interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
     if (!interactive) return { text: 'jev-compaction: /jev-compact rotate is not available in a non-interactive (headless) session.' }
-    return { text: `jev-compaction: ${await startRotation($, args.trim().split(/\s+/)[1] === 'dry', false)}` }
+    const rest = args.trim().split(/\s+/).slice(1).join(' ')
+    if (rest !== '' && rest.toLowerCase() !== 'dry') return { text: 'Usage: /jev-compact rotate [dry]' }
+    return { text: `jev-compaction: ${await startRotation($, rest !== '', false)}` }
   }
   return { text: 'Usage: /jev-compact now | stats | rotate [dry]' }
 }
@@ -473,8 +470,13 @@ async function backfill($: EngineInterface, ledger: LedgerEntry[]): Promise<Ledg
     const entry = ledgerFromRow(line)
     if (entry && entry.at < before) found.push(entry)
   })
-  for await (const chunk of $.process.spawn({ argv: ['grep', '-F', '"type":"user"', path] })) if (chunk.stream === 'stdout') lines.feed(chunk.text)
+  // -a: a stray binary byte must not turn the output into "Binary file matches".
+  const grep = $.process.spawn({ argv: ['grep', '-a', '-F', '"type":"user"', path] })
+  for await (const chunk of grep) if (chunk.stream === 'stdout') lines.feed(chunk.text)
   lines.end()
+  const { code, signal } = await grep.result
+  // grep exits 1 when nothing matched; anything else, or a signal, means the read stopped short.
+  if (signal !== null || (code !== 0 && code !== 1)) throw new Error(`grep ended with ${signal ?? `code ${code}`}`)
   return [...found, ...ledger]
 }
 
@@ -495,12 +497,15 @@ async function startRotation($: EngineInterface, dry: boolean, ask: boolean): Pr
       return `rotation not started: ledger backfill failed: ${message(err)}`
     }
   }
-  await $.tool.register({ name: 'handover', description: 'Write the rotation handover (HANDOFF.md and PROMPTS.md). Call it only when jev-compaction asks for a handover.', inputSchema: HANDOVER_SCHEMA, isDeferred: false })
+  await registerHandoverTool($)
   await $.state.set(ROTATION, { ...rot, backfilled: true, phase: { dry, turns: 0, asked: ask }, handover: undefined })
   if (ask) askForHandover($, dry)
   const when = ask ? 'asked for a handover' : 'will ask for a handover when your next turn ends'
   return dry ? `${when}; the dry run writes HANDOFF.preview.md and applies nothing.` : `${when}; the rotation runs when the handover turn ends.`
 }
+
+const registerHandoverTool = ($: EngineInterface) =>
+  $.tool.register({ name: 'handover', description: 'Write the rotation handover (HANDOFF.md and PROMPTS.md). Call it only when jev-compaction asks for a handover.', inputSchema: HANDOVER_SCHEMA, isDeferred: false })
 
 function askForHandover($: EngineInterface, dry: boolean) {
   void $.prompt.submit({ text: handoverPrompt(dry) }).catch((err: unknown) => $.ui.log(`jev-compaction: handover prompt not sent: ${message(err)}`))
@@ -512,6 +517,7 @@ async function onHandover($: EngineInterface, input: Record<string, unknown>): P
   const h = parseHandover(input)
   if (typeof h === 'string') return `error: ${h}; call the tool again with every field`
   const rot = await readRotation($)
+  if (!rot.phase) return 'error: no rotation is waiting for a handover; call this tool only when jev-compaction asks for one'
   const handoffPath = `${h.handoverDir}/HANDOFF.md`
   const promptsPath = `${h.handoverDir}/PROMPTS.md`
   await $.fs.write(promptsPath, promptsFile((await $.state.get(LEDGER)).value ?? []))
@@ -536,14 +542,24 @@ async function jevRules($: EngineInterface, older: readonly LedgerEntry[]): Prom
   }
 }
 
+/**
+ * Whether a list may be the host's newest-4096 cut rather than the whole conversation. `$.session.messages()` is cut
+ * at 4096 (then opened on a user message); the compaction's own list is built from every row since the last
+ * compaction boundary with no cap in the host's code (Claude Code 2.1.29x), so a longer one is whole. A list just under
+ * or at the cap cannot be told apart from a cut one: there the first message and the dropped rows are not known.
+ */
+export const mayBeCut = (length: number) => length >= TRANSCRIPT_CAP - 96 && length <= TRANSCRIPT_CAP
+
 /** Phase 2: build, verify and apply (or, on a dry run, preview). Never the built-in summary. */
-async function onRotate($: EngineInterface, e: SessionCompactInput, dry: boolean): Promise<SessionCompactResult> {
+export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: boolean): Promise<SessionCompactResult> {
   try {
+    if (mayBeCut(e.messages.length)) throw new Error(`transcript at the ${TRANSCRIPT_CAP}-message cap (${e.messages.length} messages), its first message is not known`)
     const rot = await readRotation($)
     const h = rot.handover
     if (!h) throw new Error('no handover')
     const ledger = (await $.state.get(LEDGER)).value ?? []
-    const since = rot.rotatedAt ?? lastRotationOf(e.messages) ?? (await $.session.usage()).startedAt
+    // Never rotated: every prompt counts as since the last rotation (the start time is only for the due timer).
+    const since = rot.rotatedAt ?? lastRotationOf(e.messages) ?? 0
     const older = ledger.filter((p) => p.at < since)
     const agents = (await $.agent.list()).filter((a) => LIVE.has(a.status)).map((a) => ({ id: a.id, description: a.description, status: a.status }))
     const input: RotationInput = {
@@ -622,13 +638,15 @@ async function rotationTurn($: EngineInterface, tokens: number | undefined): Pro
     await $.state.set(ROTATION, rot)
     return true
   }
-  if (config.rotate) {
-    // Read once a process: the last rotation (a resumed session's handover message says when), else the start.
-    rot.rotatedAt ??= lastRotationOf(await $.session.messages()) ?? (await $.session.usage()).startedAt
+  if (config.rotate && rot.rotatedAt === undefined && rot.timerFrom === undefined) {
+    // Read once a process: the last rotation (a resumed session's handover message says when), else the start. A list
+    // that may be cut holds no handover message second.
+    const messages = await $.session.messages()
+    rot.timerFrom = (mayBeCut(messages.length) ? undefined : lastRotationOf(messages)) ?? (await $.session.usage()).startedAt
   }
   await $.state.set(ROTATION, rot)
   if (!config.rotate || (rot.retryAt !== undefined && rot.turns < rot.retryAt)) return false
-  if (!rotationDue(await $.clock.now(), rot.rotatedAt ?? 0, rot.highTurns, config)) return false
+  if (!rotationDue(await $.clock.now(), rot.rotatedAt ?? rot.timerFrom ?? 0, rot.highTurns, config)) return false
   await startRotation($, false, true)
   return true
 }
@@ -656,6 +674,12 @@ export const register: Register = (on, options) => {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now), show totals (stats), or rotate the session (rotate [dry])', argumentHint: 'now | stats | rotate [dry]' })
     } catch (err) {
       $.ui.log(`jev-compaction: command not registered: ${message(err)}`)
+    }
+    // A reload or a resume drops the tool: declare it again while a rotation waits for its handover.
+    try {
+      if (!(await isRotationOff($)) && (await readRotation($)).phase) await registerHandoverTool($)
+    } catch (err) {
+      $.ui.log(`jev-compaction: handover tool not registered: ${message(err)}`)
     }
     return next(e)
   })

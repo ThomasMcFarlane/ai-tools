@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { abridge, buildRotation, chooseTail, ledgerFromRow, lineSplitter, promptsFile, rotationDue, standingRules, tailStart, unfinishedShells, verifyRotation } from './rotate'
+import { abridge, buildRotation, chooseTail, ledgerFromRow, uncoveredPrompts, lineSplitter, promptsFile, rotationDue, standingRules, tailStart, unfinishedShells, verifyRotation } from './rotate'
 import type { Handover, RotationInput } from './rotate'
 import type { Message } from './types'
 
@@ -62,7 +62,8 @@ describe('build', () => {
 })
 
 describe('verification gate', () => {
-  const m = [user('first'), user(`see https://github.com/o/r/pull/7`), ...Array.from({ length: 45 }, (_, i) => user(`m${i}`)), { role: 'assistant', text: 'Ready.\nDeploy now?', toolUses: [] } as Message]
+  const said = (text: string): Message => ({ role: 'assistant', text, toolUses: [] })
+  const m = [user('first'), said(`see https://github.com/o/r/pull/7`), ...Array.from({ length: 45 }, (_, i) => said(`m${i}`)), said('Ready.\nDeploy now?')]
   const ledger = [{ at: 0, text: 'old prompt' }]
 
   test('a complete rotation passes', () => {
@@ -122,5 +123,19 @@ describe('transcript', () => {
     const older = [{ at: 0, text: 'Always use pnpm.' }, { at: 1, text: 'Fix the bug.' }, { at: 2, text: 'Write in British English.' }]
     expect(standingRules(older)).toEqual(['Always use pnpm.'])
     expect(standingRules(older, { 1: 0.1, 2: 0.3 })).toEqual(['Always use pnpm.', 'Write in British English.'])
+  })
+})
+
+describe('dropped prompts', () => {
+  test('typed user rows need a ledger prompt; tool results, tagged rows, peers and plugin frames do not', () => {
+    const dropped = [
+      user('Fix   the\nfooter.'),
+      user('New idea'),
+      user('', { toolResults: [{ tool_use_id: 'a', text: 'out', isError: false }] }),
+      user('<task-notification>x</task-notification>'),
+      user('Another Claude session sent a message: hi'),
+      user('The tasks-board plugin sent a message: eta'),
+    ]
+    expect(uncoveredPrompts(dropped, [{ at: 0, text: 'Fix the footer.' }])).toEqual(['New idea'])
   })
 })

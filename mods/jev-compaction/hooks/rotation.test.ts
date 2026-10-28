@@ -1,9 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { onRotate } from './register'
 import type { Message } from './types'
 
 const TOOL = 'mcp__jev-compaction__handover'
-const DIR = '/work/.data/acme/app/scratch/20261028-rotation'
+const DIR = '/home/Storage/Projects/repositories/.data/acme/app/scratch/20261028-rotation'
 const PR = 'https://github.com/acme/app/pull/42'
 const HOUR = 3_600_000
 
@@ -45,7 +46,7 @@ const fields = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 })
 
-type Setup = { env?: Record<string, string>; agents?: { id: string; description: string; status: string; type: string }[]; dropWrites?: RegExp; now?: number }
+type Setup = { env?: Record<string, string>; agents?: { id: string; description: string; status: string; type: string }[]; dropWrites?: RegExp; now?: number; grepEnd?: { code: number | null; signal: string | null } }
 
 async function boot($: any, on: any, setup: Setup = {}) {
   const files: Record<string, string> = {}
@@ -55,6 +56,13 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const spawned: string[][] = []
   const compactCalls: any[] = []
   const messages = conversation()
+  // The plugin's $.state, held here so the phase-2 handler called by the test (whose $ has no state) reads it too.
+  for (const key of Object.keys(state)) delete state[key]
+  on('state.get', (_$: any, e: any) => ({ value: { value: state[`${e.plugin}/${e.key}`], version: 0 } as never }))
+  on('state.set', (_$: any, e: any) => {
+    state[`${e.plugin}/${e.key}`] = JSON.parse(JSON.stringify(e.value))
+    return { value: { isSet: true, version: 1 } as never }
+  })
   mock.env(on, setup.env ?? { HOME: '/home/u', CLAUDE_CONFIG_DIR: '/home/u/.claude/identities/swap' })
   const clock = mock.clock(on, { now: setup.now ?? Date.parse('2026-10-28T12:00:00.000Z') })
   const startedAt = clock.now()
@@ -76,9 +84,9 @@ async function boot($: any, on: any, setup: Setup = {}) {
     spawned.push(e.argv)
     // Pieces that cut rows in the middle, as a pipe does.
     for (let i = 0; i < FIXTURE.length; i += 97) yield { stream: 'stdout', text: FIXTURE.slice(i, i + 97) }
-    return { value: { code: 0, signal: null } }
+    return { value: setup.grepEnd ?? { code: 0, signal: null } }
   })
-  on('agent.list', () => ({ value: setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }] }))
+  on('agent.list', () => ({ value: (setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]) as never }))
   on('tool.register', (_$: any, e: any) => {
     registered.push(e.name)
     return { value: { tool: `mcp__jev-compaction__${e.name}` } }
@@ -102,14 +110,40 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('command.register', () => ({ value: undefined as never }))
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
-  return { files, toasts, submitted, registered, spawned, compactCalls, messages, clock }
+  const agents = setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]
+  return { files, toasts, submitted, registered, spawned, compactCalls, messages, clock, agents, dropWrites: setup.dropWrites }
 }
 
+const user = (text: string): Message => ({ role: 'user', text, toolUses: [] })
 const reply = () => ({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' }) as never
 const say = ($: any, text: string, origin: Record<string, unknown> = { kind: 'composer' }, isMeta?: true) => $.prompt.submit({ text, origin, wait: false, ...(isMeta ? { isMeta } : {}) } as never)
 const command = ($: any, args: string) => $.command.run({ command: 'jev-compact', args } as never) as Promise<{ text: string }>
-// The rotation's compaction as the engine raises it, with the transcript (the test kit passes none of its own).
-const rotate = ($: any, messages: Message[]) => $.session.compact({ trigger: 'plugin', messages } as never) as Promise<{ messages?: Message[]; skip?: string }>
+// The rotation's compaction as the engine raises it with the transcript. The test kit raises the mod's own
+// $.session.compact() with no transcript, so the phase-2 handler is called directly, over the state the mod wrote.
+// The phase-2 handler, called as the engine would with the transcript (the test kit raises the mod's own
+// $.session.compact() with none). The test's $ lacks the plugin's nouns, so it gets one over the same files and state.
+const notes: string[] = []
+const state: Record<string, unknown> = {}
+type Booted = Awaited<ReturnType<typeof boot>>
+const rotate = (b: Booted, messages: Message[], dry = false) => {
+  notes.length = 0
+  const $ = {
+    state: { get: async (ref: { plugin: string; key: string }) => ({ value: state[`${ref.plugin}/${ref.key}`], version: 0 }) },
+    agent: { list: async () => b.agents },
+    clock: { now: async () => b.clock.now() },
+    fs: {
+      read: async (path: string) => {
+        if (b.files[path] === undefined) throw new Error('ENOENT')
+        return b.files[path]
+      },
+      write: async (path: string, text: string) => {
+        if (!b.dropWrites?.test(path)) b.files[path] = text
+      },
+    },
+    ui: { log: (text: string) => notes.push(text), toast: (text: string) => notes.push(text) },
+  }
+  return onRotate($ as never, { trigger: 'plugin', messages } as never, dry) as Promise<{ messages?: Message[]; skip?: string }>
+}
 
 test('the ledger keeps composer and bridge prompts only, never meta or other origins', async ($, on) => {
   const { files } = await boot($, on)
@@ -130,7 +164,7 @@ test('backfill streams the transcript through grep and adds the older typed prom
   const { files, spawned } = await boot($, on)
   await say($, 'A prompt after install.')
   await command($, 'rotate dry')
-  expect(spawned).toEqual([['grep', '-F', '"type":"user"', '/home/u/.claude/identities/swap/projects/-work-app/sess-1.jsonl']])
+  expect(spawned).toEqual([['grep', '-a', '-F', '"type":"user"', '/home/u/.claude/identities/swap/projects/-work-app/sess-1.jsonl']])
   await $.tool.call(fields() as never)
   const prompts = files[`${DIR}/PROMPTS.md`]!
   const order = ['Always write British English.', 'Build the importer.', 'A prompt after install.'].map((t) => prompts.indexOf(t))
@@ -171,12 +205,13 @@ test('trigger: with rotate on, 3 turns at the high size rotate when rotateHighTu
 })
 
 test('dry run: writes HANDOFF.preview.md and PROMPTS.md, applies nothing, and the gate passes', async ($, on) => {
-  const { files, compactCalls, messages, toasts } = await boot($, on)
+  const b = await boot($, on)
+  const { files, compactCalls, messages, toasts } = b
   await say($, 'Remember to run the linter.')
   expect((await command($, 'rotate dry')).text).toContain('applies nothing')
   expect((await $.tool.call(fields() as never)).result).toContain('dry run')
   expect(files[`${DIR}/HANDOFF.md`]).toBeUndefined()
-  const r = await rotate($, messages)
+  const r = await rotate(b, messages, true)
   expect(r.messages).toBeUndefined()
   expect(r.skip).toContain('dry run')
   const preview = files[`${DIR}/HANDOFF.preview.md`]!
@@ -187,7 +222,7 @@ test('dry run: writes HANDOFF.preview.md and PROMPTS.md, applies nothing, and th
   expect(preview).toContain('Always write British English.')
   expect(preview).toContain('shell7')
   expect(compactCalls).toEqual([])
-  expect(toasts.join('\n')).toContain('nothing applied')
+  expect(notes.join('\n')).toContain('nothing applied')
 })
 
 test('the turn end runs the rotation compaction once the handover is in, and never reaches the built-in summary', async ($, on) => {
@@ -206,13 +241,14 @@ test('the turn end runs the rotation compaction once the handover is in, and nev
   expect(submitted.length).toBe(1)
 })
 
-test('manual rotation: keeps the first message with its handle, one handover message and the newest messages, no orphan tool_result', { options: { rotateKeepMessages: 11 } }, async ($, on) => {
-  const { files, messages, compactCalls } = await boot($, on)
+test('manual rotation: keeps the first message with its handle, one handover message and the newest messages, no orphan tool_result', async ($, on) => {
+  const b = await boot($, on)
+  const { files, messages, compactCalls } = b
   await say($, 'Remember to run the linter.')
   await command($, 'rotate')
   await $.tool.call(fields() as never)
   expect(files[`${DIR}/HANDOFF.md`]).toContain('Ship the importer')
-  const out = (await rotate($, messages)).messages!
+  const out = (await rotate(b, messages)).messages!
   expect(compactCalls).toEqual([])
   expect(out[0]!.handle).toBe('h0')
   expect(out[1]!.handle).toBeUndefined()
@@ -228,24 +264,26 @@ test('manual rotation: keeps the first message with its handle, one handover mes
   expect(out.length).toBeLessThan(messages.length)
 })
 
-test('gate: missing agents, PRs and questions are appended once and the rotation applies', { options: { rotateKeepMessages: 11 } }, async ($, on) => {
-  const { messages } = await boot($, on, { agents: [{ id: 'agent-9', description: 'late agent', status: 'idle', type: 'Explore' }] })
+test('gate: missing agents, PRs and questions are appended once and the rotation applies', async ($, on) => {
+  const b = await boot($, on, { agents: [{ id: 'agent-9', description: 'late agent', status: 'idle', type: 'Explore' }] })
+  const { messages } = b
   await command($, 'rotate')
   await $.tool.call(fields({ prs: [], agents: [], pendingQuestions: [] }) as never)
-  const text = (await rotate($, messages)).messages![1]!.text
+  const text = (await rotate(b, messages)).messages![1]!.text
   expect(text).toContain('Added by the verification gate')
   for (const s of ['agent-9', PR, 'Shall I merge it?']) expect(text).toContain(s)
 })
 
 test('gate failure: PROMPTS.md that cannot be written skips the rotation and never runs the built-in summary', async ($, on) => {
-  const { messages, toasts, files, compactCalls } = await boot($, on, { dropWrites: /PROMPTS\.md$/ })
+  const b = await boot($, on, { dropWrites: /PROMPTS\.md$/ })
+  const { messages, toasts, files, compactCalls } = b
   await command($, 'rotate')
   await $.tool.call(fields() as never)
-  const result = await rotate($, messages)
+  const result = await rotate(b, messages)
   expect(compactCalls).toEqual([])
   expect(result.skip).toMatch(/rotation skipped, gate failed/)
   expect(result.messages).toBeUndefined()
-  expect(toasts.join('\n')).toMatch(/rotation skipped/)
+  expect(notes.join('\n')).toMatch(/rotation skipped/)
   expect(files[`${DIR}/HANDOFF.md`]).toBeDefined()
 })
 
@@ -253,7 +291,9 @@ test('a handover tool call with a missing field or a folder outside .data scratc
   await boot($, on)
   await command($, 'rotate')
   expect((await $.tool.call(fields({ goal: '' }) as never)).result).toMatch(/^error: goal is required/)
-  expect((await $.tool.call(fields({ handoverDir: '/tmp/x' }) as never)).result).toMatch(/^error: handoverDir must be under/)
+  for (const dir of ['/tmp/x', '.data/acme/app/scratch/r', `${DIR}/../../../../x`, '/home/Storage/Projects/repositories/.data/acme/app/notes/r']) {
+    expect((await $.tool.call(fields({ handoverDir: dir }) as never)).result).toMatch(/^error: handoverDir must be an absolute folder under/)
+  }
 })
 
 test('phase timeout: no handover within 2 turns skips the rotation, compacts nothing, and waits 20 turns', { options: { rotate: true, rotateHighTurns: 1, rotateHighTokens: 1 } }, async ($, on) => {
@@ -283,3 +323,89 @@ test('phoenix-court-group: rotation is a hard no-op', { options: { rotate: true,
   expect(Object.keys(files)).toEqual([])
 })
 
+
+test('a handover tool call with no rotation waiting is refused and writes nothing', async ($, on) => {
+  const { files } = await boot($, on)
+  expect((await $.tool.call(fields() as never)).result).toMatch(/^error: no rotation is waiting/)
+  expect(Object.keys(files)).toEqual([])
+})
+
+test('/jev-compact rotate takes nothing or dry (any case); anything else is a usage error and starts nothing', async ($, on) => {
+  const { spawned } = await boot($, on)
+  for (const args of ['rotate now', 'rotate dry run', 'rotate --force']) expect((await command($, args)).text).toBe('Usage: /jev-compact rotate [dry]')
+  expect(spawned).toEqual([])
+  expect((await $.tool.call(fields() as never)).result).toMatch(/^error: no rotation is waiting/)
+  expect((await command($, 'rotate DRY')).text).toContain('applies nothing')
+})
+
+test('backfill: grep ending in an error or a signal stops the rotation; -a reads the file as text', async ($, on) => {
+  const { spawned, toasts } = await boot($, on, { grepEnd: { code: 2, signal: null } })
+  expect((await command($, 'rotate')).text).toContain('ledger backfill failed: grep ended with code 2')
+  expect(spawned[0]!.slice(0, 3)).toEqual(['grep', '-a', '-F'])
+  expect(toasts.join('\n')).toContain('rotation not started')
+  expect((await $.tool.call(fields() as never)).result).toMatch(/^error: no rotation is waiting/)
+})
+
+test('a session that never rotated counts every ledger prompt as recent, also those from before its start', async ($, on) => {
+  const b = await boot($, on)
+  const { files, messages } = b
+  await command($, 'rotate dry')
+  await $.tool.call(fields() as never)
+  await rotate(b, messages, true)
+  const recent = files[`${DIR}/HANDOFF.preview.md`]!.split('## Prompts since the last rotation (verbatim)')[1]!
+  // From 1 October, before this process started on 28 October, and no rule: only the recent list holds it.
+  expect(recent).toContain('Build the importer.')
+})
+
+test('only the rotation\'s own compaction rotates: another plugin compaction with the handover in is an ordinary one', async ($, on) => {
+  const { messages } = await boot($, on)
+  await command($, 'rotate')
+  await $.tool.call(fields() as never)
+  const r = (await $.session.compact({ trigger: 'plugin', messages } as never)) as { messages?: Message[]; skip?: string }
+  expect(r.skip ?? '').not.toMatch(/rotation/)
+  expect((r.messages ?? []).some((m) => m.text.startsWith('ROTATION HANDOVER'))).toBe(false)
+})
+
+test('a session start while a rotation waits declares the handover tool again', async ($, on) => {
+  const { registered } = await boot($, on)
+  await command($, 'rotate')
+  expect(registered).toEqual(['handover'])
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
+  expect(registered).toEqual(['handover', 'handover'])
+})
+
+test('a dropped typed prompt the ledger never saw fails the gate; one the ledger holds does not', async ($, on) => {
+  const b = await boot($, on)
+  const { messages, toasts } = b
+  await say($, 'Never push without asking.')
+  const withPrompts = [messages[0]!, user('Never push without asking.'), user('Please also fix the footer.'), ...messages.slice(1)]
+  await command($, 'rotate')
+  await $.tool.call(fields() as never)
+  const r = await rotate(b, withPrompts)
+  expect(r.skip).toMatch(/dropped prompt not in the ledger: Please also fix the footer\./)
+  expect(r.skip).not.toContain('Never push without asking.')
+  expect(notes.join('\n')).toContain('rotation skipped')
+})
+
+const long = (n: number): Message[] => [
+  { role: 'user', text: 'start', toolUses: [], handle: 'h0' },
+  ...Array.from({ length: n - 1 }, (_, i): Message => ({ role: 'assistant', text: `step ${i}`, toolUses: [], handle: `a${i}` })),
+]
+
+test('cap: a 4100-message transcript (longer than the host cap, so whole) rotates and keeps its first message', async ($, on) => {
+  const b = await boot($, on)
+  await command($, 'rotate')
+  await $.tool.call(fields() as never)
+  const out = (await rotate(b, long(4100))).messages!
+  expect(out[0]!.handle).toBe('h0')
+  expect(out[1]!.text).toStartWith('ROTATION HANDOVER (')
+  expect(out.length).toBe(42)
+})
+
+test('cap: a transcript at the cap (it may be the host\'s cut) is skipped, never rotated', async ($, on) => {
+  const b = await boot($, on)
+  await command($, 'rotate')
+  await $.tool.call(fields() as never)
+  for (const n of [4096, 4010]) expect((await rotate(b, long(n))).skip).toMatch(/4096-message cap/)
+  expect((await rotate(b, long(3990))).messages).toBeDefined()
+})

@@ -34,6 +34,8 @@ export type JevCompactionRotation = {
   highTurns: number
   // when the session was last rotated
   rotatedAt?: number
+  // what the due timer counts from while there was no rotation in this process: a resumed session's last rotation, else the start
+  timerFrom?: number
   // no automatic rotation before `turns` reaches this (after a skipped one)
   retryAt?: number
   // the ledger holds the prompts from before install, read from the transcript
