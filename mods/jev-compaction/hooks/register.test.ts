@@ -143,7 +143,7 @@ const HARD = { hardTokens: 300_000, triggerTokens: 200_000, targetTokens: 120_00
 
 test('hard ceiling: a periodic result that stays above the hard limit runs the built-in summary instead', { options: { ...HARD, hardTokens: 200_000 } }, async ($, on) => {
   const { toasts, compactCalls } = await boot($, on, { p: 0, tokens: 466_000 })
-  // Jev frees ~103k (466k to ~363k), still above the 200k limit
+  // Jev frees ~240k at the starting ratio of 2 (466k to ~226k), still above the 200k limit
   expect(isBuiltin(await compact($, 'plugin'))).toBe(true)
   expect(toasts[0]).toMatch(/built-in summary: .*hard limit 200000/)
   expect(compactCalls.length).toBe(1)
@@ -154,7 +154,7 @@ test('hard ceiling: a periodic result that reaches below the hard limit is appli
   const r = await compact($, 'plugin')
   expect(isBuiltin(r)).toBe(false)
   expect(r.messages!.length).toBe(8)
-  expect(toasts[0]).toMatch(/compacted ~350k to ~2\d\dk tokens/)
+  expect(toasts[0]).toMatch(/compacted ~350k to ~1\d\dk tokens/)
 })
 
 test('hard ceiling: a Jev error, a missing key or an unfittable history above the hard limit runs the built-in summary', { options: HARD }, async ($, on) => {
@@ -304,6 +304,35 @@ test('periodic trigger: compacts at the trigger, not below, and waits for 50000 
   await turn(255_000)
   await turn(405_000)
   expect(compactCalls.length).toBe(3)
+})
+
+const WIDE = { triggerTokens: 100_000, targetTokens: 50_000, hardTokens: 600_000, softMinFreedTokens: 30_000 }
+
+test('calibration: the real count after an applied compaction sets the ratio, and regrowth counts from it', { options: WIDE }, async ($, on) => {
+  const { toasts, usage, compactCalls } = await boot($, on, { p: 0, core: () => ({ skip: 'deferred by test' }) })
+  const turn = async (tokens: number) => {
+    usage.tokens = tokens
+    await $.turn.complete(reply())
+  }
+  await turn(410_000)
+  expect(compactCalls.length).toBe(1)
+  usage.tokens = 466_000
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
+  const after = (text: string | undefined) => Number(/compacted ~466k to ~(\d+)k/.exec(text ?? '')?.[1])
+  // the starting ratio is 2, so the raw estimate is half of what the toast says was freed
+  const raw = ((466 - after(toasts.at(-1))) * 1000) / 2
+  // the next request shows three times the raw estimate freed: the ratio becomes (2 + 3) / 2
+  const real = Math.round(466_000 - 3 * raw)
+  await turn(real)
+  expect(compactCalls.length).toBe(1)
+  // the guard was 410k; it now counts from the real size, not from the old attempt
+  await turn(real + 49_000)
+  expect(compactCalls.length).toBe(1)
+  await turn(real + 50_000)
+  expect(compactCalls.length).toBe(2)
+  usage.tokens = 466_000
+  await compact($, 'plugin')
+  expect(Math.abs(after(toasts.at(-1)) - (466 - (2.5 * raw) / 1000))).toBeLessThanOrEqual(2)
 })
 
 test('periodic trigger on a small window uses percentages', async ($, on) => {

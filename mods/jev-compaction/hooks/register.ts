@@ -5,7 +5,7 @@ import { rewriteRow } from './entry'
 import type { EntryRow, Judge } from './entry'
 import { jevAsker } from './jev'
 import { DEFAULT_KEY_FILE, keyFromFile, redact } from './key'
-import { DEFAULTS, estimateAfter, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, failure, guardAfter, judge, rawFreed, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Config, Verdict } from './policy'
 import { goalFromMessages, truncate } from './state'
 import type { CompactResult, Protect } from './types'
@@ -14,6 +14,7 @@ const SCORES = { plugin: 'jev-compaction', key: 'scores' } as const
 const STATS = { plugin: 'jev-compaction', key: 'stats' } as const
 const INTERACTIVE = { plugin: 'jev-compaction', key: 'interactive' } as const
 const GUARD = { plugin: 'jev-compaction', key: 'guard' } as const
+const RATIO = { plugin: 'jev-compaction', key: 'ratio' } as const
 // How long after `/jev-compact now` the next /compact still counts as that request.
 const NOW_VALID_MS = 60_000
 const MAX_SCORES = 3000
@@ -44,6 +45,8 @@ let prescoring = false
 let nowPending = false
 // Estimated tokens after the compaction this hook last applied; read by the trigger that asked for it.
 let lastApplied: number | undefined
+// An applied compaction whose real effect the next turn end measures: the host's tokens before it and the raw estimate.
+let measuring: { before: number; raw: number } | undefined
 
 /** Environment `JEV_COMPACTION_API_KEY`, then `TYPESAFE_API_KEY`, then the key file. */
 async function resolveKey($: EngineInterface): Promise<string | undefined> {
@@ -142,9 +145,12 @@ async function attempt($: EngineInterface, e: SessionCompactInput, key: string, 
   const stop = () => Date.now() - started > budgetMs - config.jevTimeoutMs
   const result = await compact(e.messages, ask, config, memory, { protect, stop })
   await remember($, memory, result.scores)
+  const { value: ratio = DEFAULT_RATIO } = await $.state.get(RATIO)
   const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / 3.5)
-  const tokensAfter = estimateAfter(tokensBefore, result.stats.charsBefore, result.stats.charsAfter)
-  return { result, tokensBefore, tokensAfter, thresholds: thresholdsFor(config, window) }
+  const tokensAfter = estimateAfter(tokensBefore, result.stats.charsBefore, result.stats.charsAfter, ratio)
+  // Only a real token count before the compaction can calibrate the ratio.
+  const raw = tokens === undefined ? undefined : rawFreed(result.stats.charsBefore, result.stats.charsAfter)
+  return { result, tokensBefore, tokensAfter, raw, thresholds: thresholdsFor(config, window) }
 }
 
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
@@ -181,6 +187,7 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
       const freed = done.tokensBefore - done.tokensAfter
       await bump($, { applied: 1, freedTokens: freed, requests, sentencesDropped: done.result.stats.sentencesDropped, wordCharsSaved: done.result.stats.wordCharsSaved })
       lastApplied = done.tokensAfter
+      measuring = done.raw === undefined ? undefined : { before: done.tokensBefore, raw: done.raw }
       notify($, `compacted ~${k(done.tokensBefore)} to ~${k(done.tokensAfter)} tokens (${summary(done.result)})`)
       return { messages: done.result.messages, tokensBefore: done.tokensBefore, tokensAfter: done.tokensAfter }
     }
@@ -210,6 +217,16 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
     if (tokens !== undefined) {
       const t = thresholdsFor(config, window)
       let { value: guard = 0 } = await $.state.get(GUARD)
+      // The first real count after an applied compaction: learn the ratio, and regrow from where it really left the context.
+      if (measuring) {
+        const { value: ratio = DEFAULT_RATIO } = await $.state.get(RATIO)
+        await $.state.set(RATIO, calibrate(ratio, measuring.before, measuring.raw, tokens))
+        measuring = undefined
+        if (guard > tokens) {
+          guard = tokens
+          await $.state.set(GUARD, guard)
+        }
+      }
       // The context fell below the target (a /clear or a compaction): the old attempt no longer says anything.
       if (guard > 0 && tokens < t.target) {
         guard = 0
@@ -373,6 +390,7 @@ export const register: Register = (on, options) => {
   interactive = undefined
   prescoreAt = 0
   prescoring = false
+  measuring = undefined
   cachedKey = undefined
   entryPausedUntil = 0
   on('session.start', async ($, e, next) => {

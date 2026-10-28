@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { keyFromFile, parseEnvFile, redact } from './key'
-import { DEFAULTS, estimateAfter, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, rawFreed, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Judgement } from './policy'
 
 describe('thresholds', () => {
   test('a 1M window uses the absolute token defaults', () => {
-    expect(thresholdsFor(DEFAULTS, 1_000_000)).toEqual({ trigger: 400_000, target: 256_000, hard: 500_000, softMinFreed: 100_000 })
+    expect(thresholdsFor(DEFAULTS, 1_000_000)).toEqual({ trigger: 400_000, target: 256_000, hard: 500_000, softMinFreed: 30_000 })
   })
   test('a small window uses percentages', () => {
     expect(thresholdsFor(DEFAULTS, 200_000)).toEqual({ trigger: 120_000, target: 80_000, hard: 170_000, softMinFreed: 50_000 })
@@ -85,8 +85,8 @@ describe('policy levels', () => {
     expect(judge({ ...base, trigger: 'auto', thresholds: small, tokensBefore: 167_000, tokensAfter: 167_000 }).act).toBe('next')
   })
   test('soft: freeing less than the soft minimum above the target is deferred, enough is applied', () => {
-    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 330_000 }).act).toBe('skip')
-    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 320_000 }).act).toBe('apply')
+    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 390_001 }).act).toBe('skip')
+    expect(judge({ ...base, tokensBefore: 420_000, tokensAfter: 390_000 }).act).toBe('apply')
   })
   test('manual: applied when it frees the minimum, else built-in summary', () => {
     expect(judge({ ...base, trigger: 'manual', tokensAfter: 399_999 }).act).toBe('apply')
@@ -125,6 +125,24 @@ describe('policy levels', () => {
     expect(estimateAfter(400_000, 350_000, 250_000)).toBe(371_429)
     expect(estimateAfter(400_000, 0, 0)).toBe(400_000)
     expect(estimateAfter(10_000, 900_000, 0)).toBe(0)
+  })
+  test('the ratio scales the tokens freed', () => {
+    expect(Math.round(rawFreed(350_000, 250_000))).toBe(28_571)
+    expect(estimateAfter(400_000, 350_000, 250_000, DEFAULT_RATIO)).toBe(342_857)
+    expect(estimateAfter(400_000, 350_000, 250_000, 3)).toBe(314_286)
+  })
+  test('calibration: the live gap (~33k estimated, ~108k real) moves the ratio towards the real one, step by step', () => {
+    // 302k before, raw estimate 33k: the next request showed 194k
+    const once = calibrate(DEFAULT_RATIO, 302_000, 33_000, 194_000)
+    expect(once).toBe((2 + 108_000 / 33_000) / 2)
+    expect(calibrate(once, 302_000, 33_000, 194_000)).toBeGreaterThan(once)
+    expect(estimateAfter(302_000, 33_000 * 3.5, 0, calibrate(once, 302_000, 33_000, 194_000))).toBeLessThan(210_000)
+  })
+  test('calibration: a low reading holds the ratio at 1 or more, a /clear or a tiny estimate is ignored, 6 is the ceiling', () => {
+    expect(calibrate(1, 300_000, 30_000, 299_000)).toBe(1)
+    expect(calibrate(2, 300_000, 30_000, 5_000)).toBe(2)
+    expect(calibrate(2, 300_000, 4_000, 250_000)).toBe(2)
+    expect(calibrate(6, 300_000, 30_000, 60_000)).toBe(6)
   })
 })
 

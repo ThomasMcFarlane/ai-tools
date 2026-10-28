@@ -48,7 +48,7 @@ export const DEFAULTS: Config = {
   targetPercent: 40,
   hardPercent: 85,
   minFreedTokens: 20_000,
-  softMinFreedTokens: 100_000,
+  softMinFreedTokens: 30_000,
   softMinFreedPercent: 25,
   regrowTokens: 50_000,
   prescoreMarginTokens: 100_000,
@@ -158,9 +158,34 @@ export function failure(trigger: SessionCompactTrigger, reason: string, tokensBe
 /** The guard after an attempt: where the context stood, or where an applied compaction left it. */
 export const guardAfter = (tokens: number, appliedTokensAfter: number | undefined) => appliedTokensAfter ?? tokens
 
+const CHARS_PER_TOKEN = 3.5
+
 /**
- * Tokens after a compaction: the characters removed at 3.5 per token come off the measured total. The plain
- * ratio of characters would also shrink the system prompt and tool schemas, which no compaction touches.
+ * Real tokens freed per token of the character estimate. The characters miss part of what a rewrite removes (thinking
+ * blocks and per-row overhead of the rebuilt rows), and code and JSON run below 3.5 characters a token: from 14 to 24 Oct
+ * 2026 applied compactions estimated ~33k freed where the next request showed ~108k (median). A session starts at a
+ * cautious 2 and then learns its own ratio from the host's real token count (`calibrate`).
  */
-export const estimateAfter = (tokensBefore: number, charsBefore: number, charsAfter: number) =>
-  Math.max(0, Math.round(tokensBefore - Math.min(tokensBefore, Math.max(0, charsBefore - charsAfter) / 3.5)))
+export const DEFAULT_RATIO = 2
+
+/** Tokens a compaction frees by the characters it removes alone, before the ratio. */
+export const rawFreed = (charsBefore: number, charsAfter: number) => Math.max(0, charsBefore - charsAfter) / CHARS_PER_TOKEN
+
+/**
+ * Tokens after a compaction: the characters removed, at 3.5 per token and times the ratio, come off the measured total.
+ * The plain ratio of characters would also shrink the system prompt and tool schemas, which no compaction touches.
+ */
+export const estimateAfter = (tokensBefore: number, charsBefore: number, charsAfter: number, ratio = 1) =>
+  Math.max(0, Math.round(tokensBefore - Math.min(tokensBefore, rawFreed(charsBefore, charsAfter) * ratio)))
+
+/**
+ * The ratio once the next request has measured an applied compaction: real tokens freed over the raw estimate,
+ * averaged with the old ratio and held between 1 and 6. A small raw estimate, or a reading above 8 (a /clear in
+ * between), says nothing and leaves the ratio as it was.
+ */
+export function calibrate(ratio: number, tokensBefore: number, raw: number, realAfter: number): number {
+  if (raw < 5_000) return ratio
+  const measured = (tokensBefore - realAfter) / raw
+  if (measured > 8) return ratio
+  return Math.min(6, Math.max(1, (ratio + Math.max(1, measured)) / 2))
+}

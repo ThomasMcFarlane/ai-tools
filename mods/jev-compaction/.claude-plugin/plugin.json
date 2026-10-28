@@ -60,7 +60,7 @@
       "type": "number",
       "title": "Periodic minimum freed (tokens)",
       "description": "Windows over 300k tokens: a periodic compaction that misses the target is applied only if it frees this many tokens (a rewrite costs a prompt-cache miss).",
-      "default": 100000,
+      "default": 30000,
       "required": false
     },
     "softMinFreedPercent": {
