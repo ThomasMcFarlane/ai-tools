@@ -170,12 +170,41 @@ export function unansweredQuestions(messages: readonly Message[]): string[] {
 export function tailStart(messages: readonly Message[], keep: number): number {
   let start = Math.max(1, messages.length - keep)
   const usedFrom = (i: number) => new Set(messages.slice(i).flatMap((m) => m.toolUses.map((u) => u.tool_use_id)))
+  const old = orphansIn(messages)
   for (;;) {
     const used = usedFrom(start)
-    const orphan = messages.slice(start).some((m) => (m.toolResults ?? []).some((r) => !used.has(r.tool_use_id)))
+    const orphan = messages.slice(start).some((m) => (m.toolResults ?? []).some((r) => !used.has(r.tool_use_id) && !old.has(r.tool_use_id)))
     if (!orphan || start <= 1) return start
     start--
   }
+}
+
+/** Ids of tool_results that already had no tool_use before them (a host compaction can leave one, even first). */
+export function orphansIn(messages: readonly Message[]): Set<string> {
+  const seen = new Set<string>()
+  const out = new Set<string>()
+  for (const m of messages) {
+    for (const t of m.toolResults ?? []) if (!seen.has(t.tool_use_id)) out.add(t.tool_use_id)
+    for (const u of m.toolUses) seen.add(u.tool_use_id)
+  }
+  return out
+}
+
+export const ORPHAN_NOTE = '[jev-compaction removed a tool result whose call an earlier compaction had dropped]'
+
+/**
+ * The kept messages without the tool_results that were orphans before the rotation: a message left empty goes, but
+ * the first message stays (with its handle) holding a note. Orphans the rotation itself would make are left for the gate.
+ */
+function withoutOldOrphans(kept: readonly Message[], old: ReadonlySet<string>): Message[] {
+  return kept.flatMap((m, i) => {
+    const results = m.toolResults?.filter((t) => !old.has(t.tool_use_id))
+    if (!m.toolResults || results!.length === m.toolResults.length) return [m]
+    const { toolResults: _dropped, ...rest } = m
+    const out: Message = results!.length > 0 ? { ...rest, toolResults: results } : rest
+    if (out.text.trim() !== '' || out.toolUses.length > 0 || (out.toolResults?.length ?? 0) > 0) return [out]
+    return i === 0 ? [{ ...out, text: ORPHAN_NOTE }] : []
+  })
 }
 
 /** The newest messages to keep: `rotateKeepMessages`, fewer (down to 10) while their estimate is over the budget. */
@@ -203,6 +232,8 @@ export type RotationInput = {
   agents: readonly { id: string; description: string; status: string }[]
   shells: readonly string[]
   when: number
+  /** A dry run: the preview stands in for HANDOFF.md, which is not written. */
+  dry?: boolean
   config: Pick<RotationConfig, 'rotateKeepMessages' | 'rotateBudgetTokens'>
 }
 
@@ -213,7 +244,7 @@ export function buildRotation(r: RotationInput, extra: readonly string[] = []): 
   const start = chooseTail(r.messages, r.config)
   const list = (items: readonly string[]) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- none')
   const text = [
-    `${MARKER} (${new Date(r.when).toISOString()})\n\nThis session was rotated in place: the messages between the first one and the newest ${r.messages.length - start} were replaced by this handover. The full handover is in ${r.handoffPath} and every prompt of the session, verbatim, in ${r.promptsPath}. The rules and prompts below are the person's own words and still apply.`,
+    `${MARKER} (${new Date(r.when).toISOString()})\n\nThis session was rotated in place: the messages between the first one and the newest ${r.messages.length - start} were replaced by this handover. ${r.dry ? `This is a dry-run preview: it is the handover (a real rotation also writes it to ${r.handoffPath}), and` : `The full handover is in ${r.handoffPath} and`} every prompt of the session, verbatim, in ${r.promptsPath}. The rules and prompts below are the person's own words and still apply.`,
     handoffFile(r.handover).replace(/^# Handover\n\n/, ''),
     `## Standing rules (verbatim)\n\n${list(r.rules)}`,
     `## Prompts since the last rotation (verbatim)\n\n${r.recent.length ? r.recent.map((p) => `### ${new Date(p.at).toISOString()}\n\n${abridge(p.text, r.promptsPath)}`).join('\n\n') : 'none'}`,
@@ -221,8 +252,8 @@ export function buildRotation(r: RotationInput, extra: readonly string[] = []): 
     `## Unfinished background shells and monitors\n\n${list(r.shells)}`,
     ...(extra.length ? [`## Added by the verification gate\n\n${list(extra)}`] : []),
   ].join('\n\n')
-  const first = r.messages[0]!
-  return { messages: [first, { role: 'user', text, toolUses: [] }, ...r.messages.slice(start)], text, start }
+  const [first, ...tail] = withoutOldOrphans([r.messages[0]!, ...r.messages.slice(start)], orphansIn(r.messages))
+  return { messages: [first!, { role: 'user', text, toolUses: [] }, ...tail], text, start }
 }
 
 export type Missing = { item: string; fixable: boolean }
@@ -251,7 +282,8 @@ export function verifyRotation(r: RotationInput, built: Rotation, promptsText: s
   for (const t of uncoveredPrompts(dropped, ledger)) missing.push({ item: `dropped prompt not in the ledger: ${t.slice(0, 200)}`, fixable: false })
   for (const q of unansweredQuestions(r.messages)) if (!r.handover.pendingQuestions.some((p) => p.includes(q)) && !has(q)) missing.push({ item: `pending question: ${q}`, fixable: true })
   if (r.handover.goal.trim() === '') missing.push({ item: 'goal is empty', fixable: false })
-  if (built.messages[0] !== r.messages[0]) missing.push({ item: 'first message not kept', fixable: false })
+  const first = built.messages[0]
+  if (first !== r.messages[0] && (first?.handle === undefined || first.handle !== r.messages[0]?.handle)) missing.push({ item: 'first message not kept', fixable: false })
   const seen = new Set<string>()
   for (const m of built.messages) {
     for (const t of m.toolResults ?? []) if (!seen.has(t.tool_use_id)) missing.push({ item: `orphan tool_result ${t.tool_use_id}`, fixable: false })

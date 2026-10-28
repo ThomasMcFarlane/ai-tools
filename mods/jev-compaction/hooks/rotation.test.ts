@@ -153,6 +153,7 @@ test('the ledger keeps composer and bridge prompts only, never meta or other ori
   await say($, 'a plugin prompt', { kind: 'plugin', name: 'x' })
   await say($, 'hidden', { kind: 'composer' }, true)
   await command($, 'rotate dry')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   const prompts = files[`${DIR}/PROMPTS.md`]!
   expect(prompts).toContain('Never push without asking.')
@@ -165,6 +166,7 @@ test('backfill streams the transcript through grep and adds the older typed prom
   await say($, 'A prompt after install.')
   await command($, 'rotate dry')
   expect(spawned).toEqual([['grep', '-a', '-F', '"type":"user"', '/home/u/.claude/identities/swap/projects/-work-app/sess-1.jsonl']])
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   const prompts = files[`${DIR}/PROMPTS.md`]!
   const order = ['Always write British English.', 'Build the importer.', 'A prompt after install.'].map((t) => prompts.indexOf(t))
@@ -209,6 +211,7 @@ test('dry run: writes HANDOFF.preview.md and PROMPTS.md, applies nothing, and th
   const { files, compactCalls, messages, toasts } = b
   await say($, 'Remember to run the linter.')
   expect((await command($, 'rotate dry')).text).toContain('applies nothing')
+  await $.turn.complete(reply())
   expect((await $.tool.call(fields() as never)).result).toContain('dry run')
   expect(files[`${DIR}/HANDOFF.md`]).toBeUndefined()
   const r = await rotate(b, messages, true)
@@ -216,6 +219,8 @@ test('dry run: writes HANDOFF.preview.md and PROMPTS.md, applies nothing, and th
   expect(r.skip).toContain('dry run')
   const preview = files[`${DIR}/HANDOFF.preview.md`]!
   expect(preview).toStartWith('ROTATION HANDOVER (')
+  expect(preview).toContain('This is a dry-run preview: it is the handover')
+  expect(preview).not.toContain('The full handover is in')
   expect(preview).toContain('Gate passed')
   expect(preview).toContain('Remember to run the linter.')
   // A backfilled rule from before install, and the unfinished background shell.
@@ -246,6 +251,7 @@ test('manual rotation: keeps the first message with its handle, one handover mes
   const { files, messages, compactCalls } = b
   await say($, 'Remember to run the linter.')
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   expect(files[`${DIR}/HANDOFF.md`]).toContain('Ship the importer')
   const out = (await rotate(b, messages)).messages!
@@ -268,6 +274,7 @@ test('gate: missing agents, PRs and questions are appended once and the rotation
   const b = await boot($, on, { agents: [{ id: 'agent-9', description: 'late agent', status: 'idle', type: 'Explore' }] })
   const { messages } = b
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields({ prs: [], agents: [], pendingQuestions: [] }) as never)
   const text = (await rotate(b, messages)).messages![1]!.text
   expect(text).toContain('Added by the verification gate')
@@ -278,6 +285,7 @@ test('gate failure: PROMPTS.md that cannot be written skips the rotation and nev
   const b = await boot($, on, { dropWrites: /PROMPTS\.md$/ })
   const { messages, toasts, files, compactCalls } = b
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   const result = await rotate(b, messages)
   expect(compactCalls).toEqual([])
@@ -290,6 +298,7 @@ test('gate failure: PROMPTS.md that cannot be written skips the rotation and nev
 test('a handover tool call with a missing field or a folder outside .data scratch is refused', async ($, on) => {
   await boot($, on)
   await command($, 'rotate')
+  await $.turn.complete(reply())
   expect((await $.tool.call(fields({ goal: '' }) as never)).result).toMatch(/^error: goal is required/)
   for (const dir of ['/tmp/x', '.data/acme/app/scratch/r', `${DIR}/../../../../x`, '/home/Storage/Projects/repositories/.data/acme/app/notes/r']) {
     expect((await $.tool.call(fields({ handoverDir: dir }) as never)).result).toMatch(/^error: handoverDir must be an absolute folder under/)
@@ -324,10 +333,29 @@ test('phoenix-court-group: rotation is a hard no-op', { options: { rotate: true,
 })
 
 
-test('a handover tool call with no rotation waiting is refused and writes nothing', async ($, on) => {
+test('a handover tool call with no rotation waiting, or before the handover was asked for, is refused and writes nothing', async ($, on) => {
   const { files } = await boot($, on)
   expect((await $.tool.call(fields() as never)).result).toMatch(/^error: no rotation is waiting/)
+  // /jev-compact rotate asks at the next turn end: a call before that is a turn early.
+  await command($, 'rotate dry')
+  expect((await $.tool.call(fields() as never)).result).toMatch(/^error: no rotation is waiting/)
   expect(Object.keys(files)).toEqual([])
+  await $.turn.complete(reply())
+  expect((await $.tool.call(fields() as never)).result).toContain('dry run')
+})
+
+test('a first message holding only an orphan tool_result (left by a host compaction) does not block the rotation', async ($, on) => {
+  const b = await boot($, on)
+  const orphanFirst: Message = { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'gone', text: 'old output', isError: false }], handle: 'h0' }
+  const messages = [orphanFirst, ...b.messages.slice(1)]
+  await command($, 'rotate')
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  const out = (await rotate(b, messages)).messages!
+  expect(out[0]!.handle).toBe('h0')
+  expect(out[0]!.toolResults ?? []).toEqual([])
+  expect(out[0]!.text).toContain('removed a tool result')
+  expect(out[1]!.text).toStartWith('ROTATION HANDOVER (')
 })
 
 test('/jev-compact rotate takes nothing or dry (any case); anything else is a usage error and starts nothing', async ($, on) => {
@@ -350,6 +378,7 @@ test('a session that never rotated counts every ledger prompt as recent, also th
   const b = await boot($, on)
   const { files, messages } = b
   await command($, 'rotate dry')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   await rotate(b, messages, true)
   const recent = files[`${DIR}/HANDOFF.preview.md`]!.split('## Prompts since the last rotation (verbatim)')[1]!
@@ -360,6 +389,7 @@ test('a session that never rotated counts every ledger prompt as recent, also th
 test('only the rotation\'s own compaction rotates: another plugin compaction with the handover in is an ordinary one', async ($, on) => {
   const { messages } = await boot($, on)
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   const r = (await $.session.compact({ trigger: 'plugin', messages } as never)) as { messages?: Message[]; skip?: string }
   expect(r.skip ?? '').not.toMatch(/rotation/)
@@ -380,6 +410,7 @@ test('a dropped typed prompt the ledger never saw fails the gate; one the ledger
   await say($, 'Never push without asking.')
   const withPrompts = [messages[0]!, user('Never push without asking.'), user('Please also fix the footer.'), ...messages.slice(1)]
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   const r = await rotate(b, withPrompts)
   expect(r.skip).toMatch(/dropped prompt not in the ledger: Please also fix the footer\./)
@@ -395,6 +426,7 @@ const long = (n: number): Message[] => [
 test('cap: a 4100-message transcript (longer than the host cap, so whole) rotates and keeps its first message', async ($, on) => {
   const b = await boot($, on)
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   const out = (await rotate(b, long(4100))).messages!
   expect(out[0]!.handle).toBe('h0')
@@ -405,6 +437,7 @@ test('cap: a 4100-message transcript (longer than the host cap, so whole) rotate
 test('cap: a transcript at the cap (it may be the host\'s cut) is skipped, never rotated', async ($, on) => {
   const b = await boot($, on)
   await command($, 'rotate')
+  await $.turn.complete(reply())
   await $.tool.call(fields() as never)
   for (const n of [4096, 4010]) expect((await rotate(b, long(n))).skip).toMatch(/4096-message cap/)
   expect((await rotate(b, long(3990))).messages).toBeDefined()

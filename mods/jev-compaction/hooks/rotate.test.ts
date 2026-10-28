@@ -126,6 +126,24 @@ describe('transcript', () => {
   })
 })
 
+describe('pre-existing orphans', () => {
+  test('are removed from kept messages; an emptied one goes, the first keeps its handle with a note; a cut orphan still fails', () => {
+    const orphan = (id: string, extra: Partial<Message> = {}): Message => user('', { toolResults: [{ tool_use_id: id, text: 'x', isError: false }], ...extra })
+    const m = [orphan('o1', { handle: 'h0' }), ...Array.from({ length: 45 }, (_, i) => user(`m${i}`)), orphan('o2'), user('both', { toolResults: [{ tool_use_id: 'o3', text: 'x', isError: false }] }), call('a'), result('a')]
+    const r = input(m)
+    const built = buildRotation(r)
+    expect(built.messages[0]!.handle).toBe('h0')
+    expect(built.messages[0]!.text).toContain('removed a tool result')
+    expect(built.messages.some((x) => (x.toolResults ?? []).some((t) => t.tool_use_id.startsWith('o')))).toBe(false)
+    expect(built.messages.find((x) => x.text === 'both')!.toolResults).toBeUndefined()
+    expect(built.messages.at(-1)!.toolResults![0]!.tool_use_id).toBe('a')
+    expect(verifyRotation(r, built, promptsFile([]), []).filter((x) => x.item.startsWith('orphan'))).toEqual([])
+    // An orphan the rotation itself makes (a cut between a call and its result) is still caught.
+    const cut = { ...built, messages: [built.messages[0]!, built.messages[1]!, result('a')] }
+    expect(verifyRotation(r, cut, promptsFile([]), []).map((x) => x.item)).toContain('orphan tool_result a')
+  })
+})
+
 describe('dropped prompts', () => {
   test('typed user rows need a ledger prompt; tool results, tagged rows, peers and plugin frames do not', () => {
     const dropped = [
