@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, fixBoard, isVagueEpicName, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText } from './board'
+import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, fixBoard, isVagueEpicName, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText, setEta } from './board'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
 
@@ -857,5 +857,25 @@ describe('fixBoard', () => {
     expect(r.text.endsWith('\nafter  \n')).toBe(true)
     expect(fixBoard(r.text).text).toBe(r.text)
     expect(fixBoard(r.text).changes).toEqual([])
+  })
+})
+
+describe('setEta', () => {
+  const T = '# Tasks\n\n## 3. Epic\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 579 | Fix a \\| b | in_progress | a | | | 2026-10-28 14:00 ICT | n |\n| 580 | Other | todo | | | | | m |\n\n## 4. Second\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 579 | Same id elsewhere | todo | | | | | n |\n'
+  test('changes exactly one cell, keeps all other bytes and passes the lint', () => {
+    const r = setEta(T, '3.579', '2026-10-28 15:00 ICT')
+    if ('error' in r) throw new Error(r.error)
+    const was = T.split('\n')
+    const now = r.text.split('\n')
+    expect(now.filter((l, i) => l !== was[i])).toEqual(['| 579 | Fix a \\| b | in_progress | a | | | 2026-10-28 15:00 ICT | n |'])
+    expect(now.length).toBe(was.length)
+    expect(lintBoard(r.text).findings.filter(f => f.rule === 'padded-cell' || f.rule === 'eta')).toEqual([])
+    const e = setEta(T, '3.580', '2026-10-28 15:00 ICT')
+    expect('text' in e && e.text.includes('| 580 | Other | todo | | | | 2026-10-28 15:00 ICT | m |')).toBe(true)
+  })
+  test('an unknown or malformed reference returns an error and no text', () => {
+    expect(setEta(T, '3.999', 'x')).toEqual({ error: 'no row 3.999 in the board' })
+    expect(setEta(T, '9.579', 'x')).toEqual({ error: 'no row 9.579 in the board' })
+    expect('error' in setEta(T, '579', 'x')).toBe(true)
   })
 })

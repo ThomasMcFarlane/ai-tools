@@ -47,6 +47,7 @@ function setup(on: Parameters<Parameters<typeof test>[1]>[1], opts: { cwd: strin
     return { value: { exitCode: out === '' ? 1 : 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', (_$, e) => {
     opened.push(String(e.title))
     return { value: { isPlaced: true } }

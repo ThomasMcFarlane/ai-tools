@@ -1,3 +1,7 @@
+import type { TasksBoardTask } from '../types'
+import type { RowChanges } from './board'
+import { ageText, epicLabel } from './board'
+
 // Keep in step with FORMAT.md at the plugin's root.
 export const FORMAT_SPEC = `Canonical TASKS.md format ("epic tables"):
 
@@ -109,3 +113,111 @@ Rules:
 - Wait for CI and fix what it reports. Once all checks pass and the PR is mergeable, merge it yourself with \`gh pr merge\`, using a merge method the repository allows, and delete the branch.
 - If CI cannot be made green, leave the PR open and report why.
 - Report the PR URL and the merge result.${extra ? `\n\nAdditional rules:\n${extra}` : ''}`
+
+
+// ETA helpers: pure, offline (Intl with bundled tz data).
+const ZONE_MIN: Record<string, number> = { ICT: 420, UTC: 0, GMT: 0, BST: 60 }
+
+/** The instant of a canonical `YYYY-MM-DD HH:MM <TZ>` ETA (ICT, UTC, GMT, BST or a +HH:MM offset), or undefined. */
+export function etaInstant(eta: string): number | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}) (\S+)$/.exec(eta.trim())
+  if (!m) return undefined
+  const off = /^([+-])(\d{2}):?(\d{2})$/.exec(m[6]!)
+  const min = off ? (off[1] === '-' ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3])) : ZONE_MIN[m[6]!]
+  if (min === undefined) return undefined
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])) - min * 60_000
+  return Number.isNaN(ms) ? undefined : ms
+}
+
+const parts = (ms: number, timeZone: string) => {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', { timeZone, year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' })
+      .formatToParts(ms)
+      .map(x => [x.type, x.value]),
+  ) as Record<string, string>
+  return { day: `${p.year}-${p.month}-${p.day}`, date: `${p.day} ${p.month}`, time: `${p.hour}:${p.minute}`, zone: p.timeZoneName! }
+}
+
+/** An ETA as Bangkok and London times plus the time left; a date is added where it differs from the day it is read on. Undefined for an unknown zone. */
+export function etaPair(eta: string, now: number = Date.now()): { ict: string; uk: string; leftMs: number } | undefined {
+  const at = etaInstant(eta)
+  if (at === undefined) return undefined
+  const ict = parts(at, 'Asia/Bangkok')
+  const uk = parts(at, 'Europe/London')
+  return {
+    ict: `${ict.day === parts(now, 'Asia/Bangkok').day ? '' : `${ict.date} `}${ict.time} ICT`,
+    uk: `${uk.day === ict.day ? '' : `${uk.date} `}${uk.time} ${uk.zone}`,
+    leftMs: at - now,
+  }
+}
+
+/** The canonical ICT ETA for `+45m`, `+2h`, `14:30` (next occurrence, ICT) or `YYYY-MM-DD[ T]HH:MM` (ICT unless it carries Z or an offset); undefined if unreadable. */
+export function parseEtaInput(input: string, now: number): string | undefined {
+  const s = input.trim()
+  let at: number | undefined
+  const rel = /^\+(\d+)\s*([mh])$/i.exec(s)
+  const clock = /^(\d{1,2}):(\d{2})$/.exec(s)
+  const iso = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?\s*(Z|[+-]\d{2}:?\d{2}|ICT)?$/i.exec(s)
+  if (rel) at = now + Number(rel[1]) * (rel[2]!.toLowerCase() === 'h' ? 3_600_000 : 60_000)
+  else if (clock && Number(clock[1]) < 24 && Number(clock[2]) < 60) {
+    const d = new Date(now + 7 * 3_600_000)
+    at = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), Number(clock[1]), Number(clock[2])) - 7 * 3_600_000
+    if (at <= now) at += 86_400_000
+  } else if (iso) {
+    const z = iso[3]?.toUpperCase()
+    at = etaInstant(`${iso[1]} ${iso[2]} ${!z || z === 'ICT' ? 'ICT' : z === 'Z' ? 'UTC' : z}`)
+  }
+  if (at === undefined || Number.isNaN(at)) return undefined
+  return `${new Date(at + 7 * 3_600_000).toISOString().slice(0, 16).replace('T', ' ')} ICT`
+}
+
+export type Staleness = { kind: 'passed' | 'stale'; ms: number }
+
+/** ETA passed, or (in_progress only) nothing about the row changed for `staleMs`. `changedAt` is when the row last changed, 0 unknown. */
+export function staleness(a: { status: string; leftMs: number | undefined; changedAt: number; now: number; staleMs: number }): Staleness | undefined {
+  if (a.leftMs !== undefined && a.leftMs < 0) return { kind: 'passed', ms: -a.leftMs }
+  if (a.status === 'in_progress' && a.changedAt > 0 && a.now - a.changedAt >= a.staleMs) return { kind: 'stale', ms: a.now - a.changedAt }
+  return undefined
+}
+
+export type EtaItem = { ref: string; key: string; title: string; status: string; eta: string; pair?: { ict: string; uk: string; leftMs: number }; stale?: Staleness }
+
+/** One item per open row of this session (in_progress or in_review, pinned, touched or owned by the session tag). `mtimeMs` stands in for rows with no change time yet. */
+export function etaItems(tasks: TasksBoardTask[], s: { mine: string[]; tag: string; changes: RowChanges | undefined; now: number; mtimeMs: number; staleMs: number }): EtaItem[] {
+  return tasks
+    .filter(t => (t.status === 'in_progress' || t.status === 'in_review') && (s.mine.includes(t.id) || (s.tag !== '' && t.owner.toLowerCase().includes(s.tag))))
+    .map(t => {
+      const num = epicLabel(t.epic).num
+      const pair = etaInstant(t.eta) === undefined ? undefined : etaPair(t.eta, s.now)
+      const changedAt = s.changes?.[t.key]?.[1] || s.mtimeMs
+      return { ref: num ? `${num}.${t.id}` : t.id, key: t.key, title: t.title, status: t.status, eta: t.eta, pair, stale: staleness({ status: t.status, leftMs: pair?.leftMs, changedAt, now: s.now, staleMs: s.staleMs }) }
+    })
+}
+
+export const BAND_MAX = 4
+export const BAND_MIN_ROWS = 20 // the band is hidden on terminals shorter than this
+
+/** Band lines, at most BAND_MAX including the "+N more" line. */
+export function bandLines(items: EtaItem[]): { text: string; color?: 'red' | 'yellow' }[] {
+  const line = (i: EtaItem) => {
+    const when = i.pair ? `${i.pair.ict} / ${i.pair.uk}` : i.eta || 'no ETA'
+    const mark = i.stale ? (i.stale.kind === 'passed' ? `ETA passed ${ageText(i.stale.ms)} ago` : `no update ${ageText(i.stale.ms)}`) : i.pair ? `(${ageText(i.pair.leftMs)} left)` : ''
+    return { text: `${i.ref} ${i.title}   ${when}   ${mark}`.trim(), color: i.stale ? (i.stale.kind === 'passed' ? ('red' as const) : ('yellow' as const)) : i.eta === '' ? ('yellow' as const) : undefined }
+  }
+  const shown = items.length > BAND_MAX ? items.slice(0, BAND_MAX - 1) : items
+  return [...shown.map(line), ...(items.length > shown.length ? [{ text: `+${items.length - shown.length} more` }] : [])]
+}
+
+export const NUDGE_MS = 15 * 60_000
+
+/** One nudge line per row whose ETA passed, went stale or is missing, at most one per row per NUDGE_MS (`last` is updated). */
+export function nudgeLines(items: EtaItem[], now: number, last: Map<string, number>): string[] {
+  const out: string[] = []
+  for (const i of items) {
+    const why = i.stale ? (i.stale.kind === 'passed' ? `ETA for ${i.ref} passed ${ageText(i.stale.ms)} ago.` : `${i.ref} has had no update for ${ageText(i.stale.ms)}.`) : i.status === 'in_progress' && i.eta === '' ? `${i.ref} is in_progress with no ETA.` : ''
+    if (!why || now - (last.get(i.key) ?? -Infinity) < NUDGE_MS) continue
+    last.set(i.key, now)
+    out.push(`${why} Call the eta tool with a new estimate or update the status.`)
+  }
+  return out
+}

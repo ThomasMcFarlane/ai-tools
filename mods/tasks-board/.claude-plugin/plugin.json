@@ -1,6 +1,6 @@
 {
   "name": "tasks-board",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "author": {
     "name": "Thomas McFarlane"
   },
@@ -62,6 +62,13 @@
       "type": "string",
       "title": "Agent name prefix pattern",
       "description": "A regular expression removed from the start of an agent name when it is shown (for example a date-stamped prefix).",
+      "required": false
+    },
+    "staleMinutes": {
+      "type": "number",
+      "title": "ETA band: stale after (minutes)",
+      "description": "An in_progress row that has not changed for this long is marked \"no update\" in the ETA band above the prompt.",
+      "default": 30,
       "required": false
     }
   }
