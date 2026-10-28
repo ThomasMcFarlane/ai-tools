@@ -164,7 +164,7 @@
     "textCompression": {
       "type": "boolean",
       "title": "Compress old text",
-      "description": "During a compaction, cut padding, pleasantries and joining words from old text (user text only by the word filter) and let Jev drop sentences that carry nothing from long assistant messages.",
+      "description": "During a compaction, cut padding, pleasantries and joining words from old assistant text (user text stays verbatim) and let Jev drop sentences that carry nothing from long assistant messages.",
       "default": true,
       "required": false
     },

@@ -89,7 +89,7 @@ export const textKey = (role: string, text: string) => `t:${role}:${hash(text)}`
 export const sentenceKey = (text: string) => `s:${hash(text)}`
 /** The text as the compaction will leave it before Jev's cuts: word compression is idempotent, so scores stay valid. */
 const prepared = (text: string, options: Pick<Options, 'textCompression'>, role: 'user' | 'assistant' = 'assistant') =>
-  options.textCompression ? compressWords(text, { user: role === 'user' }) : text
+  options.textCompression && role === 'assistant' ? compressWords(text) : text
 
 /** Unpinned, unprotected, not-yet-compacted messages whose text is long enough to be judged. */
 export function collectTexts(messages: readonly Message[], preserve: number, protect?: Protect): TextCandidate[] {
@@ -232,8 +232,9 @@ function rewriteText(message: Message, action: TextAction | undefined, index: nu
   const out: Rewritten = { text: message.text, abridged: false, stubbed: false, sentences: 0, wordChars: 0 }
   if (action === 'stub' && !noted) return { ...out, text: stubText(message.text.length), stubbed: true }
   let text = message.text
-  if (shrink?.words && !shrink.skip(index, message.role)) {
-    text = compressWords(text, { user: message.role === 'user' })
+  // User text keeps its words: a rewritten user message loses its row metadata (timestamp, promptId, origin) in the rebuilt transcript.
+  if (shrink?.words && message.role === 'assistant' && !shrink.skip(index, message.role)) {
+    text = compressWords(text)
     out.wordChars = message.text.length - text.length
   }
   const plan = shrink?.drops.get(index)

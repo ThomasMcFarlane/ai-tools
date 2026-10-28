@@ -459,7 +459,7 @@ describe('text compression', () => {
     expect(out[1]!.text).toContain('earlier assistant message omitted')
     expect(jev.asked.filter((n) => n.startsWith('sent_')).every((n) => n.startsWith('sent_m5_'))).toBe(true)
     expect(jev.asked.some((n) => n.startsWith('sent_m5_'))).toBe(true)
-    expect(out[4]!.text).toContain(compressWords(SENTENCES[2]!))
+    expect(out[4]!.text).toContain(SENTENCES[2]!)
   })
 
   test('a second compaction of the result changes nothing and asks no sentence question', async () => {
@@ -480,16 +480,14 @@ describe('text compression', () => {
     expect(again.messages).toEqual(first.messages)
   })
 
-  test('old user text gets only the word filter: no question, no deletion of sentences', async () => {
+  test('old user text is returned as the same message object, so the host keeps its metadata', async () => {
     const prompt = 'Sure! Can you please just look at the broken build in the CI and let me know why it does not work in order to fix it?'
     const messages = [user('start'), assistant('ok'), user(prompt), assistant('done'), ...tail()]
     const jev = fakeJev({}, 0)
     const { messages: out, stats } = await compact(messages, jev.ask)
     expect(jev.asked).toEqual([])
-    expect(out[2]!.text).toBe('Sure! Can you please just look at broken build in the CI and let me know why it does not work in order to fix it?')
-    expect(stats.wordCharsSaved).toBe(prompt.length - out[2]!.text.length)
-    expect(out[0]).toBe(messages[0])
-    expect(out[1]).toBe(messages[1])
+    expect(out[2]).toBe(messages[2])
+    expect(stats.wordCharsSaved).toBe(0)
   })
 
   test('word compression of old assistant text keeps the failure lines and cuts the padding', async () => {
