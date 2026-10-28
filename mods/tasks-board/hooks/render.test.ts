@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { parseBoard } from './board'
+import { etaPair, parseEtaInput } from './format'
 
 // Synthetic boards in the styles real projects use: long titles and notes, repeated ids, dotted and suffixed ids,
 // escaped pipes, multi-line rows, checklists. The plugin runs end to end on each (session.start refreshes through
@@ -59,6 +60,7 @@ for (const [name, text] of BOARDS) {
       },
     }))
     on('command.register', () => ({ value: undefined as never }))
+    on('tool.register', () => ({ value: undefined as never }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     on('ui.status', (_$, e) => {
       reported.push(String(e.text))
@@ -130,6 +132,7 @@ test('a non-canonical primary board launches the formatting agent once, recorded
     return { model: 'sonnet', agentId: 'a1' }
   })
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
@@ -168,6 +171,7 @@ test('a gh spawn failure (session cwd deleted) is not reported and does not stop
     return { model: 'sonnet', agentId: 'a1' }
   })
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', (_$, e) => {
     reported.push(String(e.text))
@@ -217,6 +221,7 @@ test('worktree variants are what the worktree changed since it forked, not where
     return { value: { exitCode: 0, stdout: out, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', (_$, e) => {
     reported.push(String(e.text))
@@ -259,6 +264,7 @@ test('every Button has a label or one string child, on an mc3-like board', { opt
     value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', (_$, e) => {
     reported.push(String(e.text))
@@ -314,6 +320,7 @@ test('number cells are plain pressable Buttons, open epics and toggle tasks, in 
     value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', (_$, e) => {
     reported.push(String(e.text))
@@ -381,6 +388,7 @@ test('an open epic keeps its task rows outside its own Box, so hovering a task d
     value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
@@ -440,6 +448,7 @@ test('expanded details show the full notes, split on <br>, with no hover and out
     value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
@@ -493,6 +502,7 @@ test('expanded details start with a Ref line <epic>.<task>', { options: { autofi
     value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.status', () => ({ value: undefined }))
   await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
@@ -526,4 +536,70 @@ test('expanded details start with a Ref line <epic>.<task>', { options: { autofi
   const first = (det!.children as unknown[])[1]
   expect(JSON.stringify(first)).toContain('Ref')
   await ui.unmount()
+})
+
+test('the eta tool patches one cell, the band shows it, and the nudge fires once', { options: { autofix: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const NOW = Date.now() // the plugin reads the real clock; mock.clock only drives timers
+  const at = (min: number) => parseEtaInput(`+${min}m`, NOW)!
+  let text = `# Tasks\n\n## 3. Epic\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 579 | Fix login | in_progress | a | | | ${at(-60)} | n |\n| 580 | No eta | in_progress | a | | | | n |\n`
+  const patches: string[][] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: NOW })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: NOW - 60_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'node') {
+      patches.push(e.argv)
+      text = text.replace(e.argv[6]!, e.argv[7]!) // what the patch script does to the file
+    }
+    return { value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
+  on('ui.render', ($$, e) => $$.ui.resolve(e).Text({ children: 'base' }) as never)
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const band = async (rows = 40) => {
+    const ui = await $.ui.mount({ plugin: 'tasks-board', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100 } as never, viewport: { columns: 100, rows, isFullscreen: false } })
+    const out = JSON.stringify(await ui.drawn())
+    await ui.unmount()
+    return out
+  }
+  const submit = () => $.prompt.submit({ text: 'hi', origin: { kind: 'composer' }, wait: false } as never) as Promise<{ context?: string[] }>
+  const TOOL = 'mcp__tasks-board__eta'
+
+  // Nothing of this session's yet: no band, no nudge.
+  expect(await band()).not.toContain('Fix login')
+  expect((await submit()).context ?? []).toEqual([])
+
+  // An unknown task or unreadable ETA writes nothing.
+  expect(await $.tool.call({ tool: TOOL, task: '3.999', eta: '+45m' } as never)).toMatchObject({ result: expect.stringContaining('error') })
+  expect(await $.tool.call({ tool: TOOL, task: '3.579', eta: 'later' } as never)).toMatchObject({ result: expect.stringContaining('error') })
+  expect(patches).toEqual([])
+
+  const ok = await $.tool.call({ tool: TOOL, task: '3.579', eta: '+45m' } as never)
+  const eta = at(45)
+  expect(ok).toMatchObject({ result: `ok: 3.579 ETA ${eta}` })
+  expect(patches.length).toBe(1)
+  expect(text).toContain(`| 579 | Fix login | in_progress | a | | | ${eta} | n |`)
+  expect(text).toContain('| 580 | No eta | in_progress | a | | | | n |')
+  const drawn = await band()
+  const pair = etaPair(eta, NOW)!
+  expect(drawn).toMatch(new RegExp(`3\\.579 Fix login {3}${pair.ict} / ${pair.uk} {3}\\((44|45)m left\\)`))
+  expect(await band(19)).not.toContain('Fix login') // hidden on short terminals
+
+  // 580 joins the session (pinned) with no ETA: the nudge fires once, then waits 15 minutes.
+  await $.command.run({ command: 'board', args: 'pin 580' } as never)
+  const first = (await submit()).context ?? []
+  expect(first.join('\n')).toContain('3.580 is in_progress with no ETA')
+  expect(((await submit()).context ?? []).length).toBe(0)
 })

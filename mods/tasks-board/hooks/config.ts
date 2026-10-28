@@ -18,6 +18,8 @@ export type BoardConfig = {
   ownerNames: string[]
   /** A regular expression removed from the start of an agent name when shown (e.g. a date-stamped prefix). */
   agentPrefixPattern: string
+  /** An in_progress row whose line is unchanged this long is marked "no update" in the ETA band. */
+  staleMinutes: number
 }
 
 export const DEFAULT_CONFIG: BoardConfig = {
@@ -30,6 +32,7 @@ export const DEFAULT_CONFIG: BoardConfig = {
   maxWorktrees: 50,
   ownerNames: [],
   agentPrefixPattern: '',
+  staleMinutes: 30,
 }
 
 const text = (v: unknown, d: string) => (typeof v === 'string' ? v.trim() : d)
@@ -51,5 +54,6 @@ export function readConfig(o: PluginOptions): BoardConfig {
     maxWorktrees: count(o.maxWorktrees, DEFAULT_CONFIG.maxWorktrees),
     ownerNames: list(o.ownerNames, /[\n;,]/),
     agentPrefixPattern: text(o.agentPrefixPattern, ''),
+    staleMinutes: count(o.staleMinutes, DEFAULT_CONFIG.staleMinutes),
   }
 }

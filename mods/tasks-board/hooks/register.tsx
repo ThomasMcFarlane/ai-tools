@@ -5,8 +5,8 @@ import type { TasksBoardFix, TasksBoardChanges, TasksBoardFilter, TasksBoardTask
 import type { WorktreeBoard } from './board'
 import type { BoardConfig } from './config'
 import { DEFAULT_CONFIG, readConfig } from './config'
-import { fixPrompt } from './format'
-import { ETA_W, fixBoard, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
+import { BAND_MIN_ROWS, bandLines, etaItems, fixPrompt, nudgeLines, parseEtaInput } from './format'
+import { ETA_W, fixBoard, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, setEta, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
 
 const PANE = 'tasks-board'
 const empty = { numW: 3, repo: '', path: '', mtimeMs: 0, size: 0, checkedAt: 0, tasks: [], error: '' }
@@ -57,6 +57,8 @@ const union = (a: string[], b: string[]) => [...new Set([...a, ...b])]
 // Mechanical table fixes after the agent edits a board, then the findings it still has to fix. argv, never shell text.
 const WRITE_IF_UNCHANGED = "const fs=require('fs');const [p,n,t]=process.argv.slice(1);if(fs.readFileSync(p,'utf8').length!==Number(n))process.exit(3);fs.writeFileSync(p,t)"
 const ARGV_MAX = 100_000
+// Replaces one line, only if the file still has its recorded length and that line: a patch, so a big board never goes through argv.
+const PATCH_LINE = "const fs=require('fs');const [p,n,i,was,now]=process.argv.slice(1);const t=fs.readFileSync(p,'utf8');if(t.length!==Number(n))process.exit(3);const l=t.split('\\n');if(l[Number(i)]!==was)process.exit(3);l[Number(i)]=now;fs.writeFileSync(p,l.join('\\n'))"
 async function tidyBoard($: EngineInterface, path: string): Promise<void> {
   let text = String(await $.fs.read(path))
   const fixed = fixBoard(text)
@@ -88,6 +90,33 @@ async function resolvePath($: EngineInterface): Promise<{ path: string; source: 
   // The label follows the picked board, never the session's directory.
   const { org, repo } = picked.path ? boardRepo(picked.path, cfg) : { org: '', repo: '' }
   return { path: picked.path, source: picked.source, org, repo, root }
+}
+
+// Last nudge per row key, so a row is nudged at most once per 15 minutes.
+const nudgedAt = new Map<string, number>()
+
+// This session's open rows with their ETA state.
+async function sessionEtas($: EngineInterface) {
+  const b = await read($, board)
+  const ch = await read($, changes)
+  return etaItems(b.tasks, { mine: union(await read($, pinned), await read($, touched)), tag: (await read($, me)).toLowerCase(), changes: ch?.rows, now: Date.now(), mtimeMs: b.mtimeMs, staleMs: cfg.staleMinutes * 60_000 })
+}
+
+// The `eta` tool: edits one row's ETA cell in the resolved board.
+async function setEtaTool($: EngineInterface, input: { task?: unknown; eta?: unknown }): Promise<string> {
+  const ref = String(input.task ?? '').trim()
+  const eta = parseEtaInput(String(input.eta ?? ''), Date.now())
+  if (!eta) return `error: cannot read ETA "${String(input.eta ?? '')}"; use +45m, 14:30 or YYYY-MM-DD HH:MM`
+  const { path } = await read($, board)
+  if (!path) return 'error: no board for this session'
+  const text = String(await $.fs.read(path))
+  const done = setEta(text, ref, eta)
+  if ('error' in done) return `error: ${done.error}`
+  const w = await $.process.run(['node', '-e', PATCH_LINE, path, String(text.length), String(done.at), done.was, done.now], { timeoutMs: 20000 })
+  if (w.exitCode !== 0) return 'error: the board changed while editing; try again'
+  await update($, touched, t => union(t, [ref.split('.')[1]!]))
+  await refresh($, true)
+  return `ok: ${ref} ETA ${eta}`
 }
 
 // Other worktrees of the repo, merged into the base board. Kept in module variables (not $.state):
@@ -469,6 +498,19 @@ export const register: Register = (on, options) => {
           report($, 'refresh', err)
         }
       })
+      await $.tool.register({
+        name: 'eta',
+        description: 'Set the ETA of one TASKS.md row you work on. The board band shows it as ICT and UK time. Call it when you pick a row up and whenever the estimate changes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task: { type: 'string', description: 'Task reference <epic>.<task>, for example 3.579.' },
+            eta: { type: 'string', description: '"+45m", "+2h", "14:30" (next, ICT) or "YYYY-MM-DD HH:MM" (ICT).' },
+          },
+          required: ['task', 'eta'],
+        },
+        isDeferred: false,
+      }).catch(err => report($, 'eta tool', err)) // not fatal: the board works without the tool
     } catch (err) {
       report($, 'session.start', err)
     }
@@ -480,6 +522,25 @@ export const register: Register = (on, options) => {
       await update($, isTurnRunning, () => true)
     } catch (err) {
       report($, 'turn.start', err)
+    }
+    return next(e)
+  })
+
+  on('tool.call', { tool: 'mcp__tasks-board__eta' }, async ($, e) => {
+    try {
+      return { result: await setEtaTool($, e as unknown as { task?: unknown; eta?: unknown }) }
+    } catch (err) {
+      return { result: `error: ${String(err instanceof Error ? err.message : err).slice(0, 120)}` }
+    }
+  })
+
+  // Nudge: one context line per row with a passed, stale or missing ETA, at most once per row per 15 minutes.
+  on('prompt.submit', async ($, e, next) => {
+    try {
+      const lines = nudgeLines(await sessionEtas($), Date.now(), nudgedAt)
+      if (lines.length) return next({ ...e, context: [...(e.context ?? []), ...lines] })
+    } catch (err) {
+      report($, 'nudge', err)
     }
     return next(e)
   })
@@ -534,6 +595,25 @@ export const register: Register = (on, options) => {
       }
     } catch (err) {
       report($, 'auto-open', err)
+    }
+    // The ETA band: this session's open rows, hidden on short terminals.
+    try {
+      const rows = e.viewport?.rows
+      const lines = rows !== undefined && rows < BAND_MIN_ROWS ? [] : bandLines(await sessionEtas($))
+      if (lines.length === 0) return next(e)
+      const drawn = await Promise.resolve(next(e)).catch(() => null)
+      const below = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
+      const { Box, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column">
+          {lines.map((l, i) => (
+            <Text key={`eta${i}`} color={l.color} wrap="truncate-end">{l.text}</Text>
+          ))}
+          {below}
+        </Box>
+      )
+    } catch (err) {
+      report($, 'eta-band', err)
     }
     return next(e)
   })
