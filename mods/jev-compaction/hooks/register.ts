@@ -384,6 +384,10 @@ async function onCommand($: EngineInterface, args: string) {
   return { text: 'Usage: /jev-compact now | stats' }
 }
 
+/** The thresholds in force, logged at session start, so a session running on the defaults shows. */
+const activeThresholds = (c: Config) =>
+  `thresholds: trigger ${c.triggerTokens}, target ${c.targetTokens}, hard limit ${c.hardTokens}, periodic minimum ${c.softMinFreedTokens}, regrowth ${c.regrowTokens} (windows up to 300k: ${c.triggerPercent}/${c.targetPercent}/${c.hardPercent}%)`
+
 export const register: Register = (on, options) => {
   config = resolveConfig(options)
   compacting = isNow = nowPending = false
@@ -396,6 +400,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     interactive = (e as { isInteractive?: boolean }).isInteractive !== false
     await $.state.set(INTERACTIVE, interactive)
+    $.ui.log(`jev-compaction: ${activeThresholds(config)}`)
     try {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now) or show totals (stats)', argumentHint: 'now | stats' })
     } catch (err) {

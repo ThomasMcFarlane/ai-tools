@@ -89,6 +89,11 @@ const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =
 
 const isBuiltin = (r: { messages?: Message[] }) => r.messages?.[0]?.text === 'BUILTIN SUMMARY'
 
+test('session start logs the thresholds in force once', { options: { hardTokens: 300_000 } }, async ($, on) => {
+  const { logs } = await boot($, on)
+  expect(logs).toEqual(['jev-compaction: thresholds: trigger 200000, target 120000, hard limit 300000, periodic minimum 30000, regrowth 50000 (windows up to 300k: 60/40/85%)'])
+})
+
 test('subagents and precompute pass straight to the built-in compaction without Jev', async ($, on) => {
   const { requests } = await boot($, on)
   expect(isBuiltin(await compact($, 'plugin', { agentId: 'sub-1' }))).toBe(true)

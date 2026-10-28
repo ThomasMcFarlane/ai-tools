@@ -76,6 +76,7 @@ Without a key a compaction is deferred (periodic) or left to the built-in summar
 
 - `/jev-compact now` compacts when your next turn ends (the host refuses it inside a command), with the `/compact` policy. Below the hard limit it never falls back to the built-in summary: if it frees too little it defers and leaves the conversation as it is. At or above the hard limit, when its result would still end at or above it, it falls back to the built-in summary.
 - `/jev-compact stats` shows the session totals: compactions applied, deferred and handed to the built-in summary, estimated tokens freed, Jev requests, sentences dropped, characters saved by word compression and characters saved on entry.
+- At session start the mod logs the thresholds in force (`jev-compaction: thresholds: trigger ..., target ..., hard limit ...`), so a session that runs on the defaults because its stored options were lost is visible in the log. The host clears `pluginConfigs` options when a plugin is uninstalled, and a reinstall starts from the defaults.
 
 ## Options
 
