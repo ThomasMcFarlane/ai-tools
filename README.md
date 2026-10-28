@@ -181,7 +181,8 @@ ai-tools/
 │   ├── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
 │   ├── plan-view/     # Claude Code plugin: docked markdown preview of Claude's plan and the .md files it mentions
 │   ├── jev-compaction/  # Claude Code plugin: periodic Jev-guided compaction of long sessions
-│   └── jev-skills/      # Claude Code plugin: Jev-picked skill shortlist instead of the full skill listing
+│   ├── jev-skills/      # Claude Code plugin: Jev-picked skill shortlist instead of the full skill listing
+│   └── context-diet/    # Claude Code plugin: trims repeated caveman, ponytail and superpowers hook context
 ├── actions/
 │   └── tasks-board-check/  # GitHub Action: `uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v2`
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)

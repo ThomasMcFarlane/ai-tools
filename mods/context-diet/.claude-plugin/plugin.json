@@ -1,0 +1,25 @@
+{
+  "name": "context-diet",
+  "version": "0.1.0",
+  "author": {
+    "name": "Thomas McFarlane"
+  },
+  "description": "Cuts repeated hook boilerplate: the caveman per-prompt reminder goes out on every 10th prompt, and the caveman, ponytail and superpowers texts re-injected after a compaction shrink to a line or two each.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "reminderEvery": {
+      "type": "number",
+      "title": "Caveman reminder interval",
+      "description": "The caveman per-prompt reminder is kept on the first prompt, after each compaction and on every this-many prompts. 1 keeps it on every prompt.",
+      "default": 10,
+      "required": false
+    },
+    "shortenAfterCompact": {
+      "type": "boolean",
+      "title": "Shorten post-compaction texts",
+      "description": "Replace the caveman, ponytail and superpowers SessionStart texts re-injected after a compaction with a line or two each.",
+      "default": true,
+      "required": false
+    }
+  }
+}
