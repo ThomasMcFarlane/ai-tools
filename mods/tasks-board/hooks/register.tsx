@@ -6,7 +6,7 @@ import type { WorktreeBoard } from './board'
 import type { BoardConfig } from './config'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { BAND_MIN_ROWS, bandLines, etaItems, fixPrompt, nudgeLines, parseEtaInput } from './format'
-import { ETA_W, fixBoard, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, setEta, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
+import { ETA_W, fixBoard, epicEta, shortEta, ageText, boardRepo, normaliseGitDir, barColumns, changedSinceFork, boardCandidates, epicLabel, etaWriteTarget, groupByEpic, isBlockedOnYou, isActive, lintBoard, mergeBoards, numColumnWidth, parseBoard, parseIds, parseRemote, parseTarget, pickBoard, repoFromCwd, rowIds, ruleLine, setEta, shouldLaunchFix, slimTasks, SPINNER, subHeader, tableLine, tagColor, trackChanges, headerRuns, wrapText, worktreePaths, worktreeTag } from './board'
 
 const PANE = 'tasks-board'
 const empty = { numW: 3, repo: '', path: '', mtimeMs: 0, size: 0, checkedAt: 0, tasks: [], error: '' }
@@ -102,13 +102,20 @@ async function sessionEtas($: EngineInterface) {
   return etaItems(b.tasks, { mine: union(await read($, pinned), await read($, touched)), tag: (await read($, me)).toLowerCase(), changes: ch?.rows, now: Date.now(), mtimeMs: b.mtimeMs, staleMs: cfg.staleMinutes * 60_000 })
 }
 
-// The `eta` tool: edits one row's ETA cell in the resolved board.
+// The `eta` tool: edits one row's ETA cell in the caller's task worktree board. The base checkout is never written.
 async function setEtaTool($: EngineInterface, input: { task?: unknown; eta?: unknown }): Promise<string> {
   const ref = String(input.task ?? '').trim()
   const eta = parseEtaInput(String(input.eta ?? ''), Date.now())
   if (!eta) return `error: cannot read ETA "${String(input.eta ?? '')}"; use +45m, 14:30 or YYYY-MM-DD HH:MM`
-  const { path } = await read($, board)
-  if (!path) return 'error: no board for this session'
+  const primary = (await read($, board)).path
+  if (!primary) return 'error: no board for this session'
+  const baseDir = primary.slice(0, primary.lastIndexOf('/'))
+  const listed = await $.process.run(['git', '-C', baseDir, 'worktree', 'list', '--porcelain'], { timeoutMs: 20000 }).catch(() => ({ exitCode: 1, stdout: '' }))
+  const dirs = [await $.session.cwd(), await $.session.root()].filter((d, i, a) => d !== '' && a.indexOf(d) === i)
+  const target = etaWriteTarget(dirs, primary, listed.exitCode === 0 ? worktreePaths(listed.stdout) : [], cfg, ref)
+  if ('error' in target) return `error: ${target.error}`
+  const path = target.path
+  if (!(await $.fs.exists(path))) return `error: no TASKS.md at ${path}`
   const text = String(await $.fs.read(path))
   const done = setEta(text, ref, eta)
   if ('error' in done) return `error: ${done.error}`
@@ -500,7 +507,7 @@ export const register: Register = (on, options) => {
       })
       await $.tool.register({
         name: 'eta',
-        description: 'Set the ETA of one TASKS.md row you work on. The board band shows it as ICT and UK time. Call it when you pick a row up and whenever the estimate changes.',
+        description: 'Set the ETA of one TASKS.md row you work on, in the TASKS.md of the task worktree you run in (never the base checkout). The board band shows it as ICT and UK time. Call it when you pick a row up and whenever the estimate changes.',
         inputSchema: {
           type: 'object',
           properties: {

@@ -342,6 +342,27 @@ export function boardCandidates(cwd: string, cfg: PathConfig, mainWorktree = '')
   return out.filter((c, i) => out.findIndex(o => o.path === c.path) === i)
 }
 
+/**
+ * The TASKS.md the `eta` tool may write. A registered worktree (not the primary checkout) holding one of `dirs`
+ * wins, the deepest first. Otherwise the primary board, unless a baseBoard template says it is the read-only base
+ * checkout; then `error` says to run the tool from a task worktree.
+ */
+export function etaWriteTarget(dirs: string[], primary: string, worktrees: string[], cfg: PathConfig, ref: string): { path: string } | { error: string } {
+  const baseDir = primary.slice(0, primary.lastIndexOf('/'))
+  const inside = (dir: string, root: string) => dir === root || dir.startsWith(`${root}/`)
+  for (const dir of dirs) {
+    const wt = worktrees
+      .filter(w => w !== baseDir && w !== '' && inside(dir, w) && !inside(baseDir, w))
+      .sort((a, b) => b.length - a.length)[0]
+    if (wt) return { path: `${wt}/TASKS.md` }
+  }
+  const isBase = cfg.baseBoard !== '' && (matchTemplate(cfg.baseBoard, cfg.reposRoot, primary, true) !== undefined || dirs.some(d => inside(d, baseDir)))
+  if (!isBase) return { path: primary }
+  const { org, repo } = boardRepo(primary, cfg)
+  const name = org ? `${org}/${repo}` : repo
+  return { error: `refusing to edit the base checkout ${primary}; run the eta tool from a task worktree of ${name}, or land the ETA with: git-base land ${name} -m "docs(tasks): row ${ref} ETA"` }
+}
+
 /** The first entry of `git worktree list --porcelain`: the main worktree. */
 export const worktreePaths = (porcelain: string): string[] =>
   porcelain
