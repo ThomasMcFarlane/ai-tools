@@ -113,7 +113,7 @@ Agents update the board as work goes, not at the end of the session.
 - Every `in_progress` and `in_review` row carries an ETA in `YYYY-MM-DD HH:MM <TZ>`. Revise it as soon as it
   slips; an open row with an ETA in the past is wrong and must be updated.
 - Set and refresh ETAs with the `eta` tool (`mcp__tasks-board__eta`, arguments `task` as `<epic>.<task>` and `eta` as
-  `+45m`, `+2h`, `14:30` or `YYYY-MM-DD HH:MM`, read as ICT). It edits only that row's ETA cell. The band above the
+  `+45m`, `+2h`, `14:30` or `YYYY-MM-DD HH:MM`, read as ICT). It edits only that row's ETA cell, in the `TASKS.md` of the task worktree it runs in, and refuses to touch a base checkout (run it from a task worktree, or land the ETA with `git-base land`). The band above the
   prompt shows each open row of the session with its ETA in ICT and UK time (BST or GMT, with the date when it
   crosses midnight) and the time left, in red once the ETA has passed and in yellow when an `in_progress` row has not
   changed for `staleMinutes` (default 30). It holds at most 4 lines and is hidden on terminals under 20 rows. A row

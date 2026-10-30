@@ -603,3 +603,55 @@ test('the eta tool patches one cell, the band shows it, and the nudge fires once
   expect(first.join('\n')).toContain('3.580 is in_progress with no ETA')
   expect(((await submit()).context ?? []).length).toBe(0)
 })
+
+const ETA_OPTIONS = { autofix: false, reposRoot: '/r', baseBoard: '{root}/.worktrees/{org}/.base/{repo}/TASKS.md', repoPatterns: '{root}/.worktrees/{org}/{task}/{repo}\n{root}/.worktrees/{org}/.base/{repo}' }
+
+async function etaSession($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], cwd: string) {
+  const base = '/r/.worktrees/Org/.base/repo'
+  const wt = '/r/.worktrees/Org/task-a/repo'
+  const NOW = Date.now()
+  const board = (eta: string) => `# Tasks\n\n## 3. Epic\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 579 | Fix login | in_progress | a | | | ${eta} | n |\n`
+  const files: Record<string, string> = { [`${base}/TASKS.md`]: board(''), [`${wt}/TASKS.md`]: board('') }
+  const patches: string[][] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: NOW })
+  on('session.start', () => ({ cwd }))
+  on('session.cwd', () => ({ value: cwd }))
+  on('session.root', () => ({ value: cwd }))
+  on('fs.exists', (_$, e) => ({ value: e.path in files }))
+  on('fs.stat', (_$, e) => ({ value: { kind: 'file', size: files[e.path]?.length ?? 0, mtimeMs: NOW - 60_000, isLink: false } }))
+  on('fs.read', (_$, e) => ({ value: files[e.path] ?? '' }))
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'node') {
+      patches.push(e.argv)
+      files[e.argv[3]!] = files[e.argv[3]!]!.replace(e.argv[6]!, e.argv[7]!)
+    }
+    const git = e.argv[0] === 'git' ? e.argv.slice(3).join(' ') : ''
+    const out = git.startsWith('worktree list') ? `worktree ${base}\n\nworktree ${wt}\n` : git.startsWith('rev-parse --git-common-dir') ? `${base}/.git\n` : git.startsWith('rev-parse') ? 'sha1\n' : ''
+    return { value: { exitCode: git !== '' && out === '' ? 1 : 0, stdout: e.argv[0] === 'git' ? out : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  await $.session.start({ cwd, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  return { files, patches, base, wt, board }
+}
+
+test('the eta tool writes the worktree board, never the base checkout', { options: ETA_OPTIONS }, async ($, on) => {
+  const s = await etaSession($, on, '/r/.worktrees/Org/task-a/repo')
+  const ok = await $.tool.call({ tool: 'mcp__tasks-board__eta', task: '3.579', eta: '+45m' } as never)
+  expect((ok as { result: string }).result).toMatch(/^ok: 3\.579 ETA \d{4}-\d{2}-\d{2} \d{2}:\d{2} ICT$/)
+  expect(s.patches.map(p => p[3])).toEqual([`${s.wt}/TASKS.md`])
+  expect(s.files[`${s.wt}/TASKS.md`]).toContain(' ICT | n |')
+  expect(s.files[`${s.base}/TASKS.md`]).toBe(s.board(''))
+})
+
+test('the eta tool refuses to edit the base checkout and names the way out', { options: ETA_OPTIONS }, async ($, on) => {
+  const s = await etaSession($, on, '/r/.worktrees/Org/.base/repo/mods')
+  const r = (await $.tool.call({ tool: 'mcp__tasks-board__eta', task: '3.579', eta: '+45m' } as never)) as { result: string }
+  expect(r.result).toBe(`error: refusing to edit the base checkout ${s.base}/TASKS.md; run the eta tool from a task worktree of Org/repo, or land the ETA with: git-base land Org/repo -m "docs(tasks): row 3.579 ETA"`)
+  expect(s.patches).toEqual([])
+  expect(s.files[`${s.base}/TASKS.md`]).toBe(s.board(''))
+})

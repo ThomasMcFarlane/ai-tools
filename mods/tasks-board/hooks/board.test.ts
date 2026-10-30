@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, fixBoard, isVagueEpicName, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText, setEta } from './board'
+import { ETA_W, epicEta, shortEta, fillTemplate, matchTemplate, parseRemote, repoFromCwd, worktreePaths, worktreeTag, mergeBoards, changedSinceFork, parseTarget, lintBoard, checkBoard, shouldLaunchFix, FIX_WINDOW_MS, STATE_BUDGET, ACTIVE_MS, pickBoard, numColumnWidth, slimTasks, barColumns, isActive, trackChanges, extractEta, boardCandidates, etaWriteTarget, epicLabel, groupByEpic, isBlockedOnYou, parseBoard, fixBoard, isVagueEpicName, headerRuns, ruleLine, subHeader, rowIds, parseIds, tableLine, wrapText, setEta } from './board'
 import { DEFAULT_CONFIG, readConfig } from './config'
 import { fixPrompt } from './format'
 
@@ -877,5 +877,34 @@ describe('setEta', () => {
     expect(setEta(T, '3.999', 'x')).toEqual({ error: 'no row 3.999 in the board' })
     expect(setEta(T, '9.579', 'x')).toEqual({ error: 'no row 9.579 in the board' })
     expect('error' in setEta(T, '579', 'x')).toBe(true)
+  })
+})
+
+describe('etaWriteTarget', () => {
+  const cfg = { ...DEFAULT_CONFIG, reposRoot: '/r', baseBoard: '{root}/.worktrees/{org}/.base/{repo}/TASKS.md', repoPatterns: ['{root}/.worktrees/{org}/{task}/{repo}', '{root}/.worktrees/{org}/.base/{repo}'] }
+  const base = '/r/.worktrees/Org/.base/repo'
+  const wt = '/r/.worktrees/Org/task-a/repo'
+  const listed = [base, wt, '/r/.worktrees/Org/task-b/repo']
+  const refusal = `refusing to edit the base checkout ${base}/TASKS.md; run the eta tool from a task worktree of Org/repo, or land the ETA with: git-base land Org/repo -m "docs(tasks): row 3.579 ETA"`
+
+  test('writes the board of the worktree holding the cwd, also from a subdirectory', () => {
+    expect(etaWriteTarget([wt], `${base}/TASKS.md`, listed, cfg, '3.579')).toEqual({ path: `${wt}/TASKS.md` })
+    expect(etaWriteTarget([`${wt}/src/deep`], `${base}/TASKS.md`, listed, cfg, '3.579')).toEqual({ path: `${wt}/TASKS.md` })
+  })
+  test('the shell cwd in a worktree wins over a session root in the base checkout', () => {
+    expect(etaWriteTarget([wt, base], `${base}/TASKS.md`, listed, cfg, '3.579')).toEqual({ path: `${wt}/TASKS.md` })
+  })
+  test('refuses when the resolved board is the baseBoard path', () => {
+    expect(etaWriteTarget(['/elsewhere'], `${base}/TASKS.md`, listed, cfg, '3.579')).toEqual({ error: refusal })
+  })
+  test('refuses when the cwd is the base checkout or under it', () => {
+    expect(etaWriteTarget([base], `${base}/TASKS.md`, listed, cfg, '3.579')).toEqual({ error: refusal })
+    expect(etaWriteTarget([`${base}/mods/x`], `${base}/TASKS.md`, listed, cfg, '3.579')).toEqual({ error: refusal })
+  })
+  test('without a baseBoard the primary board is written, as before', () => {
+    const generic = { ...DEFAULT_CONFIG }
+    expect(etaWriteTarget(['/work/a'], '/work/a/TASKS.md', ['/work/a'], generic, '3.579')).toEqual({ path: '/work/a/TASKS.md' })
+    expect(etaWriteTarget(['/work/a/sub'], '/work/a/TASKS.md', ['/work/a', '/work/a-wt'], generic, '3.579')).toEqual({ path: '/work/a/TASKS.md' })
+    expect(etaWriteTarget(['/work/a-wt/sub'], '/work/a/TASKS.md', ['/work/a', '/work/a-wt'], generic, '3.579')).toEqual({ path: '/work/a-wt/TASKS.md' })
   })
 })
