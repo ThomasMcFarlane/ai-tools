@@ -111,6 +111,14 @@ test('a mentioned existing .md file is offered; non-files are not', async ($, on
   await ui.unmount()
 })
 
+test('with promptBand off the band is not drawn after a reply mentions an existing .md', { options: { promptBand: false } }, async ($, on) => {
+  await boot($, on)
+  const ui = await mountBand($)
+  await $.turn.complete(reply('Wrote `docs/spec.md`'))
+  expect(JSON.stringify(await ui.drawn())).not.toContain('Markdown preview')
+  await ui.unmount()
+})
+
 test('Open shows the offered file and clears the offer', async ($, on) => {
   const { opened } = await boot($, on)
   const ui = await mountBand($)

@@ -101,7 +101,9 @@ const offerFromQuestions = async ($: EngineInterface, e: unknown) => {
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const promptBand = options?.promptBand !== false
+
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({ name: COMMAND, description: "Toggle the Markdown preview pane (the plan, or the last file opened)" })
@@ -214,6 +216,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!promptBand) return next(e)
     const { pending, at: raw } = await read($, offer)
     if (!pending.length || e.props.hasSurvey) return next(e)
     const at = Math.min(Math.max(raw, 0), pending.length - 1)

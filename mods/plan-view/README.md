@@ -21,7 +21,9 @@ A Claude Code mod that previews Markdown as formatted text (headings, lists, tab
 - The pane body scrolls with the wheel or arrow keys. A file over 100,000 characters (the limit of one markdown drawing) is cut, with a dim note naming the file.
 - The last file shown and the offers are kept in `$.state`, so a reload keeps them.
 
-There are no options.
+## Options
+
+- `promptBand` (default on): offer the Markdown files Claude mentions in a band above the prompt, with Open, Dismiss, Dismiss all and List. When off, they are offered only on the message card and in the list.
 
 ## Development
 
