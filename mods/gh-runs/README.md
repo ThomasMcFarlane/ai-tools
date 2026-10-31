@@ -81,6 +81,16 @@ https://example.com/octo-org/hello-world/actions/runs/7
 (Reported automatically by the gh-runs mod; the user did not type this.)
 ```
 
+## CI wait guard
+
+A `tool.call` hook refuses a Bash or Monitor call that waits on CI by polling GitHub itself, and the reason names the replacement: `gh-watcher wait --repo <owner/repo> (--pr <n>|--run <id>|--commit <sha>) --timeout 45m --json`, run in the background (Bash `run_in_background`), with the repo and id filled in when the command shows them. Refused:
+
+- `curl`, `wget`, `http` or `xh` calls to the Actions or checks API (`/actions/runs`, `/actions/jobs`, `/commits/<sha>/check-runs|status|statuses`) or a `github.com/<o>/<r>/actions/runs/` page.
+- `while`, `until` or `for` loops, or `watch`, that run `gh pr checks`, `gh pr view`, `gh run view`, `gh run list` or `gh api` on Actions together with `sleep`.
+- `gh run watch` and `gh pr checks --watch`.
+
+Allowed: every `gh-watcher` command, a single `gh pr checks` or `gh run view` (also `--log-failed`), other `gh` use, and text that only mentions these words in a quoted string, comment or heredoc that is not run. The matching is `ciPollReason` in `hooks/runs.ts`; it prefers missing an exotic form to blocking normal work. Commands that `gh-watcher wait` tracking sees are unchanged.
+
 ## Options
 
 - `watcherPath`: path to the `gh-watcher` binary. Empty: found on `PATH`.

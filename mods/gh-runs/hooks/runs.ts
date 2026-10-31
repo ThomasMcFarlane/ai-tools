@@ -102,6 +102,109 @@ export const parseWatcherCommands = (line: string): Target[] => {
   return found
 }
 
+// ---- CI wait guard ----------------------------------------------------------------------------
+
+const HTTP_CLIENTS = ['curl', 'wget', 'http', 'https', 'xh', 'xhs']
+const LEADING = new Set(['while', 'until', 'if', 'then', 'do', 'else', 'elif', '!', '{', 'time', 'nohup', 'exec', 'command', 'builtin'])
+const LOOPS = new Set(['while', 'until', 'for'])
+const SHELLS = ['bash', 'sh', 'zsh', 'dash']
+const CI_URL = /api\.github\.com\/repos\/[^/\s]+\/[^/\s]+\/(actions\/(runs|jobs)\b|commits\/[^/\s]+\/(check-runs|status|statuses)\b)|(^|[/.])github\.com\/[^/\s]+\/[^/\s]+\/actions\/runs\//
+const GH_API_CI = /actions\/(runs|jobs)\b|\/check-runs\b|\/commits\/[^/\s]+\/status(es)?\b/
+
+type Poll = { api: boolean; poller: boolean; watch: boolean; loop: boolean; sleep: boolean }
+
+// A heredoc body is data unless fed to a shell, and a whole-line comment never runs: both are dropped.
+const stripInert = (line: string): string =>
+  line
+    .replace(/<<-?[ \t]*(['"]?)(\w+)\1([^\n]*)\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, (_m, _q, _tag, rest: string) => rest)
+    .split('\n')
+    .filter(l => !l.trimStart().startsWith('#'))
+    .join('\n')
+
+const ghWords = (words: string[]): string[] => {
+  const out: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] as string
+    if (w === '-R' || w === '--repo') i++
+    else if (!w.startsWith('-')) out.push(w)
+  }
+  return out
+}
+
+const scan = (line: string, depth = 0): Poll => {
+  const r: Poll = { api: false, poller: false, watch: false, loop: false, sleep: false }
+  for (const raw of shellCommands(stripInert(line))) {
+    const words = [...raw]
+    if (LOOPS.has(words[0] as string)) r.loop = true
+    while (words.length && (LEADING.has(words[0] as string) || ASSIGN.test(words[0] as string))) words.shift()
+    if (!words.length) continue
+    const exe = (words[0] as string).split('/').pop() as string
+    const args = words.slice(1)
+    if (exe === 'sleep') r.sleep = true
+    else if (HTTP_CLIENTS.includes(exe)) {
+      if (args.some(a => CI_URL.test(a))) r.api = true
+    } else if (exe === 'watch') {
+      r.watch = true
+      const body = scan(args.filter((a, i) => !(a.startsWith('-') && !args[i - 1]?.startsWith('-n'))).join(' '), depth + 1)
+      r.poller ||= body.poller
+      r.api ||= body.api
+      r.sleep = true
+    } else if (SHELLS.includes(exe) && depth < 3 && args.includes('-c')) {
+      const inner = scan(args[args.indexOf('-c') + 1] ?? '', depth + 1)
+      r.api ||= inner.api
+      r.poller ||= inner.poller
+      r.watch ||= inner.watch
+      r.loop ||= inner.loop
+      r.sleep ||= inner.sleep
+    } else if (exe === 'gh') {
+      const w = ghWords(args)
+      const pair = `${w[0]} ${w[1]}`
+      if (pair === 'run watch' || (pair === 'pr checks' && args.some(a => a === '--watch' || a.startsWith('--watch=')))) r.watch = true
+      else if (['pr checks', 'pr view', 'run view', 'run list'].includes(pair)) r.poller = true
+      else if (w[0] === 'api' && args.some(a => GH_API_CI.test(a))) r.poller = true
+    }
+  }
+  return r
+}
+
+const firstMatch = (text: string, ...res: RegExp[]): RegExpExecArray | null => {
+  for (const re of res) {
+    const m = re.exec(text)
+    if (m) return m
+  }
+  return null
+}
+
+// The replacement command, with the repo and the id filled in where the line shows them.
+const replacement = (line: string): string => {
+  const repo =
+    firstMatch(line, /(?:^|\s)(?:-R|--repo)[ =]([\w.-]+\/[\w.-]+)/, /repos\/([\w.-]+\/[\w.-]+)\//, /github\.com\/([\w.-]+\/[\w.-]+)\/(?:actions|pull)/)?.[1] ?? '<owner/repo>'
+  const run = firstMatch(line, /actions\/runs\/(\d+)/, /\bgh run (?:view|watch)\s+(?:-\S+\s+)*(\d+)/)?.[1]
+  const sha = firstMatch(line, /commits\/([0-9a-f]{7,40})\//)?.[1]
+  const pr = firstMatch(line, /\bgh pr (?:checks|view)\s+(?:-\S+\s+)*(\d+)/)?.[1]
+  const target = run ? `--run ${run}` : sha ? `--commit ${sha}` : pr ? `--pr ${pr}` : '(--pr <n>|--run <id>|--commit <sha>)'
+  return `gh-watcher wait --repo ${repo} ${target} --timeout 45m --json`
+}
+
+// Why a Bash or Monitor command polls CI itself, with the gh-watcher command to use; undefined when it is fine.
+export const ciPollReason = (tool: string, input: unknown): string | undefined => {
+  if (tool !== 'Bash' && tool !== 'Monitor') return undefined
+  const line = (input as { command?: unknown } | null | undefined)?.command
+  if (typeof line !== 'string' || line === '') return undefined
+  let found: Poll
+  try {
+    found = scan(line)
+  } catch {
+    return undefined
+  }
+  const how = tool === 'Bash' ? 'run it in the background (Bash run_in_background)' : 'run it in the background with Bash run_in_background instead of Monitor'
+  const fix = `Wait on CI with gh-watcher, never by polling GitHub yourself: ${replacement(line)}; ${how} and you are told when it ends.`
+  if (found.api) return `Do not call the GitHub Actions or checks API directly to wait on CI. ${fix}`
+  if (found.watch) return `Do not use gh run watch, gh pr checks --watch or watch to wait on CI. ${fix}`
+  if (found.poller && found.loop && found.sleep) return `Do not poll CI in a sleep loop. ${fix}`
+  return undefined
+}
+
 // A PR or run URL, `owner/repo#123`, or `owner/repo 123`.
 export const parseTrackArg = (arg: string): Target | undefined => {
   const s = arg.trim()
