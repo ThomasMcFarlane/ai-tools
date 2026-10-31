@@ -1,10 +1,10 @@
 {
   "name": "gh-runs",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "author": {
     "name": "Thomas McFarlane"
   },
-  "description": "Live band above the prompt for the GitHub Actions runs gh-watcher is tracking, with a coloured chat item when each run ends.",
+  "description": "Live band above the prompt for the GitHub Actions runs gh-watcher is tracking, with a coloured result row when each run ends.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "watcherPath": {
