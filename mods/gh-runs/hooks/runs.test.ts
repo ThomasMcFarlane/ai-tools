@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  ciPollReason,
   conclusionColor,
   detailLines,
   stateMark,
@@ -248,5 +249,93 @@ describe('expanded lines', () => {
 
   test('a job with no steps is one line', () => {
     expect(text(detailLines(base(job([])), 40, 0))).toEqual(['  ⠋ build  0/0'])
+  })
+})
+
+describe('ciPollReason', () => {
+  const bash = (command: string) => ciPollReason('Bash', { command })
+  const monitor = (command: string) => ciPollReason('Monitor', { command, description: 'ci', timeout_ms: 1000 })
+
+  const denied: [string, string][] = [
+    ['until loop on pr checks', 'until gh pr checks 5 | grep -q pass; do sleep 30; done'],
+    ['for loop on run view', 'for i in $(seq 20); do gh run view 123 --json status; sleep 20; done'],
+    ['while loop on run list', 'while true; do gh run list -R a/b --limit 1; sleep 15; done'],
+    ['while loop on pr view', 'while sleep 30; do gh pr view 9 --json statusCheckRollup; done'],
+    ['loop on gh api actions', 'while true; do gh api repos/a/b/actions/runs/1 --jq .status; sleep 10; done'],
+    ['curl runs jobs', 'curl -s https://api.github.com/repos/a/b/actions/runs/1/jobs'],
+    ['curl runs list with token', 'GH_TOKEN=x curl -H "Accept: application/json" "https://api.github.com/repos/a/b/actions/runs?branch=main" | jq .'],
+    ['curl check-runs', 'curl https://api.github.com/repos/a/b/commits/abc1234/check-runs'],
+    ['wget status', 'wget -qO- https://api.github.com/repos/a/b/commits/abc1234/status'],
+    ['xh statuses', 'xh get api.github.com/repos/a/b/commits/abc1234/statuses'],
+    ['curl run page', 'curl -sL https://github.com/a/b/actions/runs/77'],
+    ['gh run watch', 'gh run watch 123 -R a/b'],
+    ['gh pr checks --watch', 'gh pr checks 68 --watch'],
+    ['watch command', 'watch -n 30 gh pr checks 68'],
+    ['watch quoted body', "watch -n 10 'gh run view 5 | head'"],
+    ['loop curl with nested bash -c', "bash -c 'until gh run view 9 --exit-status; do sleep 5; done'"],
+    ['loop behind a heredoc-free export', 'export GH_REPO=a/b; until gh pr checks 3; do sleep 20; done'],
+  ]
+  for (const [name, command] of denied) {
+    test(`Bash denies ${name}`, () => {
+      const reason = bash(command)
+      expect(reason).toBeDefined()
+      expect(reason).toContain('gh-watcher wait --repo')
+      expect(reason).toContain('--timeout 45m --json')
+      expect(reason).toContain('run_in_background')
+    })
+  }
+
+  test('the reason fills in the repo and id the command shows', () => {
+    expect(bash('curl -s https://api.github.com/repos/a/b/actions/runs/1/jobs')).toContain('gh-watcher wait --repo a/b --run 1 --timeout 45m --json')
+    expect(bash('until gh pr checks 5 -R a/b; do sleep 30; done')).toContain('gh-watcher wait --repo a/b --pr 5 --timeout 45m --json')
+    expect(bash('curl https://api.github.com/repos/a/b/commits/abc1234/check-runs')).toContain('--repo a/b --commit abc1234 ')
+    expect(bash('gh run watch')).toContain('--repo <owner/repo> (--pr <n>|--run <id>|--commit <sha>)')
+  })
+
+  test('Monitor commands are judged the same way', () => {
+    expect(monitor('while true; do gh run view 1 --json status; sleep 20; done')).toContain('gh-watcher wait --repo <owner/repo> --run 1')
+    expect(monitor('curl -s https://api.github.com/repos/a/b/actions/runs/2')).toBeDefined()
+    expect(monitor('gh pr checks 4 --watch')).toBeDefined()
+    expect(monitor('tail -f /tmp/build.log')).toBeUndefined()
+    expect(monitor('gh-watcher follow --repo a/b --pr 4')).toBeUndefined()
+  })
+
+  const allowed: [string, string][] = [
+    ['gh-watcher wait', 'gh-watcher wait --repo a/b --pr 5 --timeout 45m --json'],
+    ['gh-watcher wait with a path', '/usr/bin/gh-watcher wait --repo a/b --run 9 --json'],
+    ['gh-watcher in a loop', 'while true; do gh-watcher wait --repo a/b --pr 5; sleep 1; done'],
+    ['one-off pr checks', 'gh pr checks 68 -R a/b'],
+    ['one-off run view', 'gh run view 123 -R a/b'],
+    ['one-off log-failed', 'gh run view 123 --log-failed | tail -50'],
+    ['one-off run list', 'gh run list --limit 5'],
+    ['pr create', 'gh pr create --title x --body y'],
+    ['pr list', 'gh pr list --state open'],
+    ['issue view', 'gh issue view 12'],
+    ['gh api non-CI', 'gh api repos/a/b/pulls/5 --jq .title'],
+    ['one-off gh api actions', 'gh api repos/a/b/actions/runs/1'],
+    ['commit message mentioning polling', 'git commit -m "stop polling gh run view"'],
+    ['echo of a loop', 'echo "until gh pr checks 5; do sleep 30; done"'],
+    ['echo of a curl url', "echo 'curl https://api.github.com/repos/a/b/actions/runs'"],
+    ['heredoc not run', "cat <<'EOF' > notes.md\nuntil gh pr checks 5; do sleep 30; done\ncurl https://api.github.com/repos/a/b/actions/runs\nEOF"],
+    ['comment line', '# gh run watch 1\nls'],
+    ['loop without sleep', 'for p in 1 2 3; do gh pr view $p --json title; done'],
+    ['sleep without a poller', 'sleep 5 && gh pr checks 3'],
+    ['loop with sleep and no CI', 'while ! nc -z localhost 80; do sleep 1; done'],
+    ['curl non-CI api', 'curl -s https://api.github.com/repos/a/b/issues/3'],
+    ['curl other host', 'curl https://example.com/a/b/actions/runs/1'],
+    ['plain command', 'npm test'],
+    ['empty command', ''],
+  ]
+  for (const [name, command] of allowed) {
+    test(`Bash allows ${name}`, () => {
+      expect(bash(command)).toBeUndefined()
+    })
+  }
+
+  test('other tools and odd inputs are left alone', () => {
+    expect(ciPollReason('Read', { command: 'gh run watch' })).toBeUndefined()
+    expect(ciPollReason('Bash', {})).toBeUndefined()
+    expect(ciPollReason('Bash', null)).toBeUndefined()
+    expect(ciPollReason('Monitor', { ws: { url: 'wss://x' } })).toBeUndefined()
   })
 })

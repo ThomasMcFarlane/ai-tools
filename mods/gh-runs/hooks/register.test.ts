@@ -144,6 +144,29 @@ test('a gh-watcher wait command in a Bash call is tracked and the call goes thro
   expect(spawned.length).toBe(1)
 })
 
+test('a Bash call that polls CI is denied with the gh-watcher replacement, and nothing is tracked', async ($, on) => {
+  on('tool.call', () => ({ result: 'ok' }))
+  const { clock, spawned } = await boot($, on)
+  const result = await $.tool.call({ tool: 'Bash', command: `gh-watcher wait --repo ${R} --pr 17; until gh pr checks 17 | grep -q pass; do sleep 30; done` })
+  expect(JSON.stringify(result)).toContain('gh-watcher wait --repo')
+  expect(JSON.stringify(result)).toContain('"deny"')
+  expect(JSON.stringify(result)).not.toContain('ok')
+  await clock.settle()
+  expect(spawned.length).toBe(0)
+  const monitor = await $.tool.call({ tool: 'Monitor', command: 'curl -s https://api.github.com/repos/a/b/actions/runs/1', description: 'ci', timeout_ms: 1000 } as any)
+  expect(JSON.stringify(monitor)).toContain('--run 1')
+})
+
+test('a malformed Bash or Monitor input is let through, never blocked', async ($, on) => {
+  on('tool.call', () => ({ result: 'ok' }))
+  await boot($, on)
+  for (const tool of ['Bash', 'Monitor']) {
+    const result = await $.tool.call({ tool, command: 12345 } as any)
+    expect(JSON.stringify(result)).toContain('ok')
+    expect(JSON.stringify(result)).not.toContain('deny')
+  }
+})
+
 test('the band shows a running run on terminal and desktop', async ($, on) => {
   const { track, feed, band } = await boot($, on)
   await track()

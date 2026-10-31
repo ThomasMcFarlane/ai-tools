@@ -3,6 +3,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import {
   canExpand,
+  ciPollReason,
   conclusionColor,
   detailLines,
   expandKey,
@@ -238,12 +239,22 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // Never delays, changes or fails the call: the command is read after the fact and tracked from a timer.
-  on('tool.call', { tool: 'Bash' }, ($, e, next) => {
+  // Guards first: a Bash or Monitor call that polls CI itself is refused with the gh-watcher command to use, before anything is tracked.
+  // Otherwise never delays, changes or fails the call: a Bash command is read after the fact and tracked from a timer.
+  on('tool.call', ($, e, next) => {
+    let reason: string | undefined
     try {
-      for (const t of parseWatcherCommands(e.command)) $.clock.after(0, () => void track($, t, path).catch(err => note($, message(err))))
+      reason = ciPollReason(e.tool, e)
     } catch {
-      /* a line that does not parse is skipped */
+      /* a line that does not parse is let through */
+    }
+    if (reason) return { deny: reason }
+    if (e.tool === 'Bash') {
+      try {
+        for (const t of parseWatcherCommands((e as { command: string }).command)) $.clock.after(0, () => void track($, t, path).catch(err => note($, message(err))))
+      } catch {
+        /* a line that does not parse is skipped */
+      }
     }
     return next(e)
   }).catch(($, e, next) => next(e))
