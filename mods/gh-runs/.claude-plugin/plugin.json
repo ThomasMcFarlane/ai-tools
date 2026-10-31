@@ -1,0 +1,17 @@
+{
+  "name": "gh-runs",
+  "version": "0.1.0",
+  "author": {
+    "name": "Thomas McFarlane"
+  },
+  "description": "Live band above the prompt for the GitHub Actions runs gh-watcher is tracking, with a coloured chat item when each run ends.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "watcherPath": {
+      "type": "string",
+      "title": "gh-watcher path",
+      "description": "Path to the gh-watcher binary. Empty: gh-watcher is found on PATH.",
+      "required": false
+    }
+  }
+}

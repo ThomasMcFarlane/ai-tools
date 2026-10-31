@@ -15,7 +15,8 @@ ai-tools/
 │   ├── plan-view/     # Claude Code plugin (docked markdown view of Claude's plan files); same checks
 │   ├── jev-compaction/  # Claude Code plugin (periodic Jev-guided compaction of long sessions); same checks
 │   ├── jev-skills/      # Claude Code plugin (Jev-picked skill shortlist instead of the full skill listing); same checks
-│   └── context-diet/    # Claude Code plugin (trims repeated caveman, ponytail and superpowers hook context); same checks
+│   ├── context-diet/    # Claude Code plugin (trims repeated caveman, ponytail and superpowers hook context); same checks
+│   └── gh-runs/         # Claude Code plugin (band of GitHub Actions runs tracked via gh-watcher follow, coloured chat item per finished run); same checks
 ├── actions/
 │   └── tasks-board-check/  # composite GitHub Action with a committed bundled dist/
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
