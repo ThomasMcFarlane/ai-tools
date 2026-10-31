@@ -61,10 +61,14 @@ const channel = () => {
 }
 
 let statuses: string[] = []
+let raised: string[] = []
+let refuse = false
 let frameWrites = 0
 
 const boot = async ($: any, on: any, surface: 'terminal' | 'desktop' = 'terminal') => {
   statuses = []
+  raised = []
+  refuse = false
   frameWrites = 0
   const clock = mock.clock(on, { now: Date.parse('2026-01-01T00:01:40Z') })
   const session = mock.session(on)
@@ -73,6 +77,11 @@ const boot = async ($: any, on: any, surface: 'terminal' | 'desktop' = 'terminal
   mock.store(on)
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: undefined as never }))
+  on('command.run', { command: 'ci-result' }, (_$: any, e: any) => {
+    raised.push(e.args)
+    if (refuse) throw new Error('session busy')
+    return { text: 'engine text' }
+  })
   on('ui.status', (_$: any, e: any) => {
     statuses.push(e.text)
     return { value: undefined }
@@ -88,8 +97,8 @@ const boot = async ($: any, on: any, surface: 'terminal' | 'desktop' = 'terminal
     return yield* child.generate()
   })
   await $.session.start({ cwd: '/work', surface, isInteractive: true })
-  const band = (s: 'terminal' | 'desktop' = surface) =>
-    $.ui.mount({ plugin: 'gh-runs', surface: s, component: 'AbovePrompt', props: BAND, requestId: `band-${Math.random()}` })
+  const band = (s: 'terminal' | 'desktop' = surface, rows = 40) =>
+    $.ui.mount({ plugin: 'gh-runs', surface: s, component: 'AbovePrompt', props: BAND, requestId: `band-${Math.random()}`, viewport: { columns: 120, rows } })
   const track = async (arg = `${R}#17`) => {
     const answer = await $.command.run({ command: 'ci-track', args: arg } as any)
     await clock.settle()
@@ -104,7 +113,6 @@ const boot = async ($: any, on: any, surface: 'terminal' | 'desktop' = 'terminal
 }
 
 const drawn = async (ui: any) => JSON.stringify(await ui.drawn())
-const notices = (session: any) => session.appended().filter((r: any) => r.message.type === 'system')
 
 test('/ci-track tracks a PR, lists it, and refuses a bad argument with the usage line', async ($, on) => {
   const { track } = await boot($, on)
@@ -164,8 +172,8 @@ test('the band leaves the engine alone with nothing tracked or when a survey is 
   await ui.unmount()
 })
 
-test('a run leaves the band when it ends while another stays, with one chat item', async ($, on) => {
-  const { track, feed, band, session } = await boot($, on)
+test('a run leaves the band when it ends while another stays, with one ci-result run', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
   await track()
   await feed(line([run(1, 'in_progress'), run(2, 'in_progress')]))
   await feed(line([run(1, 'completed', 'success'), run(2, 'in_progress')]))
@@ -176,33 +184,31 @@ test('a run leaves the band when it ends while another stays, with one chat item
   expect(text).toContain('Flow2')
   expect(text).toContain('polled')
   await ui.unmount()
-  expect(notices(session).length).toBe(1)
-  const body = JSON.stringify(notices(session)[0].message.content)
-  expect(body).toContain('[gh-runs] success')
-  expect(body).toContain('Flow1')
-  expect(body).toContain('https://example.com/octo-org/hello-world/actions/runs/1')
+  expect(raised).toEqual(['1.1'])
 })
 
 test('the target is dropped when the follower exits, and a run is announced once per attempt', async ($, on) => {
-  const { track, feed, child, clock, session, band } = await boot($, on)
+  const { track, feed, child, clock, band } = await boot($, on)
   await track()
   const failed = run(3, 'completed', 'failure', { jobs: [job('completed', 'failure')] })
   await feed(line([failed], { state: 'failure', isFinal: true }))
   child.end(1)
   await clock.settle()
   expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: '' } as any))).toContain('Nothing is tracked')
-  expect(notices(session).length).toBe(1)
-  expect(JSON.stringify(notices(session)[0].message.content)).toContain('failed: build / Test')
+  expect(raised).toEqual(['3.1'])
   await track()
   await feed(line([failed, run(3, 'completed', 'success', { attempt: 2 })]))
-  expect(notices(session).length).toBe(2)
+  expect(raised).toEqual(['3.1', '3.2'])
   const ui = await band()
   expect(await drawn(ui)).not.toContain('Flow3')
   await ui.unmount()
 })
 
-test('a chat item is coloured by conclusion and other notices are left alone', async ($, on) => {
-  await boot($, on)
+const result = (ui: any) => ui
+
+test('the ci-result row is coloured by conclusion on terminal and desktop', async ($, on) => {
+  const { track, feed } = await boot($, on)
+  await track()
   const cases: [string, string][] = [
     ['success', 'success'],
     ['failure', 'error'],
@@ -211,18 +217,63 @@ test('a chat item is coloured by conclusion and other notices are left alone', a
     ['skipped', 'inactive'],
     ['neutral', 'inactive'],
   ]
+  let id = 10
   for (const [conclusion, colour] of cases) {
-    const text = `[gh-runs] ${conclusion}  CI  ${R}#17  1m 05s\nfailed: build / Test\nhttps://example.com/run/1`
-    const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'InfoNotice', props: { text, command: null } })
-    const out = await drawn(ui)
-    expect(out).toContain(conclusion.toUpperCase())
-    expect(out).toContain('https://example.com/run/1')
-    expect(out).toContain(`"${colour === 'inactive' ? 'inactive' : colour}"`)
-    await ui.unmount()
+    id += 1
+    await feed(line([run(id, 'completed', conclusion, { jobs: [job('completed', 'failure')] })]))
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'gh-runs', surface, component: 'CommandOutput', props: { command: 'ci-result', args: `${id}.1`, text: 'fallback', isErrored: false }, viewport: { columns: 100, rows: 40 } } as any)
+      const out = await drawn(result(ui))
+      expect(out).toContain(conclusion.toUpperCase())
+      expect(out).toContain(`Flow${id}`)
+      expect(out).toContain(`${R}#17`)
+      expect(out).toContain('failed: build / Test')
+      expect(out).toContain(`https://example.com/octo-org/hello-world/actions/runs/${id}`)
+      expect(out).toContain(`"${colour}"`)
+      expect(out).not.toContain('fallback')
+      await ui.unmount()
+    }
   }
-  const other = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'InfoNotice', props: { text: 'Model: example', command: null } })
+  const other = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'CommandOutput', props: { command: 'other', args: '', text: 't', isErrored: false } } as any)
   expect(await drawn(other)).toContain('engine')
   await other.unmount()
+})
+
+test('a missing summary draws the stored text', async ($, on) => {
+  await boot($, on)
+  const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'CommandOutput', props: { command: 'ci-result', args: '99.1', text: 'stored words', isErrored: false } } as any)
+  expect(await drawn(ui)).toContain('stored words')
+  await ui.unmount()
+})
+
+test('the engine words of the ci-result output row are rewritten to the plain summary', async ($, on) => {
+  const { track, feed, session } = await boot($, on)
+  await track()
+  await feed(line([run(5, 'completed', 'failure', { jobs: [job('completed', 'failure')] })]))
+  const row = (text: string) => ({ message: { type: 'user' as const, content: [{ type: 'text' as const, text }] }, door: 'command' as const, origin: { kind: 'engine' } as any, uuid: `u${Math.random()}` })
+  await $.session.append(row('<command-name>/ci-result</command-name>\n<command-args>5.1</command-args>') as any)
+  await $.session.append(row('<command-name>/ci-result</command-name>\n            <command-message>ci-result</command-message>\n            <command-args>5.1</command-args>') as any)
+  await $.session.append(row('<local-command-stdout>gh-runs registered /ci-result but no command.run hook answered it</local-command-stdout>') as any)
+  await $.session.append(row('unrelated /other output') as any)
+  const texts = session.appended().map((r: any) => r.message.content[0].text)
+  expect(texts[0]).toContain('<command-args>5.1</command-args>')
+  expect(texts[1]).toContain('<command-args>5.1</command-args>')
+  expect(texts[2]).toMatch(/^<local-command-stdout>\[gh-runs\] failure  Flow5[\s\S]*<\/local-command-stdout>$/)
+  expect(texts[2]).toContain('failed: build / Test')
+  expect(texts[2]).not.toContain('no command.run hook')
+
+  expect(texts[2]).toContain('https://example.com/octo-org/hello-world/actions/runs/5')
+  expect(texts[3]).toBe('unrelated /other output')
+})
+
+test('a rejected command.run never throws', async ($, on) => {
+  const { track, feed, clock } = await boot($, on)
+  refuse = true
+  await track()
+  await feed(line([run(6, 'completed', 'success')]))
+  await clock.settle()
+  expect(raised).toEqual(['6.1'])
+  expect(statuses.some(s => s.startsWith('gh-runs: result row'))).toBe(true)
 })
 
 test('the tick runs only while something is tracked', async ($, on) => {
@@ -266,5 +317,162 @@ test('session end stops the followers', async ($, on) => {
   child.push(line([run(1, 'completed', 'success')]))
   await clock.settle()
   await clock.settle()
-  expect(notices(session).length).toBe(0)
+  expect(raised).toEqual([])
+})
+
+const stepJob = (name: string, steps: [string, string, string | null][]): Job => ({
+  name,
+  status: 'in_progress',
+  conclusion: null,
+  steps: steps.map(([n, status, conclusion], i) => ({ name: n, number: i + 1, status, conclusion })),
+})
+
+const KEY = (id: number) => `expand:${id}#1:${R.toLowerCase()}|pr:17`
+
+const withSteps = (id: number, prefix: string) =>
+  run(id, 'in_progress', null, {
+    jobs: [
+      stepJob('build', [
+        [`${prefix} Checkout`, 'completed', 'success'],
+        [`${prefix} Test`, 'in_progress', null],
+      ]),
+    ],
+  })
+
+test('pressing the button expands and collapses a run, surviving redraws and the tick', async ($, on) => {
+  const { track, feed, band, clock } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one')]))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await band(surface)
+    let text = await drawn(ui)
+    expect(text).toContain('▸')
+    expect(text).not.toContain('one Checkout')
+    await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+    await clock.advance(1000)
+    await ui.redraw()
+    text = await drawn(ui)
+    expect(text).toContain('▾')
+    expect(text).toContain('1 one Checkout')
+    expect(text).toContain('2 one Test')
+    expect(text).toContain('build')
+    await feed(line([withSteps(1, 'one')], { source: 'poll' }))
+    expect(await drawn(ui)).toContain('1 one Checkout')
+    await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+    text = await drawn(ui)
+    expect(text).toContain('▸')
+    expect(text).not.toContain('one Checkout')
+    await ui.unmount()
+  }
+})
+
+test('one run expanding leaves the others collapsed', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
+  const ui = await band()
+  await ui.press({ plugin: 'gh-runs', key: KEY(2) })
+  const text = await drawn(ui)
+  expect(text).toContain('two Checkout')
+  expect(text).not.toContain('one Checkout')
+  await ui.unmount()
+})
+
+test('a short viewport keeps the collapsed row, a tall one shows the steps', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one')]))
+  const short = await band('terminal', 23)
+  await short.press({ plugin: 'gh-runs', key: KEY(1) })
+  const text = await drawn(short)
+  expect(text).toContain('Flow1')
+  expect(text).not.toContain('one Checkout')
+  await short.unmount()
+  const tall = await band('terminal', 24)
+  expect(await drawn(tall)).toContain('one Checkout')
+  await tall.unmount()
+})
+
+test('the collapsed row keeps its parts and the button on a narrow band', async ($, on) => {
+  const { track, feed } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one')]))
+  const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 40 }, viewport: { columns: 40, rows: 40 } })
+  const text = await drawn(ui)
+  expect(text).toContain('Flow1')
+  expect(text).toContain('▸')
+  expect(text).not.toContain('updated 40s')
+  await ui.unmount()
+})
+
+test('a run keeps no expansion once it has left the band', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
+  const ui = await band()
+  await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+  await ui.press({ plugin: 'gh-runs', key: KEY(2) })
+  await feed(line([run(1, 'completed', 'success'), withSteps(2, 'two')]))
+  await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
+  const text = await drawn(ui)
+  expect(text).not.toContain('one Checkout')
+  expect(text).toContain('two Checkout')
+  await ui.unmount()
+})
+
+test('/ci-track expand and collapse apply to every active run', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'expand' } as any))).toContain('No active runs')
+  await track()
+  await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
+  const ui = await band()
+  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'expand' } as any))).toContain('Expanded 2 active runs.')
+  let text = await drawn(ui)
+  expect(text).toContain('one Checkout')
+  expect(text).toContain('two Checkout')
+  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'collapse' } as any))).toContain('Collapsed 2 active runs.')
+  text = await drawn(ui)
+  expect(text).not.toContain('one Checkout')
+  expect(text).not.toContain('two Checkout')
+  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'nonsense' } as any))).toContain('expand | collapse')
+  await ui.unmount()
+})
+
+test('the cap keeps the running step in view on the band', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  const steps: [string, string, string | null][] = Array.from({ length: 30 }, (_, i) => [`S${i + 1}x`, i < 20 ? 'completed' : i === 20 ? 'in_progress' : 'queued', i < 20 ? 'success' : null])
+  await feed(line([run(1, 'in_progress', null, { jobs: [stepJob('big', steps)] })]))
+  const ui = await band()
+  await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+  const text = await drawn(ui)
+  expect(text).toContain('21 S21x')
+  expect(text).toContain('+18 more')
+  expect(text).not.toContain('1 S1x')
+  await ui.unmount()
+})
+
+test('the ci-result row finds its summary from the URL in the text when the arguments do not match', async ($, on) => {
+  const { track, feed } = await boot($, on)
+  await track()
+  await feed(line([run(8, 'completed', 'failure')]))
+  const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'CommandOutput', props: { command: 'ci-result', args: '', text: '[gh-runs] failure  Flow8\nhttps://example.com/octo-org/hello-world/actions/runs/8', isErrored: false } } as any)
+  const out = await drawn(ui)
+  expect(out).toContain('FAILURE')
+  expect(out).toContain('"error"')
+  await ui.unmount()
+})
+
+test('the job count and the collapsed step count only count completed steps', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  const steps = Array.from({ length: 6 }, (_, i) => ({ name: `S${i + 1}`, number: i + 1, status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'queued', conclusion: i < 2 ? 'success' : i === 2 ? '' : '' }))
+  await feed(line([run(9, 'in_progress', null, { jobs: [{ name: 'build', status: 'in_progress', conclusion: null, steps }] })]))
+  await $.command.run({ command: 'ci-track', args: 'expand' } as any)
+  const ui = await band()
+  const out = await drawn(ui)
+  expect(out).toContain('2/6')
+  expect(out).not.toContain('6/6')
+  expect(out).toContain('step 3/6')
+  await ui.unmount()
 })

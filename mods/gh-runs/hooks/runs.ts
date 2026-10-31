@@ -1,6 +1,6 @@
-import type { ActiveRun, FollowLine, Job, Run, Step, Target, TargetKind } from '../types'
+import type { ActiveRun, FollowLine, Job, Result, Run, Step, Target, TargetKind } from '../types'
 
-export type { ActiveRun, FollowLine, Job, Run, Step, Target, TargetKind }
+export type { ActiveRun, FollowLine, Job, Result, Run, Step, Target, TargetKind }
 
 export const targetId = (t: Target): string => `${t.repo.toLowerCase()}|${t.kind}:${t.value}`
 
@@ -114,7 +114,7 @@ export const parseTrackArg = (arg: string): Target | undefined => {
   return undefined
 }
 
-export const USAGE = 'Usage: /ci-track <PR URL | run URL | owner/repo#123 | owner/repo 123>'
+export const USAGE = 'Usage: /ci-track <PR URL | run URL | owner/repo#123 | owner/repo 123 | expand | collapse>'
 
 // Reads one NDJSON line from gh-watcher follow; undefined when it is not a usable line.
 export const parseLine = (text: string): FollowLine | undefined => {
@@ -182,7 +182,7 @@ export const progressOf = (run: Run): Progress => {
   for (const j of jobs) {
     for (const s of j.steps ?? []) {
       total++
-      if (s.status === 'completed' || s.conclusion !== null) done++
+      if (s.status === 'completed') done++
     }
   }
   return {
@@ -255,6 +255,78 @@ export const fitSegments = (segs: Segment[], columns: number): Segment[] => {
   return out
 }
 
+export const MAX_STEP_LINES = 12
+export const MIN_ROWS = 24
+export const expandKey = (a: ActiveRun): string => String(a.runId)
+
+// Expanded lines need a tall enough viewport; an unmeasured one is trusted.
+export const canExpand = (rows: number | undefined): boolean => rows === undefined || rows >= MIN_ROWS
+
+export const isDone = (s: { status?: string; conclusion: string | null }): boolean => s.status === 'completed'
+
+// Mark and colour of a step or job: done green tick, failed red cross, running spinner, cancelled yellow, the rest dim.
+export const stateMark = (status: string | undefined, conclusion: string | null | undefined, frame: number): { mark: string; color?: string; dim?: boolean } => {
+  if (status === 'in_progress') return { mark: SPINNER[frame % SPINNER.length] as string, color: 'suggestion' }
+  if (conclusion === 'success') return { mark: '✓', color: 'success' }
+  if (conclusion === 'failure' || conclusion === 'startup_failure' || conclusion === 'action_required') return { mark: '✗', color: 'error' }
+  if (conclusion === 'cancelled') return { mark: '⊘', color: 'warning' }
+  if (conclusion === 'timed_out') return { mark: '✗', color: 'warning' }
+  if (conclusion === 'skipped' || conclusion === 'neutral') return { mark: '-', dim: true }
+  return { mark: '○', dim: true }
+}
+
+const cut = (text: string, width: number): string => {
+  const chars = [...text]
+  if (width <= 0) return ''
+  if (chars.length <= width) return text
+  return width === 1 ? '…' : `${chars.slice(0, width - 1).join('')}…`
+}
+
+// First step of the window: it holds every running or failed step when they fit, else the first running (or failed) one.
+const windowStart = (steps: Step[], size: number): number => {
+  const n = steps.length
+  if (n <= size) return 0
+  const running = steps.findIndex(s => s.status === 'in_progress')
+  const hot = steps.flatMap((s, i) => (s.status === 'in_progress' || s.conclusion === 'failure' || s.conclusion === 'timed_out' ? [i] : []))
+  const open = steps.findIndex(s => !isDone(s))
+  const lo = hot.length ? Math.min(...hot) : open >= 0 ? open : n - 1
+  const hi = hot.length ? Math.max(...hot) : lo
+  const start = hi - lo < size ? lo - Math.floor((size - (hi - lo + 1)) / 2) : (running >= 0 ? running : lo) - Math.floor(size / 2)
+  return Math.max(0, Math.min(start, n - size))
+}
+
+// Every job of a run with its steps, one line each, at most `MAX_STEP_LINES` step lines; names are cut to `columns`.
+export const detailLines = (run: Run, columns: number, frame: number): Segment[][] => {
+  const jobs = run.jobs ?? []
+  const flat = jobs.flatMap((j, ji) => (j.steps ?? []).map(step => ({ ji, step })))
+  const start = windowStart(flat.map(f => f.step), MAX_STEP_LINES)
+  const shown = new Set(flat.slice(start, start + MAX_STEP_LINES))
+  const hidden = flat.length - shown.size
+  const lines: Segment[][] = []
+  jobs.forEach((j, ji) => {
+    const steps = j.steps ?? []
+    const look = stateMark(j.status, j.conclusion, frame)
+    const count = `  ${steps.filter(isDone).length}/${steps.length}`
+    const room = columns - 4 - [...count].length
+    lines.push([
+      { id: `j${ji}:mark`, text: `  ${look.mark} `, ...(look.color ? { color: look.color } : {}), ...(look.dim ? { dim: true } : {}), drop: 0 },
+      { id: `j${ji}:name`, text: cut(j.name, room), bold: true, drop: 0 },
+      { id: `j${ji}:count`, text: columns >= 4 + [...count].length + 1 ? count : '', dim: true, drop: 0 },
+    ])
+    for (const [si, s] of steps.entries()) {
+      const item = flat.find(f => f.step === s)
+      if (!item || !shown.has(item)) continue
+      const sl = stateMark(s.status, s.conclusion, frame)
+      lines.push([
+        { id: `j${ji}s${si}:mark`, text: `    ${sl.mark} `, ...(sl.color ? { color: sl.color } : {}), ...(sl.dim ? { dim: true } : {}), drop: 0 },
+        { id: `j${ji}s${si}:name`, text: cut(`${s.number} ${s.name}`, columns - 6), ...(sl.dim ? { dim: true } : {}), drop: 0 },
+      ])
+    }
+  })
+  if (hidden > 0) lines.push([{ id: 'more', text: cut(`    +${hidden} more`, columns), dim: true, drop: 0 }])
+  return lines
+}
+
 export const NOTICE_PREFIX = '[gh-runs]'
 
 export const conclusionColor = (conclusion: string): { color?: string; dim?: boolean } => {
@@ -280,15 +352,21 @@ export const noticeText = (a: ActiveRun, failed: string[]): string => {
   return lines.join('\n')
 }
 
-// Reads a notice back from its text, tolerating a surface that flattens the lines.
-export const parseNotice = (text: string): { conclusion: string; head: string; failed?: string; url?: string } | undefined => {
-  const t = text.trim()
-  if (!t.startsWith(`${NOTICE_PREFIX} `)) return undefined
-  const m = /^\[gh-runs\] (\S+)\s*([\s\S]*?)(?:\s+failed: ([\s\S]*?))?(?:\s+(https?:\/\/\S+))?\s*$/.exec(t)
-  if (!m) return undefined
-  const [, conclusion = '', head = '', failed, url] = m
-  return { conclusion, head, ...(failed ? { failed } : {}), ...(url ? { url } : {}) }
-}
+export const RESULT_COMMAND = 'ci-result'
+
+// `<run id>.<attempt>`: the short token that names a result in the command's arguments.
+export const resultKey = (a: ActiveRun): string => `${a.runId}.${a.attempt}`
+
+export const summaryOf = (a: ActiveRun, failed: string[]): Result => ({
+  conclusion: a.run.conclusion ?? 'unknown',
+  workflow: a.run.workflowName || `run ${a.runId}`,
+  repo: a.target.repo,
+  target: targetLabel(a.target),
+  duration: formatDuration(noticeDuration(a)),
+  failed,
+  url: a.run.url,
+  text: noticeText(a, failed),
+})
 
 export const failedStepNames = (run: Run, line: FollowLine): string[] => {
   const names: string[] = []
@@ -297,4 +375,15 @@ export const failedStepNames = (run: Run, line: FollowLine): string[] => {
   }
   if (names.length) return names
   return line.failedSteps.filter(f => f.stepName && (f.runId === undefined || f.runId === run.databaseId)).map(f => `${f.jobName} / ${f.stepName}`)
+}
+
+// Finds a stored summary from the run URL in a row's text, when the arguments are not at hand.
+export const resultFromText = (results: Record<string, Result>, text: string): Result | undefined => {
+  const urls = text.match(/https?:\/\/\S+/g) ?? []
+  const keys = Object.keys(results).reverse()
+  for (const u of urls) {
+    const hit = keys.find(k => results[k]?.url === u.replace(/[)>.,]+$/, ''))
+    if (hit) return results[hit]
+  }
+  return undefined
 }

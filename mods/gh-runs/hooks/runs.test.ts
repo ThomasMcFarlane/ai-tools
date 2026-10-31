@@ -2,10 +2,13 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   conclusionColor,
+  detailLines,
+  stateMark,
   fitSegments,
   noticeText,
   parseLine,
-  parseNotice,
+  summaryOf,
+  resultKey,
   parseTrackArg,
   parseWatcherCommands,
   progressOf,
@@ -125,9 +128,8 @@ describe('chat items', () => {
     expect(t).toContain('2m 05s')
     expect(t).toContain('failed: build / Test')
     expect(t).toContain('https://example.com/run/7')
-    expect(parseNotice(t)).toEqual({ conclusion: 'failure', head: expect.stringContaining('CI'), failed: 'build / Test', url: 'https://example.com/run/7' })
-    expect(parseNotice(t.replaceAll('\n', ' '))?.url).toBe('https://example.com/run/7')
-    expect(parseNotice('something else')).toBeUndefined()
+    expect(summaryOf(a, ['build / Test'])).toMatchObject({ conclusion: 'failure', workflow: 'CI', duration: '2m 05s', failed: ['build / Test'], url: 'https://example.com/run/7', text: t })
+    expect(resultKey(a)).toBe('7.1')
   })
   test('map conclusions to colours', () => {
     expect(conclusionColor('success')).toEqual({ color: 'success' })
@@ -136,5 +138,66 @@ describe('chat items', () => {
     expect(conclusionColor('timed_out')).toEqual({ color: 'warning' })
     expect(conclusionColor('skipped')).toEqual({ dim: true })
     expect(conclusionColor('neutral')).toEqual({ dim: true })
+  })
+})
+
+describe('expanded lines', () => {
+  const text = (lines: ReturnType<typeof detailLines>) => lines.map(l => l.map(s => s.text).join(''))
+  const step = (n: number, status: string, conclusion: string | null) => ({ name: `step${n}`, number: n, status, conclusion })
+  const job = (steps: ReturnType<typeof step>[], name = 'build'): Run['jobs'] => [{ name, status: 'in_progress', conclusion: null, steps }]
+  const base = (jobs: Run['jobs']): Run => ({ databaseId: 1, workflowName: 'CI', status: 'in_progress', conclusion: null, url: 'u', jobs })
+
+  test('marks and colours every step state', () => {
+    expect(stateMark('completed', 'success', 0)).toEqual({ mark: '✓', color: 'success' })
+    expect(stateMark('completed', 'failure', 0)).toEqual({ mark: '✗', color: 'error' })
+    expect(stateMark('in_progress', null, 1)).toEqual({ mark: '⠙', color: 'suggestion' })
+    expect(stateMark('queued', null, 0)).toEqual({ mark: '○', dim: true })
+    expect(stateMark('pending', null, 0)).toEqual({ mark: '○', dim: true })
+    expect(stateMark('completed', 'skipped', 0)).toEqual({ mark: '-', dim: true })
+    expect(stateMark('completed', 'cancelled', 0)).toEqual({ mark: '⊘', color: 'warning' })
+  })
+
+  test('counts only completed steps, not ones with an empty conclusion', () => {
+    const steps = [
+      { name: 'a', number: 1, status: 'completed', conclusion: 'success' },
+      { name: 'b', number: 2, status: 'in_progress', conclusion: '' as never },
+      { name: 'c', number: 3, status: 'queued', conclusion: '' as never },
+    ]
+    const r = run({ jobs: [{ name: 'build', status: 'in_progress', conclusion: null, steps }] })
+    expect(JSON.stringify(detailLines(r, 80, 0))).toContain('1/3')
+    expect(progressOf(r).done).toBe(1)
+  })
+  test('draws the job with n/m, then its steps indented with numbers and names', () => {
+    const lines = detailLines(base(job([step(1, 'completed', 'success'), step(2, 'completed', 'failure'), step(3, 'in_progress', null), step(4, 'queued', null)])), 80, 0)
+    expect(text(lines)).toEqual(['  ⠋ build  2/4', '    ✓ 1 step1', '    ✗ 2 step2', '    ⠋ 3 step3', '    ○ 4 step4'])
+    expect(lines[2]?.[0]).toMatchObject({ color: 'error' })
+    expect(lines[3]?.[0]).toMatchObject({ color: 'suggestion' })
+    expect(lines[4]?.[0]).toMatchObject({ dim: true })
+  })
+
+  test('caps at 12 step lines, keeps the running step, and counts the rest', () => {
+    const steps = Array.from({ length: 30 }, (_, i) => step(i + 1, i < 25 ? 'completed' : i === 25 ? 'in_progress' : 'queued', i < 25 ? 'success' : null))
+    const out = text(detailLines(base(job(steps)), 80, 0))
+    expect(out.filter(l => l.startsWith('    ') && !l.includes('more')).length).toBe(12)
+    expect(out.some(l => l.includes('26 step26'))).toBe(true)
+    expect(out[out.length - 1]).toBe('    +18 more')
+    const head = text(detailLines(base(job(steps.map(s => ({ ...s, status: 'queued', conclusion: null })))), 80, 0))
+    expect(head).toContain('    ○ 1 step1')
+    expect(head[head.length - 1]).toBe('    +18 more')
+  })
+
+  test('keeps a failed step in view', () => {
+    const steps = Array.from({ length: 20 }, (_, i) => step(i + 1, 'completed', i === 17 ? 'failure' : 'success'))
+    expect(text(detailLines(base(job(steps)), 80, 0)).some(l => l.includes('18 step18'))).toBe(true)
+  })
+
+  test('cuts names to the width', () => {
+    const lines = text(detailLines(base(job([{ name: 'a very long step name', number: 3, status: 'queued', conclusion: null }], 'a long job name')), 20, 0))
+    for (const l of lines) expect([...l].length).toBeLessThanOrEqual(20)
+    expect(lines[1]).toContain('…')
+  })
+
+  test('a job with no steps is one line', () => {
+    expect(text(detailLines(base(job([])), 40, 0))).toEqual(['  ⠋ build  0/0'])
   })
 })

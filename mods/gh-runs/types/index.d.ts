@@ -28,6 +28,8 @@ export type FollowLine = {
   timedOut?: boolean
 }
 
+export type Result = { conclusion: string; workflow: string; repo: string; target: string; duration: string; failed: string[]; url: string; text: string }
+
 export type ActiveRun = {
   key: string
   runId: number
@@ -48,8 +50,12 @@ declare module 'claude-code' {
       active: ActiveRun[]
       // `<run id>#<attempt>` of every run already given a chat item
       noticed: string[]
+      // finished-run summaries by `<run id>.<attempt>`, read by the ci-result row
+      results: Record<string, Result>
       // spinner frame, moved by the tick
       frame: number
+      // run ids whose steps are shown; absent means collapsed
+      expanded: string[]
     }
   }
 }
