@@ -201,7 +201,7 @@ export const bar = (done: number, total: number, width = 8): { filled: string; e
   return { filled: '█'.repeat(n), empty: '░'.repeat(width - n) }
 }
 
-export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; drop: number; id: string }
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; drop: number; id: string; href?: string }
 
 export const sourceNote = (source: 'events' | 'poll'): string => (source === 'events' ? 'webhook' : 'polled')
 
@@ -212,30 +212,43 @@ export const statusColor = (status: string): { color?: string; dim?: boolean } =
 export const rowSegments = (a: ActiveRun, now: number, frame: number): Segment[] => {
   const p = progressOf(a.run)
   const look = statusColor(a.run.status)
+  const gh = `https://github.com/${a.target.repo}`
+  const sep = (id: string, drop: number): Segment => ({ id: `sep:${id}`, text: ' │ ', dim: true, drop })
+  const chevron = (id: string, drop: number): Segment => ({ id: `chev:${id}`, text: ' › ', dim: true, drop })
   const segs: Segment[] = [
     { id: 'spin', text: `${SPINNER[frame % SPINNER.length]} `, ...look, drop: 0 },
-    { id: 'wf', text: a.run.workflowName || `run ${a.runId}`, bold: true, drop: 0 },
-    { id: 'target', text: `  ${targetLabel(a.target)}`, dim: true, drop: 3 },
+    { id: 'repo', text: a.target.repo, dim: true, href: gh, drop: 3 },
   ]
-  if (a.run.status === 'queued' || a.run.status === 'waiting' || a.run.status === 'pending') {
-    segs.push({ id: 'queued', text: `  ${a.run.status}`, dim: true, drop: 5 })
+  // A run target adds no crumb: the workflow crumb is that run.
+  if (a.target.kind === 'pr') {
+    segs.push(chevron('pr', 3), { id: 'pr', text: `#${a.target.value}`, dim: true, href: `${gh}/pull/${a.target.value}`, drop: 3 })
+  } else if (a.target.kind !== 'run') {
+    const ref = a.target.kind === 'commit' ? a.target.value.slice(0, 7) : a.target.value
+    segs.push(chevron('ref', 3), { id: 'ref', text: ref, dim: true, drop: 3 })
   }
+  // The chevron into the workflow belongs to the repo group, so no chevron is left dangling when it goes.
+  segs.push(chevron('wf', 3))
+  segs.push({ id: 'wf', text: a.run.workflowName || `run ${a.runId}`, bold: true, ...(a.run.url ? { href: a.run.url } : {}), drop: 0 })
   if (p.job) {
-    segs.push({ id: 'job', text: `  ${p.job.name}${p.more > 0 ? ` +${p.more} job${p.more === 1 ? '' : 's'}` : ''}`, drop: 1 })
+    segs.push(chevron('job', 1), { id: 'job', text: p.job.name, ...(p.job.url ? { href: p.job.url } : {}), drop: 1 })
+    if (p.more > 0) segs.push({ id: 'more', text: ` +${p.more} job${p.more === 1 ? '' : 's'}`, drop: 1 })
+  }
+  if (a.run.status === 'queued' || a.run.status === 'waiting' || a.run.status === 'pending') {
+    segs.push(sep('queued', 5), { id: 'queued', text: a.run.status, dim: true, drop: 5 })
   }
   if (p.step && p.stepTotal > 0) {
-    segs.push({ id: 'step', text: `  step ${p.stepIndex}/${p.stepTotal}`, drop: 4 })
+    segs.push(sep('step', 4), { id: 'step', text: `step ${p.stepIndex}/${p.stepTotal}`, drop: 4 })
     segs.push({ id: 'stepname', text: ` ${p.step.name}`, dim: true, drop: 6 })
   }
   if (p.total > 0) {
     const b = bar(p.done, p.total)
-    segs.push({ id: 'fill', text: `  ${b.filled}`, ...look, drop: 7 })
+    segs.push(sep('fill', 7), { id: 'fill', text: b.filled, ...look, drop: 7 })
     segs.push({ id: 'empty', text: b.empty, dim: true, drop: 7 })
   }
-  segs.push({ id: 'elapsed', text: `  ${formatDuration(now - startOf(a))}`, drop: 2 })
-  segs.push({
+  segs.push(sep('elapsed', 2), { id: 'elapsed', text: formatDuration(now - startOf(a)), drop: 2 })
+  segs.push(sep('updated', 8), {
     id: 'updated',
-    text: `  updated ${formatDuration(now - a.checkedAt)} ago ${sourceNote(a.source)}`,
+    text: `updated ${formatDuration(now - a.checkedAt)} ago ${sourceNote(a.source)}`,
     dim: true,
     drop: 8,
   })
@@ -310,7 +323,7 @@ export const detailLines = (run: Run, columns: number, frame: number): Segment[]
     const room = columns - 4 - [...count].length
     lines.push([
       { id: `j${ji}:mark`, text: `  ${look.mark} `, ...(look.color ? { color: look.color } : {}), ...(look.dim ? { dim: true } : {}), drop: 0 },
-      { id: `j${ji}:name`, text: cut(j.name, room), bold: true, drop: 0 },
+      { id: `j${ji}:name`, text: cut(j.name, room), bold: true, ...(j.url ? { href: j.url } : {}), drop: 0 },
       { id: `j${ji}:count`, text: columns >= 4 + [...count].length + 1 ? count : '', dim: true, drop: 0 },
     ])
     for (const [si, s] of steps.entries()) {

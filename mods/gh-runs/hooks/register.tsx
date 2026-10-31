@@ -285,15 +285,24 @@ export const register: Register = (on, options) => {
       const drawn = await Promise.resolve(next(e)).catch(() => null)
       const below = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
       const open = await read($, expanded)
-      const { Box, Button, Text } = $.ui.resolve(e)
+      const { Box, Button, Link, Text } = $.ui.resolve(e)
       const columns = e.props.bodyColumns
       const isTall = canExpand(e.viewport?.rows)
       const paint = (segs: Segment[]) =>
-        segs.map(s => (
-          <Text key={s.id} {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})} {...(s.bold ? { bold: true } : {})}>
-            {s.text}
-          </Text>
-        ))
+        segs.map(s => {
+          const t = (
+            <Text key={s.id} {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})} {...(s.bold ? { bold: true } : {})}>
+              {s.text}
+            </Text>
+          )
+          return s.href ? (
+            <Link key={s.id} href={s.href}>
+              {t}
+            </Link>
+          ) : (
+            t
+          )
+        })
       return (
         <Box flexDirection="column">
           {list.map(a => {
@@ -331,7 +340,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
     try {
       if (e.props.command !== RESULT_COMMAND) return next(e)
-      const { Box, Text } = $.ui.resolve(e)
+      const { Box, Link, Text } = $.ui.resolve(e)
       const all = await read($, results)
       const r = all[e.props.args.trim()] ?? resultFromText(all, e.props.text)
       if (!r) return <Text wrap="wrap">{e.props.text}</Text>
@@ -342,10 +351,22 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" borderStyle="round" borderColor={look.color ?? 'inactive'} paddingX={1} {...(width ? { width: Math.max(20, width - 2) } : {})}>
           <Text wrap="wrap">
             <Text bold {...tone}>{r.conclusion.toUpperCase()}</Text>
-            <Text {...(look.dim ? { dimColor: true } : {})}>{`  ${r.workflow}  ${r.target}  ${r.duration}`}</Text>
+            <Text {...(look.dim ? { dimColor: true } : {})}>{'  '}</Text>
+            {r.url ? (
+              <Link href={r.url}>
+                <Text {...(look.dim ? { dimColor: true } : {})}>{r.workflow}</Text>
+              </Link>
+            ) : (
+              <Text {...(look.dim ? { dimColor: true } : {})}>{r.workflow}</Text>
+            )}
+            <Text {...(look.dim ? { dimColor: true } : {})}>{`  ${r.target}  ${r.duration}`}</Text>
           </Text>
           {r.failed.length ? <Text wrap="wrap" dimColor>{`failed: ${r.failed.join(', ')}`}</Text> : null}
-          {r.url ? <Text wrap="wrap">{r.url}</Text> : null}
+          {r.url ? (
+            <Text wrap="wrap">
+              <Link href={r.url}>{r.url}</Link>
+            </Text>
+          ) : null}
         </Box>
       )
     } catch (err) {
