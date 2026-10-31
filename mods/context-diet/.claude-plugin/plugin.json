@@ -1,10 +1,10 @@
 {
   "name": "context-diet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Thomas McFarlane"
   },
-  "description": "Cuts repeated hook boilerplate: the caveman per-prompt reminder goes out on every 10th prompt, and the caveman, ponytail and superpowers texts re-injected after a compaction shrink to a line or two each.",
+  "description": "Cuts repeated hook boilerplate: the caveman per-prompt reminder goes out on every 10th prompt, and the caveman, ponytail and superpowers texts re-injected after a compaction shrink to a line or two each, and subagent workers get a two-line caveman text instead of the full ruleset.",
   "types": "./types/index.d.ts",
   "userConfig": {
     "reminderEvery": {
@@ -18,6 +18,13 @@
       "type": "boolean",
       "title": "Shorten post-compaction texts",
       "description": "Replace the caveman, ponytail and superpowers SessionStart texts re-injected after a compaction with a line or two each.",
+      "default": true,
+      "required": false
+    },
+    "shortenWorkers": {
+      "type": "boolean",
+      "title": "Shorten worker caveman text",
+      "description": "Replace the full caveman ruleset handed to each subagent worker at start with two lines.",
       "default": true,
       "required": false
     }

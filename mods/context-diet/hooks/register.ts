@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import { DEFAULTS, dropReminder, keepReminder, resolveConfig, shortCompactOutput, shortStart } from './trim'
+import { DEFAULTS, dropReminder, keepReminder, resolveConfig, shortCompactOutput, shortStart, shortWorker } from './trim'
 import type { Config } from './trim'
 
 const PROMPTS = { plugin: 'context-diet', key: 'prompts' } as const
@@ -28,6 +28,18 @@ export const register: Register = (on, options) => {
       return { ...result, additionalContext: result.additionalContext.map((c) => shortStart(c) ?? c) }
     } catch (err) {
       $.ui.log(`context-diet: SessionStart left as it is (${message(err)})`)
+      return result
+    }
+  })
+
+  // SessionStart context reaches only the main thread; caveman hands each worker its full ruleset here instead.
+  on('classic.SubagentStart', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (!config.shortenWorkers || !result.additionalContext) return result
+      return { ...result, additionalContext: result.additionalContext.map((c) => shortWorker(c) ?? c) }
+    } catch (err) {
+      $.ui.log(`context-diet: SubagentStart left as it is (${message(err)})`)
       return result
     }
   })

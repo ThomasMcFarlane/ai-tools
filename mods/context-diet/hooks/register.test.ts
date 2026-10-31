@@ -89,3 +89,28 @@ test('shortenAfterCompact false leaves SessionStart texts whole', { options: { s
   const compact = (await $.classic.SessionStart({ source: 'compact' })) as { additionalContext: string[] }
   expect(compact.additionalContext).toEqual([SUPERPOWERS])
 })
+
+const WORKER = 'CAVEMAN MODE ACTIVE — mode: caveman\n\n# caveman\n\nRespond terse like smart caveman.\n\n' + 'Rule. '.repeat(500)
+
+const start = async ($: any) => ((await $.classic.SubagentStart({ agentType: 'general-purpose' })) as { additionalContext?: string[] }).additionalContext ?? []
+
+test('a worker gets the two-line caveman text in place of the full ruleset', async ($, on) => {
+  on('classic.SubagentStart', () => ({ additionalContext: [WORKER, OTHER] }))
+  const ctx = await start($)
+  expect(ctx[1]).toBe(OTHER)
+  expect(ctx[0]).toMatch(/^CAVEMAN MODE ACTIVE — mode: caveman\. Respond terse/)
+  expect(ctx[0]).toContain('every technical fact, code, path and error exact')
+  expect(ctx[0]).toContain('plain prose for warnings and irreversible steps')
+  expect(ctx[0]!.length).toBeLessThan(300)
+})
+
+test('the main session keeps its full caveman text at startup', async ($, on) => {
+  beneath(on, [], [CAVEMAN])
+  const startup = (await $.classic.SessionStart({ source: 'startup' })) as { additionalContext: string[] }
+  expect(startup.additionalContext).toEqual([CAVEMAN])
+})
+
+test('shortenWorkers false leaves the worker text whole', { options: { shortenWorkers: false } }, async ($, on) => {
+  on('classic.SubagentStart', () => ({ additionalContext: [WORKER] }))
+  expect(await start($)).toEqual([WORKER])
+})

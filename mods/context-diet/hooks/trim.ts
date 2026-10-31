@@ -1,12 +1,13 @@
-export type Config = { reminderEvery: number; shortenAfterCompact: boolean }
+export type Config = { reminderEvery: number; shortenAfterCompact: boolean; shortenWorkers: boolean }
 
-export const DEFAULTS: Config = { reminderEvery: 10, shortenAfterCompact: true }
+export const DEFAULTS: Config = { reminderEvery: 10, shortenAfterCompact: true, shortenWorkers: true }
 
 export function resolveConfig(options: Record<string, unknown> | undefined): Config {
   const every = Number(options?.reminderEvery)
   return {
     reminderEvery: Number.isFinite(every) && every >= 1 ? Math.floor(every) : DEFAULTS.reminderEvery,
     shortenAfterCompact: typeof options?.shortenAfterCompact === 'boolean' ? options.shortenAfterCompact : DEFAULTS.shortenAfterCompact,
+    shortenWorkers: typeof options?.shortenWorkers === 'boolean' ? options.shortenWorkers : DEFAULTS.shortenWorkers,
   }
 }
 
@@ -46,4 +47,11 @@ export function shortCompactOutput(text: string): string | null {
   if (!text.startsWith(COMPACT_SUCCESS)) return null
   const short = shortStart(text.slice(COMPACT_SUCCESS.length))
   return short === null ? null : COMPACT_SUCCESS + short
+}
+
+/** The two-line caveman text a subagent worker gets in place of the full ruleset; null for any other context. */
+export function shortWorker(text: string): string | null {
+  const caveman = /^CAVEMAN MODE ACTIVE — mode: (\S+)/.exec(text)
+  if (!caveman) return null
+  return `CAVEMAN MODE ACTIVE — mode: ${caveman[1]}. Respond terse: no filler, answer first.\nKeep every technical fact, code, path and error exact. Use plain prose for warnings and irreversible steps.`
 }
