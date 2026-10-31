@@ -1,6 +1,6 @@
 {
   "name": "tasks-board",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "author": {
     "name": "Thomas McFarlane"
   },
@@ -69,6 +69,13 @@
       "title": "ETA band: stale after (minutes)",
       "description": "An in_progress row that has not changed for this long is marked \"no update\" in the ETA band above the prompt.",
       "default": 30,
+      "required": false
+    },
+    "etaBand": {
+      "type": "boolean",
+      "title": "ETA band above the prompt",
+      "description": "When on, this session's open board rows are listed with their ETAs above the prompt. When off, the band is not drawn; the board pane and the ETA tool are unchanged.",
+      "default": true,
       "required": false
     }
   }
