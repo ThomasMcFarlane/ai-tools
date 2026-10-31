@@ -48,6 +48,11 @@ describe('gh-watcher wait commands', () => {
     expect(parseWatcherCommands('gh-watcher wait --repo nonsense --pr 1')).toEqual([])
     expect(parseWatcherCommands('')).toEqual([])
   })
+  test('skips unexpanded shell values', () => {
+    for (const args of ['--pr $n', '--pr "$n"', '--run $(cat id)', '--commit $sha', '--branch $b'])
+      expect(parseWatcherCommands(`gh-watcher wait --repo ${R} ${args}`)).toEqual([])
+    expect(parseWatcherCommands('gh-watcher wait --repo $REPO --pr 1')).toEqual([])
+  })
 })
 
 describe('/ci-track arguments', () => {
