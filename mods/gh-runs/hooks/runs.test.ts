@@ -171,7 +171,7 @@ describe('chat items', () => {
     expect(t).toContain('failed: build / Test')
     expect(t).toContain('https://example.com/run/7')
     expect(summaryOf(a, ['build / Test'])).toMatchObject({ conclusion: 'failure', workflow: 'CI', duration: '2m 05s', failed: ['build / Test'], url: 'https://example.com/run/7', text: t })
-    expect(resultKey(a)).toBe('7.1')
+    expect(resultKey(a)).toBe('7-1')
   })
   test('map conclusions to colours', () => {
     expect(conclusionColor('success')).toEqual({ color: 'success' })

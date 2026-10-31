@@ -12,9 +12,7 @@ import {
   parseLine,
   parseTrackArg,
   parseWatcherCommands,
-  resultFromText,
   resultKey,
-  RESULT_COMMAND,
   rowSegments,
   runKey,
   splitLines,
@@ -29,7 +27,7 @@ const COMMAND = 'ci-track'
 const TICK_MS = 250
 const FOLLOW_TIMEOUT = '6h'
 const NOTICED_MAX = 300
-const RESULT_HINT = 'Internal: gh-runs result row'
+const AUTO_NOTE = '(Reported automatically by the gh-runs mod; the user did not type this.)'
 
 const targets = atom({ plugin: 'gh-runs', key: 'targets' } as const, [] as Target[])
 const active = atom({ plugin: 'gh-runs', key: 'active' } as const, [] as ActiveRun[])
@@ -44,8 +42,6 @@ type Follower = { stop: () => void }
 const followers = new Map<string, Follower>()
 const claimed = new Set<string>()
 let tick: Timer | undefined
-// The key of the last ci-result run seen at append: its output row follows the echo row.
-let lastKey: string | undefined
 
 const message = (err: unknown): string => String(err instanceof Error ? err.message : err)
 
@@ -92,7 +88,7 @@ const drop = async ($: EngineInterface, target: Target, text?: string) => {
 }
 
 // One result row per run id and attempt, kept in state so a reload does not repeat it.
-// The command runs from a timer: the engine queues it until idle, and a refusal is only noted.
+// The row is placed in the transcript (display only); the model gets the plain summary as a separate row. A failure of either is only noted.
 const announce = async ($: EngineInterface, a: ActiveRun, line: FollowLine) => {
   if (claimed.has(a.key)) return
   claimed.add(a.key)
@@ -101,13 +97,17 @@ const announce = async ($: EngineInterface, a: ActiveRun, line: FollowLine) => {
   const key = resultKey(a)
   const summary = summaryOf(a, failedStepNames(a.run, line))
   await update($, results, r => Object.fromEntries(Object.entries({ ...r, [key]: summary }).slice(-NOTICED_MAX)))
-  $.clock.after(0, () => {
-    try {
-      void Promise.resolve($.command.run({ command: RESULT_COMMAND, args: key })).catch(err => note($, `result row: ${message(err)}`))
-    } catch (err) {
-      note($, `result row: ${message(err)}`)
-    }
-  })
+  try {
+    const placed = await $.ui.place({ id: key })
+    if (!placed.isPlaced) note($, `result row: ${placed.reason}`)
+  } catch (err) {
+    note($, `result row: ${message(err)}`)
+  }
+  try {
+    await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: `${summary.text}\n${AUTO_NOTE}` }] } } as never)
+  } catch (err) {
+    note($, `result text: ${message(err)}`)
+  }
 }
 
 const apply = async ($: EngineInterface, target: Target, line: FollowLine) => {
@@ -212,7 +212,6 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({ name: COMMAND, description: 'Track the GitHub Actions runs of a PR or run in the band above the prompt', argumentHint: '[PR or run URL | owner/repo#123 | expand | collapse]' })
-      await $.command.register({ name: RESULT_COMMAND, description: RESULT_HINT, immediate: true })
       const list = await read($, targets)
       if (list.length) ensureTick($)
       for (const t of list) startFollower($, t, path)
@@ -336,14 +335,13 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Draws the result row in place of the engine's text; a missing summary (after /clear) shows the stored text.
-  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+  // Draws the placed result row; a row of another plugin, or an id the state does not know, is left to the engine.
+  on('ui.render', { component: 'Placed' }, async ($, e, next) => {
     try {
-      if (e.props.command !== RESULT_COMMAND) return next(e)
+      if (e.props.plugin !== 'gh-runs') return next(e)
+      const r = (await read($, results))[e.props.id]
+      if (!r) return next(e)
       const { Box, Link, Text } = $.ui.resolve(e)
-      const all = await read($, results)
-      const r = all[e.props.args.trim()] ?? resultFromText(all, e.props.text)
-      if (!r) return <Text wrap="wrap">{e.props.text}</Text>
       const look = conclusionColor(r.conclusion)
       const tone = { ...(look.color ? { color: look.color } : {}), ...(look.dim ? { dimColor: true } : {}) }
       const width = e.viewport?.columns
@@ -371,35 +369,6 @@ export const register: Register = (on, options) => {
       )
     } catch (err) {
       note($, `result: ${message(err)}`)
-      return next(e)
-    }
-  })
-
-  // The engine words an unanswered command's output itself; the model reads the plain summary instead.
-  // The row keeps its `<local-command-stdout>` wrapper: only the inner text changes, or the row is no longer a command output.
-  on('session.append', { door: 'command' }, async ($, e, next) => {
-    try {
-      const blocks = e.message.content
-      const raw = typeof blocks === 'string' ? blocks : blocks.map(b => (b.type === 'text' ? b.text : '')).join('\n')
-      const args = /<command-args>([^<]*)<\/command-args>/.exec(raw)
-      if (args && raw.includes(`<command-name>/${RESULT_COMMAND}<`)) {
-        lastKey = (args[1] ?? '').trim()
-        return next(e)
-      }
-      if (!raw.includes('no command.run hook answered') || !raw.includes(RESULT_COMMAND)) return next(e)
-      const found = lastKey ? (await read($, results))[lastKey] : undefined
-      const plain = found?.text ?? '[gh-runs] a run ended. See /ci-track.'
-      const wrapper = /<local-command-(stdout|stderr)>[\s\S]*<\/local-command-\1>/.exec(raw)
-      const text = wrapper ? raw.replace(wrapper[0], `<local-command-${wrapper[1]}>${plain}</local-command-${wrapper[1]}>`) : plain
-      if (typeof blocks === 'string') return next({ ...e, message: { ...e.message, content: text as never } })
-      let isDone = false
-      const content = blocks.map(b => {
-        if (b.type !== 'text' || isDone) return b
-        isDone = true
-        return { ...b, text }
-      })
-      return next({ ...e, message: { ...e.message, content } })
-    } catch {
       return next(e)
     }
   }).catch(($, e, next) => next(e))

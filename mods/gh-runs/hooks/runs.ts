@@ -365,10 +365,8 @@ export const noticeText = (a: ActiveRun, failed: string[]): string => {
   return lines.join('\n')
 }
 
-export const RESULT_COMMAND = 'ci-result'
-
-// `<run id>.<attempt>`: the short token that names a result in the command's arguments.
-export const resultKey = (a: ActiveRun): string => `${a.runId}.${a.attempt}`
+// `<run id>-<attempt>`: names a result in state and the row placed for it (a placed id allows letters, digits, `_` and `-`).
+export const resultKey = (a: ActiveRun): string => `${a.runId}-${a.attempt}`
 
 export const summaryOf = (a: ActiveRun, failed: string[]): Result => ({
   conclusion: a.run.conclusion ?? 'unknown',
@@ -388,15 +386,4 @@ export const failedStepNames = (run: Run, line: FollowLine): string[] => {
   }
   if (names.length) return names
   return line.failedSteps.filter(f => f.stepName && (f.runId === undefined || f.runId === run.databaseId)).map(f => `${f.jobName} / ${f.stepName}`)
-}
-
-// Finds a stored summary from the run URL in a row's text, when the arguments are not at hand.
-export const resultFromText = (results: Record<string, Result>, text: string): Result | undefined => {
-  const urls = text.match(/https?:\/\/\S+/g) ?? []
-  const keys = Object.keys(results).reverse()
-  for (const u of urls) {
-    const hit = keys.find(k => results[k]?.url === u.replace(/[)>.,]+$/, ''))
-    if (hit) return results[hit]
-  }
-  return undefined
 }

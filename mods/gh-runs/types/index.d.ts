@@ -50,7 +50,7 @@ declare module 'claude-code' {
       active: ActiveRun[]
       // `<run id>#<attempt>` of every run already given a chat item
       noticed: string[]
-      // finished-run summaries by `<run id>.<attempt>`, read by the ci-result row
+      // finished-run summaries by `<run id>-<attempt>`, read by the placed result row
       results: Record<string, Result>
       // spinner frame, moved by the tick
       frame: number
