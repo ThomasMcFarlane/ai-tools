@@ -603,8 +603,9 @@ export const register: Register = (on, options) => {
     } catch (err) {
       report($, 'auto-open', err)
     }
-    // The ETA band: this session's open rows, hidden on short terminals.
+    // The ETA band: this session's open rows, hidden on short terminals and when the etaBand option is off.
     try {
+      if (!cfg.etaBand) return next(e)
       const rows = e.viewport?.rows
       const lines = rows !== undefined && rows < BAND_MIN_ROWS ? [] : bandLines(await sessionEtas($))
       if (lines.length === 0) return next(e)

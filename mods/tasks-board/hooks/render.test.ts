@@ -604,6 +604,48 @@ test('the eta tool patches one cell, the band shows it, and the nudge fires once
   expect(((await submit()).context ?? []).length).toBe(0)
 })
 
+test('etaBand: false draws no band, while the eta tool still works', { options: { autofix: false, etaBand: false } }, async ($, on) => {
+  const dir = '/work/repo'
+  const NOW = Date.now() // the plugin reads the real clock; mock.clock only drives timers
+  const at = (min: number) => parseEtaInput(`+${min}m`, NOW)!
+  let text = `# Tasks\n\n## 3. Epic\n\n| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |\n|---|---|---|---|---|---|---|---|\n| 579 | Fix login | in_progress | a | | | ${at(-60)} | n |\n| 580 | No eta | in_progress | a | | | | n |\n`
+  const patches: string[][] = []
+  mock.store(on)
+  const clock = mock.clock(on, { now: NOW })
+  on('session.start', () => ({ cwd: dir }))
+  on('session.cwd', () => ({ value: dir }))
+  on('session.root', () => ({ value: dir }))
+  on('fs.exists', (_$, e) => ({ value: e.path === `${dir}/TASKS.md` }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: text.length, mtimeMs: NOW - 60_000, isLink: false } }))
+  on('fs.read', () => ({ value: text }))
+  on('process.run', (_$, e) => {
+    if (e.argv[0] === 'node') {
+      patches.push(e.argv)
+      text = text.replace(e.argv[6]!, e.argv[7]!) // what the patch script does to the file
+    }
+    return { value: { exitCode: 0, stdout: e.argv[0] === 'git' ? `worktree ${dir}\n` : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('command.register', () => ({ value: undefined as never }))
+  on('tool.register', () => ({ value: undefined as never }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('prompt.submit', (_$, e) => ({ text: e.text, context: e.context }))
+  on('ui.render', ($$, e) => $$.ui.resolve(e).Text({ children: 'base' }) as never)
+  await $.session.start({ cwd: dir, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const band = async (rows = 40) => {
+    const ui = await $.ui.mount({ plugin: 'tasks-board', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100 } as never, viewport: { columns: 100, rows, isFullscreen: false } })
+    const out = JSON.stringify(await ui.drawn())
+    await ui.unmount()
+    return out
+  }
+  const ok = await $.tool.call({ tool: 'mcp__tasks-board__eta', task: '3.579', eta: '+45m' } as never)
+  expect(ok).toMatchObject({ result: `ok: 3.579 ETA ${at(45)}` })
+  expect(text).toContain(at(45))
+  expect(await band()).not.toContain('Fix login')
+})
+
 const ETA_OPTIONS = { autofix: false, reposRoot: '/r', baseBoard: '{root}/.worktrees/{org}/.base/{repo}/TASKS.md', repoPatterns: '{root}/.worktrees/{org}/{task}/{repo}\n{root}/.worktrees/{org}/.base/{repo}' }
 
 async function etaSession($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], cwd: string) {

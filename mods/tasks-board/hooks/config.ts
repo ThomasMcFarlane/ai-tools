@@ -20,6 +20,8 @@ export type BoardConfig = {
   agentPrefixPattern: string
   /** An in_progress row whose line is unchanged this long is marked "no update" in the ETA band. */
   staleMinutes: number
+  /** Whether this session's open rows are listed with their ETAs above the prompt. */
+  etaBand: boolean
 }
 
 export const DEFAULT_CONFIG: BoardConfig = {
@@ -33,6 +35,7 @@ export const DEFAULT_CONFIG: BoardConfig = {
   ownerNames: [],
   agentPrefixPattern: '',
   staleMinutes: 30,
+  etaBand: true,
 }
 
 const text = (v: unknown, d: string) => (typeof v === 'string' ? v.trim() : d)
@@ -55,5 +58,6 @@ export function readConfig(o: PluginOptions): BoardConfig {
     ownerNames: list(o.ownerNames, /[\n;,]/),
     agentPrefixPattern: text(o.agentPrefixPattern, ''),
     staleMinutes: count(o.staleMinutes, DEFAULT_CONFIG.staleMinutes),
+    etaBand: typeof o.etaBand === 'boolean' ? o.etaBand : DEFAULT_CONFIG.etaBand,
   }
 }

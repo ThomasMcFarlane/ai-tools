@@ -126,6 +126,9 @@ describe('formatting agent prompt', () => {
   })
   test('options are read with defaults and splitting', () => {
     expect(readConfig({})).toEqual(DEFAULT_CONFIG)
+    expect(DEFAULT_CONFIG.etaBand).toBe(true)
+    expect(readConfig({ etaBand: false }).etaBand).toBe(false)
+    expect(readConfig({ etaBand: 'no' }).etaBand).toBe(true)
     const c = readConfig({ repoPatterns: 'a/{org}/{repo}; b/{org}/{repo}\nc', ownerNames: 'Ann, Bo', autofix: false, maxWorktrees: 5, reposRoot: '/r/' })
     expect(c.repoPatterns).toEqual(['a/{org}/{repo}', 'b/{org}/{repo}', 'c'])
     expect(c.ownerNames).toEqual(['Ann', 'Bo'])
