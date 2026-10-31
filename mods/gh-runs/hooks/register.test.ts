@@ -340,7 +340,9 @@ const stepJob = (name: string, steps: [string, string, string | null][]): Job =>
   steps: steps.map(([n, status, conclusion], i) => ({ name: n, number: i + 1, status, conclusion })),
 })
 
-const KEY = (id: number) => `expand:${id}#1:${R.toLowerCase()}|pr:17`
+const GROUP = `expand:g:${R.toLowerCase()}|pr:17`
+const KEY = (id: number) => `expand:r:${id}`
+const JOB = (id: number) => `expand:j:${id}:build`
 
 const withSteps = (id: number, prefix: string) =>
   run(id, 'in_progress', null, {
@@ -352,31 +354,73 @@ const withSteps = (id: number, prefix: string) =>
     ],
   })
 
-test('pressing the button expands and collapses a run, surviving redraws and the tick', async ($, on) => {
+const open2 = async (ui: any, id: number) => {
+  await ui.press({ plugin: 'gh-runs', key: KEY(id) })
+  await ui.press({ plugin: 'gh-runs', key: JOB(id) })
+}
+
+test('the band is a tree: the group is open, runs and jobs start collapsed', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
+  const ui = await band()
+  const text = await drawn(ui)
+  expect(text).toContain(`${R}`)
+  expect(text).toContain('2 runs')
+  expect(text).toContain('2 running')
+  expect(text).toContain('Flow1')
+  expect(text).toContain('Flow2')
+  expect(text).toContain('▾')
+  expect(text).toContain('▸')
+  expect(text).not.toContain('build')
+  expect(text).not.toContain('one Checkout')
+  await ui.unmount()
+})
+
+test('each chevron toggles its own level, surviving redraws and the tick', async ($, on) => {
   const { track, feed, band, clock } = await boot($, on)
   await track()
   await feed(line([withSteps(1, 'one')]))
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await band(surface)
-    let text = await drawn(ui)
-    expect(text).toContain('▸')
-    expect(text).not.toContain('one Checkout')
     await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+    let text = await drawn(ui)
+    expect(text).toContain('build')
+    expect(text).not.toContain('one Checkout')
+    await ui.press({ plugin: 'gh-runs', key: JOB(1) })
     await clock.advance(1000)
     await ui.redraw()
     text = await drawn(ui)
-    expect(text).toContain('▾')
     expect(text).toContain('1 one Checkout')
     expect(text).toContain('2 one Test')
-    expect(text).toContain('build')
     await feed(line([withSteps(1, 'one')], { source: 'poll' }))
     expect(await drawn(ui)).toContain('1 one Checkout')
-    await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+    await ui.press({ plugin: 'gh-runs', key: JOB(1) })
     text = await drawn(ui)
-    expect(text).toContain('▸')
+    expect(text).toContain('build')
     expect(text).not.toContain('one Checkout')
+    await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+    expect(await drawn(ui)).not.toContain('build')
     await ui.unmount()
   }
+})
+
+test('the group chevron hides every run, and a group that returns is open again', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  await feed(line([withSteps(1, 'one')]))
+  const ui = await band()
+  await ui.press({ plugin: 'gh-runs', key: GROUP })
+  let text = await drawn(ui)
+  expect(text).toContain(R)
+  expect(text).not.toContain('Flow1')
+  await ui.press({ plugin: 'gh-runs', key: GROUP })
+  expect(await drawn(ui)).toContain('Flow1')
+  await feed(line([run(1, 'completed', 'success')]))
+  await feed(line([withSteps(2, 'two')]))
+  text = await drawn(ui)
+  expect(text).toContain('Flow2')
+  await ui.unmount()
 })
 
 test('one run expanding leaves the others collapsed', async ($, on) => {
@@ -384,14 +428,14 @@ test('one run expanding leaves the others collapsed', async ($, on) => {
   await track()
   await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
   const ui = await band()
-  await ui.press({ plugin: 'gh-runs', key: KEY(2) })
+  await open2(ui, 2)
   const text = await drawn(ui)
   expect(text).toContain('two Checkout')
   expect(text).not.toContain('one Checkout')
   await ui.unmount()
 })
 
-test('a short viewport keeps the collapsed row, a tall one shows the steps', async ($, on) => {
+test('a short viewport shows no jobs or steps, a tall one does', async ($, on) => {
   const { track, feed, band } = await boot($, on)
   await track()
   await feed(line([withSteps(1, 'one')]))
@@ -399,20 +443,21 @@ test('a short viewport keeps the collapsed row, a tall one shows the steps', asy
   await short.press({ plugin: 'gh-runs', key: KEY(1) })
   const text = await drawn(short)
   expect(text).toContain('Flow1')
-  expect(text).not.toContain('one Checkout')
+  expect(text).not.toContain('build')
   await short.unmount()
   const tall = await band('terminal', 24)
-  expect(await drawn(tall)).toContain('one Checkout')
+  expect(await drawn(tall)).toContain('build')
   await tall.unmount()
 })
 
-test('the collapsed row keeps its parts and the button on a narrow band', async ($, on) => {
+test('the rows keep their main parts and chevron on a narrow band', async ($, on) => {
   const { track, feed } = await boot($, on)
   await track()
   await feed(line([withSteps(1, 'one')]))
   const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 40 }, viewport: { columns: 40, rows: 40 } })
   const text = await drawn(ui)
   expect(text).toContain('Flow1')
+  expect(text).toContain('#17')
   expect(text).toContain('▸')
   expect(text).not.toContain('updated 40s')
   await ui.unmount()
@@ -423,8 +468,8 @@ test('a run keeps no expansion once it has left the band', async ($, on) => {
   await track()
   await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
   const ui = await band()
-  await ui.press({ plugin: 'gh-runs', key: KEY(1) })
-  await ui.press({ plugin: 'gh-runs', key: KEY(2) })
+  await open2(ui, 1)
+  await open2(ui, 2)
   await feed(line([run(1, 'completed', 'success'), withSteps(2, 'two')]))
   await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
   const text = await drawn(ui)
@@ -433,20 +478,20 @@ test('a run keeps no expansion once it has left the band', async ($, on) => {
   await ui.unmount()
 })
 
-test('/ci-track expand and collapse apply to every active run', async ($, on) => {
+test('/ci-track expand and collapse apply to every group, run and job', async ($, on) => {
   const { track, feed, band } = await boot($, on)
   expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'expand' } as any))).toContain('No active runs')
   await track()
   await feed(line([withSteps(1, 'one'), withSteps(2, 'two')]))
   const ui = await band()
-  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'expand' } as any))).toContain('Expanded 2 active runs.')
+  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'expand' } as any))).toContain('Expanded 1 group and 2 active runs.')
   let text = await drawn(ui)
   expect(text).toContain('one Checkout')
   expect(text).toContain('two Checkout')
-  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'collapse' } as any))).toContain('Collapsed 2 active runs.')
+  expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'collapse' } as any))).toContain('Collapsed 1 group and 2 active runs.')
   text = await drawn(ui)
-  expect(text).not.toContain('one Checkout')
-  expect(text).not.toContain('two Checkout')
+  expect(text).toContain(R)
+  expect(text).not.toContain('Flow1')
   expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: 'nonsense' } as any))).toContain('expand | collapse')
   await ui.unmount()
 })
@@ -457,7 +502,7 @@ test('the cap keeps the running step in view on the band', async ($, on) => {
   const steps: [string, string, string | null][] = Array.from({ length: 30 }, (_, i) => [`S${i + 1}x`, i < 20 ? 'completed' : i === 20 ? 'in_progress' : 'queued', i < 20 ? 'success' : null])
   await feed(line([run(1, 'in_progress', null, { jobs: [stepJob('big', steps)] })]))
   const ui = await band()
-  await ui.press({ plugin: 'gh-runs', key: KEY(1) })
+  await $.command.run({ command: 'ci-track', args: 'expand' } as any)
   const text = await drawn(ui)
   expect(text).toContain('21 S21x')
   expect(text).toContain('+18 more')
@@ -465,16 +510,29 @@ test('the cap keeps the running step in view on the band', async ($, on) => {
   await ui.unmount()
 })
 
-test('the job count and the collapsed step count only count completed steps', async ($, on) => {
+test('the job row counts only completed steps in its progress', async ($, on) => {
   const { track, feed, band } = await boot($, on)
   await track()
-  const steps = Array.from({ length: 6 }, (_, i) => ({ name: `S${i + 1}`, number: i + 1, status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'queued', conclusion: i < 2 ? 'success' : i === 2 ? '' : '' }))
+  const steps = Array.from({ length: 6 }, (_, i) => ({ name: `S${i + 1}`, number: i + 1, status: i < 2 ? 'completed' : i === 2 ? 'in_progress' : 'queued', conclusion: i < 2 ? 'success' : '' }))
   await feed(line([run(9, 'in_progress', null, { jobs: [{ name: 'build', status: 'in_progress', conclusion: null, steps }] })]))
   await $.command.run({ command: 'ci-track', args: 'expand' } as any)
   const ui = await band()
   const out = await drawn(ui)
-  expect(out).toContain('2/6')
-  expect(out).not.toContain('6/6')
   expect(out).toContain('step 3/6')
+  expect(out).toContain('"███"')
+  expect(out).not.toContain('6/6')
+  await ui.unmount()
+})
+
+test('a run or job without a chevron gets a two-cell blank so names line up', async ($, on) => {
+  const { track, feed, band } = await boot($, on)
+  await track()
+  await feed(line([run(1, 'queued', null, { jobs: [], workflowName: '', displayTitle: 'Queued thing' }), run(2, 'in_progress', null, { jobs: [{ name: 'lint', status: 'in_progress', conclusion: null, steps: [] }] })]))
+  await $.command.run({ command: 'ci-track', args: 'expand' } as any)
+  const ui = await band()
+  const out = await drawn(ui)
+  expect(out).toContain('Queued thing')
+  expect(out).not.toContain('run 1')
+  expect(out.split('{"type":"Text","children":["  "]}').length - 1).toBeGreaterThanOrEqual(3)
   await ui.unmount()
 })

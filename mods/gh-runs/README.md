@@ -17,48 +17,57 @@ It does not talk to GitHub. Each tracked target is followed by one `gh-watcher f
 
 - A Bash call that runs `gh-watcher wait --repo octo-org/hello-world --pr 17` (or `--branch`, `--commit`, `--run`) starts tracking that target, in the main conversation and in subagents. Quotes, env prefixes, `cd x &&` and pipes are understood. Without `--repo`, a `GH_REPO=` prefix or `export` supplies it; otherwise the call is skipped. Reading the command never delays, changes or fails the call.
 - `/ci-track <target>` tracks one by hand. A target is a PR URL, a run URL (with or without `/job/...`), `octo-org/hello-world#17` or `octo-org/hello-world 17`. Without an argument it lists what is tracked; with a bad one it prints the usage line.
-- `/ci-track expand` and `/ci-track collapse` show or hide the steps of every active run at once, with no keyboard needed. A run that starts afterwards is collapsed.
+- `/ci-track expand` opens every group, run and job at once; `/ci-track collapse` closes them all, groups included. No keyboard is needed. A group that appears afterwards is open, and its runs and jobs are collapsed.
 - The same repository and target is followed once, however it was added.
 - A target is dropped when its follower exits (all runs ended, timed out after 6 hours, or failed). A missing binary, unreadable output or exit code 2 drops it with a short status note.
 - Tracked targets and the spinner frame live in `$.state`, so a reload keeps them: followers are started again on `session.start`. They are stopped on `session.end`, and a `/clear` forgets the targets.
 
 ## The band
 
-Drawn only while a tracked run has no conclusion yet; with nothing to show, or while a survey is open, the engine's own band stands. One row per active run, cut to the band's width by dropping the least important parts first:
+Drawn only while a tracked run has no conclusion yet; with nothing to show, or while a survey is open, the engine's own band stands. The tracked runs are grouped per PR or branch and drawn as a tree, Group > runs > jobs > steps:
 
 ```
-⠹ octo-org/hello-world › #17 › CI › build +2 jobs │ step 7/12 Run tests │ ████░░░░ │ 1m 23s │ updated 40s ago webhook
+▾ ⠴ octo-org/hello-world › #17 │ 3 runs │ ✓ 1 done 1 running 1 queued │ 4m 10s
+  ▸ CI │ step 2/3 │ ███░░░░░ │ 42s │ updated 40s ago webhook
+  ▾ Release │ step 5/9 │ █████░░░ │ 1m 50s │ updated 40s ago webhook
+      ✓ build │ 9/9
+      ▾ ⠴ publish │ step 3/7 │ Upload assets
+          ✓ 1 Set up job
+          ⠴ 3 Upload assets
+          ○ 4 Post checkout
+▸ octo-org/hello-world › main │ 1 run │ 1 running │ 6m 00s
 ```
 
-- spinner, dim while queued and in the suggestion colour while in progress
-- repository, PR (or branch or commit), workflow and the leading job job (with `+2 jobs` when more are active), then the current step and its name
-- a progress bar of finished steps over all steps known so far
-- elapsed time and when gh-watcher last reported, with `webhook` or `polled` for its source
+Every level expands on its own, from the data gh-watcher already prints (no extra GitHub calls).
 
-Run and job names in the band are clickable links to GitHub. The row reads as a breadcrumb trail (`owner/repo › #17 › workflow › job`, each crumb a link where GitHub has a page for it), with a dim `│` between the fields; a separator is dropped together with its field on a narrow band.
+### Groups
 
-### Expanding a run
+- A PR target groups by repository and PR number. A branch target groups by repository and branch, which gh-watcher's run data does not carry for a PR or run, so the target's own branch is used. A commit target groups by its short sha.
+- A run target (`--run`, a run URL) joins the group of a PR, branch or commit target that follows the same run, and is a group of its own, `repo › run <id>`, otherwise. The same run is never listed twice.
+- The group row is a chevron, a spinner while any run is active, the breadcrumb `repo › #17` or `repo › branch` (the repository, the PR and the branch link to GitHub; a branch links to its `tree` page), then `│` fields: the run count, a coloured summary (`✓ n done` green, `✗ n failed` red, `n running`, `n queued` dim) and the time since the earliest start.
+- A group goes when it has no active run left. Finished runs leave the band one by one and get their coloured result row as before.
+- On a narrow band whole fields drop, the lowest priority first (run count, then the repository, then the summary, then the time), each together with its `│`. The PR or branch stays.
 
-Each row starts with a button, `▸` when collapsed and `▾` when expanded. Click it, or reach it with ctrl+x tab, to toggle that run. Runs start collapsed. Expansion is kept in `$.state` by run id, so it survives redraws, the tick and a reload, and is forgotten when the run leaves the band.
+### Runs, jobs and steps
 
-Expanded, the row is followed by every job and then its steps, one line each, from the data gh-watcher already prints (no extra GitHub calls):
+- Run rows are indented 2: the workflow name linked to the run, `step n/m`, a progress bar of finished steps, the elapsed time and when gh-watcher last reported (`webhook` or `polled`). A queued run shows its status.
+- Job rows are indented 6: a mark, the job name linked to the job, then `│ step n/m` and the current step name; a finished job shows `n/m` steps done.
+- Step rows are indented 10, one per step with its number and name.
+- Marks: green `✓` done, red `✗` failed, spinner in the suggestion colour running, dim `○` queued or pending, dim `-` skipped, yellow `⊘` cancelled (timed out is a yellow `✗`).
 
-```
-▾ ⠹ CI  octo-org/hello-world#17  ...
-    ⠹ build  7/12
-      ✓ 1 Set up job
-      ✗ 2 Run tests
-      ⠹ 3 Deploy
-      ○ 4 Post checkout
-```
+### Expanding
 
-- marks: green `✓` done, red `✗` failed, spinner in the suggestion colour running, dim `○` queued or pending, dim `-` skipped, yellow `⊘` cancelled (timed out is a yellow `✗`)
-- the job line ends with its own finished steps over its step count
-- at most 12 step lines per run, kept around the running or failed step, with a dim `+5 more` line for the rest
+Each group, run and job that has something below it starts with a button, `▸` collapsed and `▾` expanded. Click it, or reach it with ctrl+x tab, to toggle that level. Groups start expanded; runs and jobs start collapsed. Expansion is one set of keys in `$.state` (`g:<group id>`, `r:<run id>`, `j:<run id>:<job name>`), so it survives redraws, the tick and a reload, and is forgotten when its group, run or job leaves the band. `/ci-track expand` and `/ci-track collapse` set every level at once.
+
+The height is capped for the whole tree so the band cannot flood the screen:
+
+- at most 12 step lines, kept around the running or failed step
+- at most 30 lines in all
+- the rest is counted in a last dim `+5 more` line
 - names are cut to the band width
-- on a short terminal (fewer than 24 rows) the expanded lines are not drawn and the collapsed row shows instead
+- on a short terminal (fewer than 24 rows) only groups and runs are drawn, never jobs or steps
 
-One 250 ms `$.clock.every` tick moves the spinner and the two times. It runs only while something is tracked and is cancelled when nothing is. No request is made for it.
+One 250 ms `$.clock.every` tick moves the spinner and the times. It runs only while something is tracked and is cancelled when nothing is. No request is made for it.
 
 ### How fresh the steps are
 
@@ -102,4 +111,4 @@ claude plugin validate mods/gh-runs
 claude plugin test mods/gh-runs
 ```
 
-`hooks/runs.ts` holds the pure helpers (command and argument parsing, line handling, row layout, result text); `hooks/register.tsx` the hooks. Tests use `claude-code/testing` with a scripted child process and run offline.
+`hooks/runs.ts` holds the pure helpers (command and argument parsing, line handling, `groupRuns`, `treeLines`, result text); `hooks/register.tsx` the hooks. Tests use `claude-code/testing` with a scripted child process and run offline.

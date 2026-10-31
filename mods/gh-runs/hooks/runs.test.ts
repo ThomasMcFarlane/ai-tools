@@ -3,9 +3,14 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   ciPollReason,
   conclusionColor,
-  detailLines,
+  allKeys,
+  defaultExpanded,
+  groupRuns,
+  MAX_TREE_LINES,
+  summaryCounts,
+  toggleKey,
+  treeLines,
   stateMark,
-  fitSegments,
   noticeText,
   parseLine,
   summaryOf,
@@ -13,7 +18,6 @@ import {
   parseTrackArg,
   parseWatcherCommands,
   progressOf,
-  rowSegments,
   splitLines,
 } from './runs'
 import type { ActiveRun, Run } from './runs'
@@ -99,67 +103,191 @@ const active = (r: Run, source: 'events' | 'poll' = 'events'): ActiveRun => ({
   key: '7#1', runId: 7, attempt: 1, target: { repo: R, kind: 'pr', value: '17' }, run: r, source, checkedAt: Date.parse('2026-01-01T00:01:00Z'), seenAt: 0,
 })
 const NOW = Date.parse('2026-01-01T00:01:40Z')
-const text = (a: ActiveRun, columns = 200) => fitSegments(rowSegments(a, NOW, 0), columns).map(s => s.text).join('')
+const at = (id: number, target: ActiveRun['target'], r: Partial<Run> = {}, startedAt = '2026-01-01T00:00:00Z'): ActiveRun => ({
+  ...active(run({ databaseId: id, url: `https://example.com/run/${id}`, startedAt, ...r })),
+  key: `${id}#1`,
+  runId: id,
+  target,
+})
+const PR = { repo: R, kind: 'pr' as const, value: '17' }
+const BR = { repo: R, kind: 'branch' as const, value: 'feat/x y' }
+const lineText = (l: { segs: { text: string }[] }) => l.segs.map(s => s.text).join('')
 
-describe('band rows', () => {
-  test('shows the leading job, the step, progress and the update note', () => {
-    expect(progressOf(run())).toMatchObject({ more: 2, stepIndex: 2, stepTotal: 3, done: 1, total: 3 })
-    const t = text(active(run()))
-    expect(t).toContain('CI')
-    expect(t).toContain(`${R} › #17 › CI › build +2 jobs`)
-    expect(t).toContain('step 2/3 Test')
-    expect(t).toContain('1m 40s')
-    expect(t).toContain('updated 40s ago webhook')
-    expect(text(active(run(), 'poll'))).toContain('polled')
+describe('grouping', () => {
+  test('runs of one PR make one group, linked to the repo and the PR', () => {
+    const g = groupRuns([at(1, PR), at(2, PR, {}, '2026-01-01T00:00:10Z')])
+    expect(g.length).toBe(1)
+    expect(g[0]).toMatchObject({ id: `${R}|pr:17`, ref: '#17', href: `https://github.com/${R}/pull/17` })
+    expect(g[0]?.runs.map(a => a.runId)).toEqual([1, 2])
   })
-  test('drops the least important parts on a narrow band', () => {
-    const t = text(active(run()), 50)
-    expect(t.length).toBeLessThanOrEqual(50)
-    expect(t).toContain('CI')
-    expect(t).not.toContain('updated')
+  test('a branch target groups by repo and branch, linked to the tree', () => {
+    const [g] = groupRuns([at(1, BR)])
+    expect(g).toMatchObject({ ref: 'feat/x y', href: `https://github.com/${R}/tree/feat/x%20y` })
+  })
+  test('a mixed set makes one group per PR, branch, commit and lone run', () => {
+    const sha = '0123456789abcdef'
+    const groups = groupRuns([
+      at(1, PR),
+      at(2, BR, {}, '2026-01-01T00:00:01Z'),
+      at(3, { repo: R, kind: 'commit', value: sha }, {}, '2026-01-01T00:00:02Z'),
+      at(4, { repo: R, kind: 'run', value: '4' }, {}, '2026-01-01T00:00:03Z'),
+      at(5, { repo: 'other/repo', kind: 'pr', value: '17' }, {}, '2026-01-01T00:00:04Z'),
+    ])
+    expect(groups.map(g => g.ref)).toEqual(['#17', 'feat/x y', '0123456', 'run 4', '#17'])
+    expect(groups.map(g => g.repo)).toEqual([R, R, R, R, 'other/repo'])
+    expect(groups.find(g => g.kind === 'commit')?.href).toBeUndefined()
+  })
+  test('a run target joins the group that already follows the same run, and is not shown twice', () => {
+    const groups = groupRuns([at(1, { repo: R, kind: 'run', value: '1' }), at(1, PR), at(2, { repo: R, kind: 'run', value: '2' })])
+    expect(groups.map(g => [g.ref, g.runs.map(a => a.runId)])).toEqual([['#17', [1]], ['run 2', [2]]])
+  })
+  test('groups keep a stable order, whatever the order of the list', () => {
+    const a = at(1, PR)
+    const b = at(2, BR, {}, '2026-01-01T00:00:30Z')
+    expect(groupRuns([a, b]).map(g => g.id)).toEqual(groupRuns([b, a]).map(g => g.id))
+  })
+  test('the summary counts done, failed, running and queued runs', () => {
+    const [g] = groupRuns([
+      at(1, PR, { status: 'completed', conclusion: 'success' }),
+      at(2, PR, { status: 'completed', conclusion: 'failure' }),
+      at(3, PR),
+      at(4, PR, { status: 'queued' }),
+    ])
+    expect(summaryCounts(g as never)).toEqual({ total: 4, done: 1, failed: 1, running: 1, queued: 1 })
   })
 })
 
-describe('breadcrumbs and separators', () => {
-  const segs = (a: ActiveRun, columns = 200) => fitSegments(rowSegments(a, NOW, 0), columns)
-  const linked = (a: ActiveRun) => Object.fromEntries(segs(a).filter(s => s.href).map(s => [s.id, s.href]))
-
-  test('read repo, PR, workflow, job in order, each linked', () => {
-    const a = active(run({ jobs: [{ name: 'build', status: 'in_progress', conclusion: null, url: 'https://example.com/job/1', steps: [] }] }))
-    expect(segs(a).map(s => s.text).join('')).toContain(`${R} › #17 › CI › build`)
-    expect(linked(a)).toEqual({ repo: `https://github.com/${R}`, pr: `https://github.com/${R}/pull/17`, wf: 'https://example.com/run/7', job: 'https://example.com/job/1' })
+describe('group rows', () => {
+  const row = (runs: ActiveRun[], columns = 200) => treeLines(groupRuns(runs), defaultExpanded(groupRuns(runs)), NOW, 0, columns)[0] as ReturnType<typeof treeLines>[number]
+  test('read breadcrumb, run count, coloured summary and elapsed time since the earliest start', () => {
+    const l = row([at(1, PR), at(2, PR, { status: 'completed', conclusion: 'success' }, '2026-01-01T00:00:20Z')])
+    expect(lineText(l)).toBe(`⠋ ${R} › #17 │ 2 runs │ ✓ 1 done 1 running │ 1m 40s`)
+    expect(l.segs.find(s => s.id === 'sum')).toMatchObject({ color: 'success' })
+    expect(l.segs.find(s => s.id === 'sum1')).toMatchObject({ color: 'suggestion' })
+    expect(Object.fromEntries(l.segs.filter(s => s.href).map(s => [s.id, s.href]))).toEqual({ repo: `https://github.com/${R}`, ref: `https://github.com/${R}/pull/17` })
   })
-  test('a run target has no run number crumb', () => {
-    const a = { ...active(run()), target: { repo: R, kind: 'run' as const, value: '7' } }
-    const t = text(a)
-    expect(t).toContain(`${R} › CI`)
-    expect(t).not.toContain('run 7')
-    expect(segs(a).some(s => s.id === 'pr')).toBe(false)
+  test('failures are red and a lone run is singular', () => {
+    const l = row([at(1, PR, { status: 'completed', conclusion: 'failure' })])
+    expect(lineText(l)).toContain('1 run │ ✗ 1 failed')
+    expect(l.segs.find(s => s.id === 'sum')).toMatchObject({ color: 'error' })
+    expect(l.segs.some(s => s.id === 'spin')).toBe(false)
   })
-  test('separate the fields with a dim bar', () => {
-    const t = text(active(run()))
-    expect(t).toContain(' │ step 2/3 Test')
-    expect(t).toContain(' │ 1m 40s')
-    expect(t).toContain(' │ updated 40s ago webhook')
-  })
-  test('a separator goes with its field, never dangling or doubled', () => {
+  test('a separator goes with its field, never dangling or doubled, at every width', () => {
     for (let columns = 10; columns <= 140; columns++) {
-      const out = segs(active(run()), columns)
-      const t = out.map(s => s.text).join('')
+      const l = row([at(1, PR), at(2, PR, { status: 'completed', conclusion: 'failure' })], columns)
+      const t = lineText(l)
       expect(t).not.toMatch(/│ *│/)
       expect(t).not.toMatch(/› *›/)
       expect(t).not.toMatch(/[│›] ?$/)
-      for (const s of out) if (s.id.startsWith('sep:')) expect(out.some(o => o.id === s.id.slice(4))).toBe(true)
+      for (const s of l.segs) if (s.id.startsWith('sep:')) expect(l.segs.some(o => o.id === s.id.slice(4))).toBe(true)
+      expect(l.segs.some(s => s.id === 'ref')).toBe(true)
+      if (columns >= 40) expect([...t].length).toBeLessThanOrEqual(columns - 2)
     }
   })
-  test('the workflow crumb stays when the repo crumb is trimmed', () => {
-    const t = text(active(run()), 30)
-    expect(t).toContain('CI')
-    expect(t).not.toContain(R)
-    expect(t).not.toMatch(/^.{2}›/)
+  test('drop the run count first and the repo before the summary', () => {
+    const t = (c: number) => lineText(row([at(1, PR)], c))
+    expect(t(200)).toContain('1 run │')
+    expect(t(53)).not.toContain('1 run │')
+    expect(t(53)).toContain(R)
+    expect(t(35)).not.toContain(R)
+    expect(t(35)).toContain('#17')
   })
-  test('keep href through trimming', () => {
-    expect(segs(active(run()), 60).find(s => s.id === 'wf')?.href).toBe('https://example.com/run/7')
+})
+
+describe('run and job rows', () => {
+  const tree = (open: string[], runs = [at(1, PR)], columns = 200, rows = true) => treeLines(groupRuns(runs), open, NOW, 0, columns, rows)
+  const G = `g:${R}|pr:17`
+  test('a run row is indented 2 with the workflow linked, step, bar, elapsed and update note', () => {
+    const l = tree([G])[1] as ReturnType<typeof tree>[number]
+    expect(l).toMatchObject({ kind: 'run', indent: 2, toggle: 'r:1', isOpen: false })
+    expect(lineText(l)).toBe('CI │ step 2/3 │ ███░░░░░ │ 1m 40s │ updated 40s ago webhook')
+    expect(l.segs[0]).toMatchObject({ href: 'https://example.com/run/7'.replace('7', '1') })
+  })
+  test('a job row is indented 6 and shows the state, step n/m and the current step name', () => {
+    const l = tree([G, 'r:1']).filter(x => x.kind === 'job')
+    expect(l.map(x => [x.indent, lineText(x), x.toggle])).toEqual([
+      [6, '⠋ build │ step 2/3 │ Test', 'j:1:build'],
+      [6, '⠋ lint', undefined],
+      [6, '○ docs', undefined],
+    ])
+  })
+  test('a finished job shows done over total', () => {
+    const r = at(1, PR, { jobs: [{ name: 'build', status: 'completed', conclusion: 'success', steps: [{ name: 'a', number: 1, status: 'completed', conclusion: 'success' }] }] })
+    expect(tree([G, 'r:1'], [r]).map(lineText)[2]).toBe('✓ build │ 1/1')
+  })
+  test('step rows are indented 10 with number and name', () => {
+    const l = tree([G, 'r:1', 'j:1:build'])
+    const steps = l.filter(x => x.kind === 'step')
+    expect(steps.map(x => [x.indent, lineText(x)])).toEqual([[10, '✓ 1 Checkout'], [10, '⠋ 2 Test'], [10, '○ 3 Package']])
+    expect(steps[0]?.segs[0]).toMatchObject({ color: 'success' })
+    expect(steps[1]?.segs[0]).toMatchObject({ color: 'suggestion' })
+  })
+  test('a collapsed key hides what is below it', () => {
+    expect(tree([]).length).toBe(1)
+    expect(tree([G]).map(x => x.kind)).toEqual(['group', 'run'])
+    expect(tree([G, 'r:1']).map(x => x.kind)).toEqual(['group', 'run', 'job', 'job', 'job'])
+    expect(tree(['r:1', 'j:1:build']).map(x => x.kind)).toEqual(['group'])
+  })
+  test('a short viewport shows groups and runs only', () => {
+    expect(tree([G, 'r:1', 'j:1:build'], [at(1, PR)], 200, false).map(x => x.kind)).toEqual(['group', 'run'])
+  })
+  test('names are cut to the width at every level', () => {
+    const long = at(1, PR, { jobs: [{ name: 'a very long job name here', status: 'in_progress', conclusion: null, steps: [{ name: 'a very long step name here', number: 3, status: 'queued', conclusion: null }] }] })
+    for (const l of tree([G, 'r:1', 'j:1:a very long job name here'], [long], 30)) {
+      if (l.kind === 'step') expect(l.indent + [...lineText(l)].length).toBeLessThanOrEqual(30)
+    }
+  })
+})
+
+describe('run names', () => {
+  test('fall back to displayTitle, then run <id>', () => {
+    const name = (r: Partial<Run>) => lineText(treeLines(groupRuns([at(1, PR, { jobs: [], ...r })]), [`g:${R}|pr:17`], NOW, 0, 200)[1] as never).split(' │')[0]
+    expect(name({ workflowName: '', displayTitle: 'Fix bug' })).toBe('Fix bug')
+    expect(name({ workflowName: 'CI', displayTitle: 'Fix bug' })).toBe('CI')
+    expect(name({ workflowName: '', displayTitle: '' })).toBe('run 1')
+  })
+})
+
+describe('expansion keys', () => {
+  test('groups start expanded, runs and jobs collapsed', () => {
+    const groups = groupRuns([at(1, PR), at(2, BR)])
+    expect(defaultExpanded(groups)).toEqual(groups.map(g => `g:${g.id}`))
+    expect(allKeys(groups.filter(g => g.kind === 'pr'))).toEqual([`g:${R}|pr:17`, 'r:1', 'j:1:build', 'j:1:lint', 'j:1:docs'])
+  })
+  test('toggling adds a missing key and removes a present one', () => {
+    expect(toggleKey(['a'], 'b')).toEqual(['a', 'b'])
+    expect(toggleKey(['a', 'b'], 'a')).toEqual(['b'])
+  })
+})
+
+describe('tree height', () => {
+  const stepsOf = (n: number, running: number) => Array.from({ length: n }, (_, i) => ({ name: `s${i + 1}`, number: i + 1, status: i < running ? 'completed' : i === running ? 'in_progress' : 'queued', conclusion: i < running ? 'success' : null }))
+  const big = (id: number, jobs: number, steps: number, running: number) =>
+    at(id, PR, { jobs: Array.from({ length: jobs }, (_, j) => ({ name: `job${j}`, status: 'in_progress', conclusion: null, steps: stepsOf(steps, running) })) })
+  const all = (runs: ActiveRun[]) => {
+    const groups = groupRuns(runs)
+    return treeLines(groups, allKeys(groups), NOW, 0, 80)
+  }
+  test('caps step lines over the whole tree and counts the rest in one +N more line', () => {
+    const lines = all([big(1, 2, 15, 20)])
+    expect(lines.filter(l => l.kind === 'step').length).toBe(12)
+    const last = lines[lines.length - 1] as (typeof lines)[number]
+    expect(lineText(last)).toBe('+18 more')
+    expect(last).toMatchObject({ kind: 'more', indent: 10 })
+  })
+  test('keeps the running step in view', () => {
+    const lines = all([big(1, 1, 30, 20)])
+    expect(lines.map(lineText).some(t => t.includes('21 s21'))).toBe(true)
+    expect(lines.map(lineText).some(t => t.includes(' 1 s1'))).toBe(false)
+  })
+  test('caps all lines at MAX_TREE_LINES', () => {
+    const runs = Array.from({ length: 40 }, (_, i) => at(i + 1, PR))
+    const lines = all(runs)
+    expect(lines.length).toBe(MAX_TREE_LINES)
+    expect(lineText(lines[lines.length - 1] as never)).toMatch(/^\+\d+ more$/)
+  })
+  test('under the caps there is no +N more line', () => {
+    expect(all([at(1, PR)]).some(l => l.kind === 'more')).toBe(false)
   })
 })
 
@@ -184,12 +312,7 @@ describe('chat items', () => {
   })
 })
 
-describe('expanded lines', () => {
-  const text = (lines: ReturnType<typeof detailLines>) => lines.map(l => l.map(s => s.text).join(''))
-  const step = (n: number, status: string, conclusion: string | null) => ({ name: `step${n}`, number: n, status, conclusion })
-  const job = (steps: ReturnType<typeof step>[], name = 'build'): Run['jobs'] => [{ name, status: 'in_progress', conclusion: null, steps }]
-  const base = (jobs: Run['jobs']): Run => ({ databaseId: 1, workflowName: 'CI', status: 'in_progress', conclusion: null, url: 'u', jobs })
-
+describe('step marks', () => {
   test('marks and colours every step state', () => {
     expect(stateMark('completed', 'success', 0)).toEqual({ mark: '✓', color: 'success' })
     expect(stateMark('completed', 'failure', 0)).toEqual({ mark: '✗', color: 'error' })
@@ -199,56 +322,13 @@ describe('expanded lines', () => {
     expect(stateMark('completed', 'skipped', 0)).toEqual({ mark: '-', dim: true })
     expect(stateMark('completed', 'cancelled', 0)).toEqual({ mark: '⊘', color: 'warning' })
   })
-
   test('counts only completed steps, not ones with an empty conclusion', () => {
     const steps = [
       { name: 'a', number: 1, status: 'completed', conclusion: 'success' },
       { name: 'b', number: 2, status: 'in_progress', conclusion: '' as never },
       { name: 'c', number: 3, status: 'queued', conclusion: '' as never },
     ]
-    const r = run({ jobs: [{ name: 'build', status: 'in_progress', conclusion: null, steps }] })
-    expect(JSON.stringify(detailLines(r, 80, 0))).toContain('1/3')
-    expect(progressOf(r).done).toBe(1)
-  })
-  test('draws the job with n/m, then its steps indented with numbers and names', () => {
-    const lines = detailLines(base(job([step(1, 'completed', 'success'), step(2, 'completed', 'failure'), step(3, 'in_progress', null), step(4, 'queued', null)])), 80, 0)
-    expect(text(lines)).toEqual(['  ⠋ build  2/4', '    ✓ 1 step1', '    ✗ 2 step2', '    ⠋ 3 step3', '    ○ 4 step4'])
-    expect(lines[2]?.[0]).toMatchObject({ color: 'error' })
-    expect(lines[3]?.[0]).toMatchObject({ color: 'suggestion' })
-    expect(lines[4]?.[0]).toMatchObject({ dim: true })
-  })
-
-  test('caps at 12 step lines, keeps the running step, and counts the rest', () => {
-    const steps = Array.from({ length: 30 }, (_, i) => step(i + 1, i < 25 ? 'completed' : i === 25 ? 'in_progress' : 'queued', i < 25 ? 'success' : null))
-    const out = text(detailLines(base(job(steps)), 80, 0))
-    expect(out.filter(l => l.startsWith('    ') && !l.includes('more')).length).toBe(12)
-    expect(out.some(l => l.includes('26 step26'))).toBe(true)
-    expect(out[out.length - 1]).toBe('    +18 more')
-    const head = text(detailLines(base(job(steps.map(s => ({ ...s, status: 'queued', conclusion: null })))), 80, 0))
-    expect(head).toContain('    ○ 1 step1')
-    expect(head[head.length - 1]).toBe('    +18 more')
-  })
-
-  test('keeps a failed step in view', () => {
-    const steps = Array.from({ length: 20 }, (_, i) => step(i + 1, 'completed', i === 17 ? 'failure' : 'success'))
-    expect(text(detailLines(base(job(steps)), 80, 0)).some(l => l.includes('18 step18'))).toBe(true)
-  })
-
-  test('cuts names to the width', () => {
-    const lines = text(detailLines(base(job([{ name: 'a very long step name', number: 3, status: 'queued', conclusion: null }], 'a long job name')), 20, 0))
-    for (const l of lines) expect([...l].length).toBeLessThanOrEqual(20)
-    expect(lines[1]).toContain('…')
-  })
-
-  test('links the job name when the job has a url', () => {
-    const jobs: Run['jobs'] = [{ name: 'build', status: 'in_progress', conclusion: null, url: 'https://example.com/job/9', steps: [step(1, 'queued', null)] }, { name: 'lint', status: 'queued', conclusion: null, steps: [] }]
-    const lines = detailLines(base(jobs), 80, 0)
-    const hrefs = lines.flat().filter(s => s.href).map(s => [s.id, s.href])
-    expect(hrefs).toEqual([['j0:name', 'https://example.com/job/9']])
-  })
-
-  test('a job with no steps is one line', () => {
-    expect(text(detailLines(base(job([])), 40, 0))).toEqual(['  ⠋ build  0/0'])
+    expect(progressOf(run({ jobs: [{ name: 'build', status: 'in_progress', conclusion: null, steps }] })).done).toBe(1)
   })
 })
 
