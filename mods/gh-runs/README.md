@@ -44,7 +44,7 @@ Every level expands on its own, from the data gh-watcher already prints (no extr
 
 - A PR target groups by repository and PR number. A branch target groups by repository and branch, which gh-watcher's run data does not carry for a PR or run, so the target's own branch is used. A commit target groups by its short sha.
 - A run target (`--run`, a run URL) joins the group of a PR, branch or commit target that follows the same run, and is a group of its own, `repo › run <id>`, otherwise. The same run is never listed twice.
-- The group row is a chevron, a spinner while any run is active, the breadcrumb `repo › #17` or `repo › branch` (the repository, the PR and the branch link to GitHub; a branch links to its `tree` page), then `│` fields: the run count, a coloured summary (`✓ n done` green, `✗ n failed` red, `n running`, `n queued` dim) and the time since the earliest start.
+- The group row is a chevron, a spinner while any run is active, the breadcrumb `repo › #17` or `repo › branch` (the repository, the PR and the branch link to GitHub; a branch links to its `tree` page), then `│` fields: the run count, a coloured summary (`✓ n done` green, `✗ n failed` red, `n running`, `n queued` dim), a progress bar of finished steps over all steps of the group's runs (empty while no run has step data; it drops first on a narrow band) and the time since the earliest start.
 - A group goes when it has no active run left. Finished runs leave the band one by one and get their coloured result row as before.
 - On a narrow band whole fields drop, the lowest priority first (run count, then the repository, then the summary, then the time), each together with its `│`. The PR or branch stays.
 

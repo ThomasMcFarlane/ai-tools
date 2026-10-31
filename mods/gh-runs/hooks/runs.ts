@@ -460,6 +460,16 @@ export const groupSegments = (g: Group, now: number, frame: number): Segment[] =
     segs.push(sep('sum', 3))
     parts.forEach((p, i) => segs.push({ id: i === 0 ? 'sum' : `sum${i}`, ...p, text: i === 0 ? p.text : ` ${p.text}`, drop: 3 }))
   }
+  let done = 0
+  let total = 0
+  for (const a of g.runs) {
+    const p = progressOf(a.run)
+    done += p.done
+    total += p.total
+  }
+  const b = bar(done, total)
+  segs.push(sep('fill', 6), { id: 'fill', text: b.filled, color: 'suggestion', drop: 6 })
+  segs.push({ id: 'empty', text: b.empty, dim: true, drop: 6 })
   const start = Math.min(...g.runs.map(startOf))
   segs.push(sep('elapsed', 2), { id: 'elapsed', text: formatDuration(now - start), drop: 2 })
   return segs

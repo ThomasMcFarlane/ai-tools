@@ -161,7 +161,7 @@ describe('group rows', () => {
   const row = (runs: ActiveRun[], columns = 200) => treeLines(groupRuns(runs), defaultExpanded(groupRuns(runs)), NOW, 0, columns)[0] as ReturnType<typeof treeLines>[number]
   test('read breadcrumb, run count, coloured summary and elapsed time since the earliest start', () => {
     const l = row([at(1, PR), at(2, PR, { status: 'completed', conclusion: 'success' }, '2026-01-01T00:00:20Z')])
-    expect(lineText(l)).toBe(`⠋ ${R} › #17 │ 2 runs │ ✓ 1 done 1 running │ 1m 40s`)
+    expect(lineText(l)).toBe(`⠋ ${R} › #17 │ 2 runs │ ✓ 1 done 1 running │ ███░░░░░ │ 1m 40s`)
     expect(l.segs.find(s => s.id === 'sum')).toMatchObject({ color: 'success' })
     expect(l.segs.find(s => s.id === 'sum1')).toMatchObject({ color: 'suggestion' })
     expect(Object.fromEntries(l.segs.filter(s => s.href).map(s => [s.id, s.href]))).toEqual({ repo: `https://github.com/${R}`, ref: `https://github.com/${R}/pull/17` })
@@ -183,6 +183,32 @@ describe('group rows', () => {
       expect(l.segs.some(s => s.id === 'ref')).toBe(true)
       if (columns >= 40) expect([...t].length).toBeLessThanOrEqual(columns - 2)
     }
+  })
+  test('the bar fills with completed steps over all steps of every run with step data', () => {
+    // run 1: 1 of 3 steps done; run 2: 2 of 2 done; run 3 has no step data -> 3/5 -> 5 of 8 cells
+    const two = [{ name: 'a', number: 1, status: 'completed', conclusion: 'success' }, { name: 'b', number: 2, status: 'completed', conclusion: 'success' }]
+    const l = row([at(1, PR), at(2, PR, { jobs: [{ name: 'x', status: 'completed', conclusion: 'success', steps: two }] }, '2026-01-01T00:00:10Z'), at(3, PR, { status: 'queued', jobs: [] }, '2026-01-01T00:00:20Z')])
+    expect(l.segs.find(s => s.id === 'fill')?.text).toBe('█████')
+    expect(l.segs.find(s => s.id === 'empty')?.text).toBe('░░░')
+    expect(lineText(l)).toMatch(/ │ █████░░░ │ 1m 40s$/)
+  })
+  test('an all-queued group shows an empty bar', () => {
+    const l = row([at(1, PR, { status: 'queued', jobs: [] }), at(2, PR, { status: 'queued', jobs: undefined })])
+    expect(l.segs.find(s => s.id === 'fill')?.text).toBe('')
+    expect(l.segs.find(s => s.id === 'empty')?.text).toBe('░░░░░░░░')
+    expect(lineText(l)).toContain(' │ ░░░░░░░░ │ ')
+  })
+  test('the bar drops with its separator at narrow width, before the run count', () => {
+    const wide = row([at(1, PR)], 200)
+    expect(wide.segs.some(s => s.id === 'fill')).toBe(true)
+    for (let columns = 30; columns <= 80; columns++) {
+      const l = row([at(1, PR)], columns)
+      const has = (id: string) => l.segs.some(s => s.id === id)
+      expect(has('sep:fill')).toBe(has('fill'))
+      expect(has('fill')).toBe(has('empty'))
+      if (has('fill')) expect(has('count')).toBe(true)
+    }
+    expect(row([at(1, PR)], 50).segs.some(s => s.id === 'fill')).toBe(false)
   })
   test('drop the run count first and the repo before the summary', () => {
     const t = (c: number) => lineText(row([at(1, PR)], c))
