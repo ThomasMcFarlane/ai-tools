@@ -60,6 +60,14 @@ export const shellCommands = (line: string): string[][] => {
 const ASSIGN = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 const FLAGS: Record<string, TargetKind> = { '--pr': 'pr', '--branch': 'branch', '--commit': 'commit', '--run': 'run' }
 
+// A value is a target only when it is a literal; unexpanded shell text (`$n`, `$(cmd)`) is not.
+const LITERAL: Record<TargetKind, (v: string) => boolean> = {
+  pr: v => /^[1-9]\d*$/.test(v),
+  run: v => /^[1-9]\d*$/.test(v),
+  commit: v => /^[0-9a-f]{7,40}$/i.test(v),
+  branch: v => !/[$`\s]/.test(v),
+}
+
 // Every `gh-watcher wait` in a shell line, as a target; ones with no repo are skipped.
 export const parseWatcherCommands = (line: string): Target[] => {
   const found: Target[] = []
@@ -97,7 +105,7 @@ export const parseWatcherCommands = (line: string): Target[] => {
       } else if (['--interval', '--timeout', '--source', '--events-url', '--fallback-interval'].includes(name)) take()
     }
     repo = repo ?? repoEnv
-    if (repo && isRepo(repo) && kind && value) found.push({ repo, kind, value })
+    if (repo && isRepo(repo) && kind && value && LITERAL[kind](value)) found.push({ repo, kind, value })
   }
   return found
 }
