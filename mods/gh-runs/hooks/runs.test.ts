@@ -105,8 +105,7 @@ describe('band rows', () => {
     expect(progressOf(run())).toMatchObject({ more: 2, stepIndex: 2, stepTotal: 3, done: 1, total: 3 })
     const t = text(active(run()))
     expect(t).toContain('CI')
-    expect(t).toContain(`${R}#17`)
-    expect(t).toContain('build +2 jobs')
+    expect(t).toContain(`${R} › #17 › CI › build +2 jobs`)
     expect(t).toContain('step 2/3 Test')
     expect(t).toContain('1m 40s')
     expect(t).toContain('updated 40s ago webhook')
@@ -117,6 +116,49 @@ describe('band rows', () => {
     expect(t.length).toBeLessThanOrEqual(50)
     expect(t).toContain('CI')
     expect(t).not.toContain('updated')
+  })
+})
+
+describe('breadcrumbs and separators', () => {
+  const segs = (a: ActiveRun, columns = 200) => fitSegments(rowSegments(a, NOW, 0), columns)
+  const linked = (a: ActiveRun) => Object.fromEntries(segs(a).filter(s => s.href).map(s => [s.id, s.href]))
+
+  test('read repo, PR, workflow, job in order, each linked', () => {
+    const a = active(run({ jobs: [{ name: 'build', status: 'in_progress', conclusion: null, url: 'https://example.com/job/1', steps: [] }] }))
+    expect(segs(a).map(s => s.text).join('')).toContain(`${R} › #17 › CI › build`)
+    expect(linked(a)).toEqual({ repo: `https://github.com/${R}`, pr: `https://github.com/${R}/pull/17`, wf: 'https://example.com/run/7', job: 'https://example.com/job/1' })
+  })
+  test('a run target has no run number crumb', () => {
+    const a = { ...active(run()), target: { repo: R, kind: 'run' as const, value: '7' } }
+    const t = text(a)
+    expect(t).toContain(`${R} › CI`)
+    expect(t).not.toContain('run 7')
+    expect(segs(a).some(s => s.id === 'pr')).toBe(false)
+  })
+  test('separate the fields with a dim bar', () => {
+    const t = text(active(run()))
+    expect(t).toContain(' │ step 2/3 Test')
+    expect(t).toContain(' │ 1m 40s')
+    expect(t).toContain(' │ updated 40s ago webhook')
+  })
+  test('a separator goes with its field, never dangling or doubled', () => {
+    for (let columns = 10; columns <= 140; columns++) {
+      const out = segs(active(run()), columns)
+      const t = out.map(s => s.text).join('')
+      expect(t).not.toMatch(/│ *│/)
+      expect(t).not.toMatch(/› *›/)
+      expect(t).not.toMatch(/[│›] ?$/)
+      for (const s of out) if (s.id.startsWith('sep:')) expect(out.some(o => o.id === s.id.slice(4))).toBe(true)
+    }
+  })
+  test('the workflow crumb stays when the repo crumb is trimmed', () => {
+    const t = text(active(run()), 30)
+    expect(t).toContain('CI')
+    expect(t).not.toContain(R)
+    expect(t).not.toMatch(/^.{2}›/)
+  })
+  test('keep href through trimming', () => {
+    expect(segs(active(run()), 60).find(s => s.id === 'wf')?.href).toBe('https://example.com/run/7')
   })
 })
 
@@ -195,6 +237,13 @@ describe('expanded lines', () => {
     const lines = text(detailLines(base(job([{ name: 'a very long step name', number: 3, status: 'queued', conclusion: null }], 'a long job name')), 20, 0))
     for (const l of lines) expect([...l].length).toBeLessThanOrEqual(20)
     expect(lines[1]).toContain('…')
+  })
+
+  test('links the job name when the job has a url', () => {
+    const jobs: Run['jobs'] = [{ name: 'build', status: 'in_progress', conclusion: null, url: 'https://example.com/job/9', steps: [step(1, 'queued', null)] }, { name: 'lint', status: 'queued', conclusion: null, steps: [] }]
+    const lines = detailLines(base(jobs), 80, 0)
+    const hrefs = lines.flat().filter(s => s.href).map(s => [s.id, s.href])
+    expect(hrefs).toEqual([['j0:name', 'https://example.com/job/9']])
   })
 
   test('a job with no steps is one line', () => {

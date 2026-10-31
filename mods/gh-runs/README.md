@@ -27,13 +27,15 @@ It does not talk to GitHub. Each tracked target is followed by one `gh-watcher f
 Drawn only while a tracked run has no conclusion yet; with nothing to show, or while a survey is open, the engine's own band stands. One row per active run, cut to the band's width by dropping the least important parts first:
 
 ```
-⠹ CI  octo-org/hello-world#17  build +2 jobs  step 7/12 Run tests  ████░░░░  1m 23s  updated 40s ago webhook
+⠹ octo-org/hello-world › #17 › CI › build +2 jobs │ step 7/12 Run tests │ ████░░░░ │ 1m 23s │ updated 40s ago webhook
 ```
 
 - spinner, dim while queued and in the suggestion colour while in progress
-- workflow, repository and target, the leading job (with `+2 jobs` when more are active), the current step and its name
+- repository, PR (or branch or commit), workflow and the leading job job (with `+2 jobs` when more are active), then the current step and its name
 - a progress bar of finished steps over all steps known so far
 - elapsed time and when gh-watcher last reported, with `webhook` or `polled` for its source
+
+Run and job names in the band are clickable links to GitHub. The row reads as a breadcrumb trail (`owner/repo › #17 › workflow › job`, each crumb a link where GitHub has a page for it), with a dim `│` between the fields; a separator is dropped together with its field on a narrow band.
 
 ### Expanding a run
 
