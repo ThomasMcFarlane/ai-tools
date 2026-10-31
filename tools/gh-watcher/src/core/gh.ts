@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import type { CheckState, FailedStep, GhJobInfo, GhRunInfo, GhStepInfo, WatchTarget } from './types.js';
 
 const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
+const DETAILED_RUN_FIELDS = `${RUN_FIELDS},startedAt,updatedAt,attempt`;
 
 export const FAILURE_CONCLUSIONS: readonly string[] = [
   'failure',
@@ -24,6 +25,8 @@ export type GhExec = (args: string[]) => Promise<GhExecResult>;
 export interface GhClientOptions {
   ghBin?: string;
   exec?: GhExec;
+  /** Also request startedAt, updatedAt and attempt for each run. */
+  detailedRuns?: boolean;
 }
 
 function defaultExec(ghBin: string): GhExec {
@@ -74,16 +77,29 @@ function normaliseRun(raw: unknown): GhRunInfo {
   if (record.createdAt !== undefined) {
     run.createdAt = record.createdAt;
   }
+  if (record.startedAt !== undefined) {
+    run.startedAt = record.startedAt;
+  }
+  if (record.updatedAt !== undefined) {
+    run.updatedAt = record.updatedAt;
+  }
+  if (record.attempt !== undefined) {
+    run.attempt = Number(record.attempt);
+  }
   return run;
 }
 
 function normaliseStep(raw: unknown): GhStepInfo {
   const record = (raw ?? {}) as Partial<GhStepInfo>;
-  return {
+  const step: GhStepInfo = {
     name: record.name ?? '',
     number: Number(record.number),
     conclusion: record.conclusion ?? null,
   };
+  if (record.status !== undefined) {
+    step.status = record.status;
+  }
+  return step;
 }
 
 function normaliseJob(raw: unknown): GhJobInfo {
@@ -147,14 +163,16 @@ function newestCommitRuns(runs: GhRunInfo[]): GhRunInfo[] {
 
 export class GhClient {
   private readonly exec: GhExec;
+  private readonly runFields: string;
 
   constructor(options?: GhClientOptions) {
     this.exec = options?.exec ?? defaultExec(options?.ghBin ?? 'gh');
+    this.runFields = options?.detailedRuns === true ? DETAILED_RUN_FIELDS : RUN_FIELDS;
   }
 
   async listRuns(repo: string, target: WatchTarget): Promise<GhRunInfo[]> {
     if (target.kind === 'run') {
-      const result = await this.exec(['run', 'view', String(target.runId), '--repo', repo, '--json', RUN_FIELDS]);
+      const result = await this.exec(['run', 'view', String(target.runId), '--repo', repo, '--json', this.runFields]);
       assertOk(result, `run view ${target.runId}`);
       return [normaliseRun(parseJson(result.stdout))];
     }
@@ -237,7 +255,7 @@ export class GhClient {
   }
 
   private async listRunsBy(repo: string, flag: string, value: string): Promise<GhRunInfo[]> {
-    const result = await this.exec(['run', 'list', '--repo', repo, flag, value, '--limit', '25', '--json', RUN_FIELDS]);
+    const result = await this.exec(['run', 'list', '--repo', repo, flag, value, '--limit', '25', '--json', this.runFields]);
     assertOk(result, `run list ${value}`);
     const runs = parseJson<unknown[]>(result.stdout);
     return runs.map((run) => normaliseRun(run));

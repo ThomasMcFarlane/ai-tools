@@ -22,7 +22,7 @@ export interface WaitDeps {
   sleep?: (ms: number) => Promise<void>;
   log?: (line: string) => void;
   /** Called after each non-terminal check, for progress output. */
-  onPending?: () => void;
+  onPending?: (report: CheckReport, source: WaitSource) => void | Promise<void>;
 }
 
 export type WaitResult =
@@ -80,7 +80,7 @@ async function pollLoop(
     if (isTerminal(report)) {
       return { kind: 'terminal', report, source: 'poll' };
     }
-    deps.onPending?.();
+    await deps.onPending?.(report, 'poll');
     if (Date.now() >= deadline) {
       return { kind: 'timeout', source: 'poll' };
     }
@@ -132,7 +132,7 @@ async function waitWithEvents(
   if (isTerminal(report)) {
     return { kind: 'terminal', report, source: 'events' };
   }
-  deps.onPending?.();
+  await deps.onPending?.(report, 'events');
   let lastCheck = Date.now();
   for (;;) {
     const now = Date.now();
@@ -172,7 +172,7 @@ async function waitWithEvents(
     if (isTerminal(report)) {
       return { kind: 'terminal', report, source: 'events' };
     }
-    deps.onPending?.();
+    await deps.onPending?.(report, 'events');
   }
 }
 
