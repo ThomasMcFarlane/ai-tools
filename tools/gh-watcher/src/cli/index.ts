@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { collectReport } from '../core/engine.js';
 import { resolveEventsUrl } from '../core/events.js';
+import { followTarget } from '../core/follow.js';
 import { waitForTerminal, type WaitResult, type WaitSource } from '../core/wait.js';
 import type { CheckReport, CheckState, FailedStep, GhWatchSpec, WatchTarget } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
@@ -155,6 +156,29 @@ async function waitAction(flags: WaitFlags): Promise<void> {
   process.exitCode = report.state === 'success' ? 0 : 1;
 }
 
+async function followAction(flags: WaitFlags): Promise<void> {
+  const repo = resolveRepo(flags.repo);
+  const target = parseTargetFlagsOrExit(flags);
+  const intervalMs = parseDuration(flags.interval ?? '30s');
+  const timeoutMs = Math.min(parseDuration(flags.timeout ?? '30m'), MAX_WAIT_TIMEOUT_MS);
+  const fallbackMs = parseDuration(flags.fallbackInterval ?? '5m');
+  const source = flags.source ?? 'auto';
+  if (source !== 'auto' && source !== 'events' && source !== 'poll') {
+    process.exitCode = 2;
+    throw new Error(`invalid --source "${source}": use auto, events or poll`);
+  }
+  try {
+    const { exitCode } = await followTarget(
+      { repo, target, intervalMs, timeoutMs, fallbackMs, source, eventsUrl: resolveEventsUrl(flags.eventsUrl) },
+      { emit: (line) => process.stdout.write(`${JSON.stringify(line)}\n`) },
+    );
+    process.exitCode = exitCode;
+  } catch (error) {
+    console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 2;
+  }
+}
+
 function buildProgram(): Command {
   const p = new Command();
   p.name('gh-watcher').description('Watch GitHub Actions runs and checks, fire hooks on step failure or full success');
@@ -184,6 +208,21 @@ function buildProgram(): Command {
     .option('--json', 'emit the outcome as JSON', false)
     .action(async (opts) => {
       await waitAction(opts as WaitFlags);
+    });
+  p.command('follow')
+    .description('Like wait, but print one JSON line per check (runs, jobs, steps) until the runs finish')
+    .option('--repo <owner/name>', 'repository in OWNER/NAME form (defaults to GH_REPO)')
+    .option('--pr <number>', 'pull request number', parseNumberOption)
+    .option('--branch <name>', 'branch name')
+    .option('--commit <sha>', 'commit sha')
+    .option('--run <id>', 'run id', parseNumberOption)
+    .option('--interval <duration>', 'poll interval', '30s')
+    .option('--timeout <duration>', 'overall follow limit, capped at 24h', '30m')
+    .option('--source <mode>', 'auto, events or poll (auto uses events when a relay is configured and usable)', 'auto')
+    .option('--events-url <url>', 'event relay base URL (defaults to GH_WATCHER_EVENTS_URL)')
+    .option('--fallback-interval <duration>', 'event mode: safety-net gh re-check interval', '5m')
+    .action(async (opts) => {
+      await followAction(opts as WaitFlags);
     });
   registerWatchCommands(p);
   return p;

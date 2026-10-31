@@ -19,11 +19,15 @@ export interface GhRunInfo {
   url: string;
   headSha: string;
   createdAt?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  attempt?: number;
 }
 
 export interface GhStepInfo {
   name: string;
   number: number;
+  status?: string;
   conclusion: string | null;
 }
 

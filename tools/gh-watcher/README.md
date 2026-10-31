@@ -97,6 +97,28 @@ mode the wait finished in. Exit codes:
 | `124` | Timed out while still `pending` (JSON outcome: `{"state":"pending","timedOut":true,"source":"poll"}`) |
 | `2` | Error: `gh` failed or bad flags |
 
+### gh-watcher follow
+
+Like `wait`, but stream progress. It reuses the same wait loop (event mode when a relay is
+configured, polling otherwise) and prints one JSON line to stdout per check, always.
+
+```sh
+gh-watcher follow --repo octo-org/hello-world --pr 17
+```
+
+Takes the target flags and the `--interval`, `--timeout`, `--source`, `--events-url` and
+`--fallback-interval` flags of `wait`. Each line:
+
+```json
+{"repo":"octo-org/hello-world","targetKey":"pr:17","state":"pending","runs":[{"databaseId":1,"workflowName":"CI","status":"in_progress","conclusion":null,"url":"https://example.com/run/1","startedAt":"2026-01-01T00:00:00Z","attempt":1,"jobs":[{"name":"build","status":"in_progress","conclusion":null,"url":"https://example.com/job/2","steps":[{"name":"Test","number":3,"status":"in_progress","conclusion":null}]}]}],"failedSteps":[],"source":"events","checkedAt":"2026-01-01T00:01:00.000Z","isFinal":false}
+```
+
+Runs carry the fields of `status --json` plus `startedAt`, `updatedAt`, `attempt` and `jobs`. Jobs are
+fetched for non-terminal runs on every check and for a finished run once; they are not
+refetched afterwards. The last line has `isFinal: true` (and `timedOut: true` on timeout).
+Exit codes match `wait`: `0` success, `1` failure, `124` timeout, `2` error. `wait` and
+`status` output is unchanged.
+
 ### gh-watcher watch add
 
 Add a new persistent watch.
