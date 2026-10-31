@@ -77,10 +77,9 @@ const boot = async ($: any, on: any, surface: 'terminal' | 'desktop' = 'terminal
   mock.store(on)
   on('session.start', () => ({ cwd: '/work' }))
   on('command.register', () => ({ value: undefined as never }))
-  on('command.run', { command: 'ci-result' }, (_$: any, e: any) => {
-    raised.push(e.args)
-    if (refuse) throw new Error('session busy')
-    return { text: 'engine text' }
+  on('ui.place', (_$: any, e: any) => {
+    raised.push(e.id)
+    return refuse ? { value: { isPlaced: false as const, reason: 'no surface' } } : { value: { isPlaced: true as const, requestId: `p-${e.id}` } }
   })
   on('ui.status', (_$: any, e: any) => {
     statuses.push(e.text)
@@ -175,7 +174,7 @@ test('the band leaves the engine alone with nothing tracked or when a survey is 
   await ui.unmount()
 })
 
-test('a run leaves the band when it ends while another stays, with one ci-result run', async ($, on) => {
+test('a run leaves the band when it ends while another stays, with one placed row', async ($, on) => {
   const { track, feed, band } = await boot($, on)
   await track()
   await feed(line([run(1, 'in_progress'), run(2, 'in_progress')]))
@@ -187,7 +186,7 @@ test('a run leaves the band when it ends while another stays, with one ci-result
   expect(text).toContain('Flow2')
   expect(text).toContain('polled')
   await ui.unmount()
-  expect(raised).toEqual(['1.1'])
+  expect(raised).toEqual(['1-1'])
 })
 
 test('the target is dropped when the follower exits, and a run is announced once per attempt', async ($, on) => {
@@ -198,10 +197,10 @@ test('the target is dropped when the follower exits, and a run is announced once
   child.end(1)
   await clock.settle()
   expect(JSON.stringify(await $.command.run({ command: 'ci-track', args: '' } as any))).toContain('Nothing is tracked')
-  expect(raised).toEqual(['3.1'])
+  expect(raised).toEqual(['3-1'])
   await track()
   await feed(line([failed, run(3, 'completed', 'success', { attempt: 2 })]))
-  expect(raised).toEqual(['3.1', '3.2'])
+  expect(raised).toEqual(['3-1', '3-2'])
   const ui = await band()
   expect(await drawn(ui)).not.toContain('Flow3')
   await ui.unmount()
@@ -209,7 +208,7 @@ test('the target is dropped when the follower exits, and a run is announced once
 
 const result = (ui: any) => ui
 
-test('the ci-result row is coloured by conclusion on terminal and desktop', async ($, on) => {
+test('the placed row is coloured by conclusion on terminal and desktop', async ($, on) => {
   const { track, feed } = await boot($, on)
   await track()
   const cases: [string, string][] = [
@@ -225,7 +224,7 @@ test('the ci-result row is coloured by conclusion on terminal and desktop', asyn
     id += 1
     await feed(line([run(id, 'completed', conclusion, { jobs: [job('completed', 'failure')] })]))
     for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'gh-runs', surface, component: 'CommandOutput', props: { command: 'ci-result', args: `${id}.1`, text: 'fallback', isErrored: false }, viewport: { columns: 100, rows: 40 } } as any)
+      const ui = await $.ui.mount({ plugin: 'gh-runs', surface, component: 'Placed', props: { id: `${id}-1`, plugin: 'gh-runs' }, viewport: { columns: 100, rows: 40 } } as any)
       const out = await drawn(result(ui))
       expect(out).toContain(conclusion.toUpperCase())
       expect(out).toContain(`Flow${id}`)
@@ -233,50 +232,38 @@ test('the ci-result row is coloured by conclusion on terminal and desktop', asyn
       expect(out).toContain('failed: build / Test')
       expect(out).toContain(`https://example.com/octo-org/hello-world/actions/runs/${id}`)
       expect(out).toContain(`"${colour}"`)
-      expect(out).not.toContain('fallback')
       await ui.unmount()
     }
   }
-  const other = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'CommandOutput', props: { command: 'other', args: '', text: 't', isErrored: false } } as any)
-  expect(await drawn(other)).toContain('engine')
-  await other.unmount()
+  const foreign = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'Placed', props: { id: '11-1', plugin: 'other' } } as any)
+  expect(await drawn(foreign)).toContain('engine')
+  await foreign.unmount()
+  const unknown = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'Placed', props: { id: '999-1', plugin: 'gh-runs' } } as any)
+  expect(await drawn(unknown)).toContain('engine')
+  await unknown.unmount()
 })
 
-test('a missing summary draws the stored text', async ($, on) => {
-  await boot($, on)
-  const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'CommandOutput', props: { command: 'ci-result', args: '99.1', text: 'stored words', isErrored: false } } as any)
-  expect(await drawn(ui)).toContain('stored words')
-  await ui.unmount()
-})
-
-test('the engine words of the ci-result output row are rewritten to the plain summary', async ($, on) => {
+test('the model gets the plain summary, marked as automatic, as a separate row', async ($, on) => {
   const { track, feed, session } = await boot($, on)
   await track()
   await feed(line([run(5, 'completed', 'failure', { jobs: [job('completed', 'failure')] })]))
-  const row = (text: string) => ({ message: { type: 'user' as const, content: [{ type: 'text' as const, text }] }, door: 'command' as const, origin: { kind: 'engine' } as any, uuid: `u${Math.random()}` })
-  await $.session.append(row('<command-name>/ci-result</command-name>\n<command-args>5.1</command-args>') as any)
-  await $.session.append(row('<command-name>/ci-result</command-name>\n            <command-message>ci-result</command-message>\n            <command-args>5.1</command-args>') as any)
-  await $.session.append(row('<local-command-stdout>gh-runs registered /ci-result but no command.run hook answered it</local-command-stdout>') as any)
-  await $.session.append(row('unrelated /other output') as any)
   const texts = session.appended().map((r: any) => r.message.content[0].text)
-  expect(texts[0]).toContain('<command-args>5.1</command-args>')
-  expect(texts[1]).toContain('<command-args>5.1</command-args>')
-  expect(texts[2]).toMatch(/^<local-command-stdout>\[gh-runs\] failure  Flow5[\s\S]*<\/local-command-stdout>$/)
-  expect(texts[2]).toContain('failed: build / Test')
-  expect(texts[2]).not.toContain('no command.run hook')
-
-  expect(texts[2]).toContain('https://example.com/octo-org/hello-world/actions/runs/5')
-  expect(texts[3]).toBe('unrelated /other output')
+  expect(texts.length).toBe(1)
+  expect(texts[0]).toMatch(/^\[gh-runs\] failure {2}Flow5/)
+  expect(texts[0]).toContain('failed: build / Test')
+  expect(texts[0]).toContain('https://example.com/octo-org/hello-world/actions/runs/5')
+  expect(texts[0]).toMatch(/\(Reported automatically by the gh-runs mod; the user did not type this\.\)$/)
 })
 
-test('a rejected command.run never throws', async ($, on) => {
-  const { track, feed, clock } = await boot($, on)
+test('a placed row the engine cannot draw is only noted, and the model still gets the text', async ($, on) => {
+  const { track, feed, clock, session } = await boot($, on)
   refuse = true
   await track()
   await feed(line([run(6, 'completed', 'success')]))
   await clock.settle()
-  expect(raised).toEqual(['6.1'])
-  expect(statuses.some(s => s.startsWith('gh-runs: result row'))).toBe(true)
+  expect(raised).toEqual(['6-1'])
+  expect(statuses.some(s => s.startsWith('gh-runs: result row: no surface'))).toBe(true)
+  expect(session.appended().length).toBe(1)
 })
 
 test('the tick runs only while something is tracked', async ($, on) => {
@@ -452,17 +439,6 @@ test('the cap keeps the running step in view on the band', async ($, on) => {
   expect(text).toContain('21 S21x')
   expect(text).toContain('+18 more')
   expect(text).not.toContain('1 S1x')
-  await ui.unmount()
-})
-
-test('the ci-result row finds its summary from the URL in the text when the arguments do not match', async ($, on) => {
-  const { track, feed } = await boot($, on)
-  await track()
-  await feed(line([run(8, 'completed', 'failure')]))
-  const ui = await $.ui.mount({ plugin: 'gh-runs', surface: 'terminal', component: 'CommandOutput', props: { command: 'ci-result', args: '', text: '[gh-runs] failure  Flow8\nhttps://example.com/octo-org/hello-world/actions/runs/8', isErrored: false } } as any)
-  const out = await drawn(ui)
-  expect(out).toContain('FAILURE')
-  expect(out).toContain('"error"')
   await ui.unmount()
 })
 

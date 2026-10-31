@@ -68,19 +68,18 @@ The mod shows what gh-watcher last printed and never asks GitHub itself. A new l
 
 Each run leaves the band the moment it has a conclusion, even while other runs of the target continue. It then gets one result row, deduplicated on run id and attempt, also across reloads.
 
-The row is the output of an internal command, `/ci-result <run id>.<attempt>` (described as "Internal: gh-runs result row"; the API has no flag to hide a command). The mod runs it from a timer; the engine queues it until the session is idle, and a refusal is only noted in the status line. The finished-run summary (conclusion, workflow, repo and target, duration, failed steps, URL) is kept in `$.state` under that key.
+The row is placed at the end of the transcript with `$.ui.place`, under the id `<run id>-<attempt>`, so nothing is typed or echoed as a message from you. The finished-run summary (conclusion, workflow, repo and target, duration, failed steps, URL) is kept in `$.state` under that id. If no surface can draw the row, the reason is noted in the status line.
 
-A `ui.render` hook on `CommandOutput` draws the row as a round bordered box sized to the viewport. The border and the bold conclusion are green for success, red for failure (and startup failure, action required), yellow for cancelled and timed out, dim for skipped and neutral. The first line has workflow, `repo#target` and duration, then a dim `failed: job / step` line if any, then the URL as plain text so the terminal makes it clickable. If the summary is gone (after `/clear`), the stored text is drawn.
+A `ui.render` hook on `Placed` draws the row as a round bordered box sized to the viewport. The border and the bold conclusion are green for success, red for failure (and startup failure, action required), yellow for cancelled and timed out, dim for skipped and neutral. The first line has workflow, `repo#target` and duration, then a dim `failed: job / step` line if any, then the URL as plain text so the terminal makes it clickable. A placed row of another plugin, or an id the state does not know, is left to the engine.
 
-A plugin's own `command.run` hooks are skipped for a command it raises itself, so the engine words the row as "no command.run hook answered it". A `session.append` hook on the `command` door rewrites that row to this plain text, which is what the model reads:
+Placed rows are display only: they are not restored on `--resume`, so finished rows from an earlier session do not come back. The model never reads them either, so the mod also appends this plain text to the conversation as a hidden row. It is the model's copy of the result, and a failed append is only noted:
 
 ```
 [gh-runs] failure  CI  octo-org/hello-world#17  2m 05s
 failed: build / Test
 https://example.com/octo-org/hello-world/actions/runs/7
+(Reported automatically by the gh-runs mod; the user did not type this.)
 ```
-
-The output row does not name its arguments, so the hook takes the key from the echo row that precedes it. The engine's exact wording and the echo's markup are not fixed by the typings; if they differ, the row is left as the engine made it and the box on screen is unaffected.
 
 ## Options
 
