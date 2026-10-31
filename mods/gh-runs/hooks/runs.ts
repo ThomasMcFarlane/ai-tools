@@ -250,6 +250,8 @@ export const isEnded = (run: Run): boolean => run.conclusion !== null && run.con
 
 export const attemptOf = (run: Run): number => run.attempt ?? 1
 
+export const runName = (a: ActiveRun): string => a.run.workflowName || a.run.displayTitle || `run ${a.runId}`
+
 export const runKey = (run: Run): string => `${run.databaseId}#${attemptOf(run)}`
 
 const ms = (iso: string | undefined): number | undefined => {
@@ -311,53 +313,6 @@ export const sourceNote = (source: 'events' | 'poll'): string => (source === 'ev
 export const statusColor = (status: string): { color?: string; dim?: boolean } =>
   status === 'in_progress' ? { color: 'suggestion' } : { dim: true }
 
-// The segments of one band row; `drop` orders what goes first on a narrow band (higher first).
-export const rowSegments = (a: ActiveRun, now: number, frame: number): Segment[] => {
-  const p = progressOf(a.run)
-  const look = statusColor(a.run.status)
-  const gh = `https://github.com/${a.target.repo}`
-  const sep = (id: string, drop: number): Segment => ({ id: `sep:${id}`, text: ' │ ', dim: true, drop })
-  const chevron = (id: string, drop: number): Segment => ({ id: `chev:${id}`, text: ' › ', dim: true, drop })
-  const segs: Segment[] = [
-    { id: 'spin', text: `${SPINNER[frame % SPINNER.length]} `, ...look, drop: 0 },
-    { id: 'repo', text: a.target.repo, dim: true, href: gh, drop: 3 },
-  ]
-  // A run target adds no crumb: the workflow crumb is that run.
-  if (a.target.kind === 'pr') {
-    segs.push(chevron('pr', 3), { id: 'pr', text: `#${a.target.value}`, dim: true, href: `${gh}/pull/${a.target.value}`, drop: 3 })
-  } else if (a.target.kind !== 'run') {
-    const ref = a.target.kind === 'commit' ? a.target.value.slice(0, 7) : a.target.value
-    segs.push(chevron('ref', 3), { id: 'ref', text: ref, dim: true, drop: 3 })
-  }
-  // The chevron into the workflow belongs to the repo group, so no chevron is left dangling when it goes.
-  segs.push(chevron('wf', 3))
-  segs.push({ id: 'wf', text: a.run.workflowName || `run ${a.runId}`, bold: true, ...(a.run.url ? { href: a.run.url } : {}), drop: 0 })
-  if (p.job) {
-    segs.push(chevron('job', 1), { id: 'job', text: p.job.name, ...(p.job.url ? { href: p.job.url } : {}), drop: 1 })
-    if (p.more > 0) segs.push({ id: 'more', text: ` +${p.more} job${p.more === 1 ? '' : 's'}`, drop: 1 })
-  }
-  if (a.run.status === 'queued' || a.run.status === 'waiting' || a.run.status === 'pending') {
-    segs.push(sep('queued', 5), { id: 'queued', text: a.run.status, dim: true, drop: 5 })
-  }
-  if (p.step && p.stepTotal > 0) {
-    segs.push(sep('step', 4), { id: 'step', text: `step ${p.stepIndex}/${p.stepTotal}`, drop: 4 })
-    segs.push({ id: 'stepname', text: ` ${p.step.name}`, dim: true, drop: 6 })
-  }
-  if (p.total > 0) {
-    const b = bar(p.done, p.total)
-    segs.push(sep('fill', 7), { id: 'fill', text: b.filled, ...look, drop: 7 })
-    segs.push({ id: 'empty', text: b.empty, dim: true, drop: 7 })
-  }
-  segs.push(sep('elapsed', 2), { id: 'elapsed', text: formatDuration(now - startOf(a)), drop: 2 })
-  segs.push(sep('updated', 8), {
-    id: 'updated',
-    text: `updated ${formatDuration(now - a.checkedAt)} ago ${sourceNote(a.source)}`,
-    dim: true,
-    drop: 8,
-  })
-  return segs
-}
-
 // Drops whole segments, highest `drop` first, until the row fits; the rest is cut by the terminal.
 export const fitSegments = (segs: Segment[], columns: number): Segment[] => {
   const width = (s: Segment[]) => s.reduce((n, x) => n + [...x.text].length, 0)
@@ -373,7 +328,6 @@ export const fitSegments = (segs: Segment[], columns: number): Segment[] => {
 
 export const MAX_STEP_LINES = 12
 export const MIN_ROWS = 24
-export const expandKey = (a: ActiveRun): string => String(a.runId)
 
 // Expanded lines need a tall enough viewport; an unmeasured one is trusted.
 export const canExpand = (rows: number | undefined): boolean => rows === undefined || rows >= MIN_ROWS
@@ -411,35 +365,216 @@ const windowStart = (steps: Step[], size: number): number => {
   return Math.max(0, Math.min(start, n - size))
 }
 
-// Every job of a run with its steps, one line each, at most `MAX_STEP_LINES` step lines; names are cut to `columns`.
-export const detailLines = (run: Run, columns: number, frame: number): Segment[][] => {
-  const jobs = run.jobs ?? []
-  const flat = jobs.flatMap((j, ji) => (j.steps ?? []).map(step => ({ ji, step })))
-  const start = windowStart(flat.map(f => f.step), MAX_STEP_LINES)
-  const shown = new Set(flat.slice(start, start + MAX_STEP_LINES))
-  const hidden = flat.length - shown.size
-  const lines: Segment[][] = []
-  jobs.forEach((j, ji) => {
-    const steps = j.steps ?? []
-    const look = stateMark(j.status, j.conclusion, frame)
-    const count = `  ${steps.filter(isDone).length}/${steps.length}`
-    const room = columns - 4 - [...count].length
-    lines.push([
-      { id: `j${ji}:mark`, text: `  ${look.mark} `, ...(look.color ? { color: look.color } : {}), ...(look.dim ? { dim: true } : {}), drop: 0 },
-      { id: `j${ji}:name`, text: cut(j.name, room), bold: true, ...(j.url ? { href: j.url } : {}), drop: 0 },
-      { id: `j${ji}:count`, text: columns >= 4 + [...count].length + 1 ? count : '', dim: true, drop: 0 },
-    ])
-    for (const [si, s] of steps.entries()) {
-      const item = flat.find(f => f.step === s)
-      if (!item || !shown.has(item)) continue
-      const sl = stateMark(s.status, s.conclusion, frame)
-      lines.push([
-        { id: `j${ji}s${si}:mark`, text: `    ${sl.mark} `, ...(sl.color ? { color: sl.color } : {}), ...(sl.dim ? { dim: true } : {}), drop: 0 },
-        { id: `j${ji}s${si}:name`, text: cut(`${s.number} ${s.name}`, columns - 6), ...(sl.dim ? { dim: true } : {}), drop: 0 },
-      ])
+// ---- Groups and the tree ------------------------------------------------------------------------
+
+export type Group = {
+  id: string
+  repo: string
+  kind: TargetKind
+  // `#17`, the branch, the short sha or `run <id>`
+  ref: string
+  href?: string
+  runs: ActiveRun[]
+}
+
+const branchPath = (branch: string): string => branch.split('/').map(encodeURIComponent).join('/')
+
+const groupOf = (t: Target): Omit<Group, 'runs'> => {
+  const gh = `https://github.com/${t.repo}`
+  if (t.kind === 'pr') return { id: targetId(t), repo: t.repo, kind: t.kind, ref: `#${t.value}`, href: `${gh}/pull/${t.value}` }
+  if (t.kind === 'branch') return { id: targetId(t), repo: t.repo, kind: t.kind, ref: t.value, href: `${gh}/tree/${branchPath(t.value)}` }
+  if (t.kind === 'commit') return { id: targetId(t), repo: t.repo, kind: t.kind, ref: t.value.slice(0, 7) }
+  return { id: targetId(t), repo: t.repo, kind: t.kind, ref: `run ${t.value}` }
+}
+
+// Groups the active runs per repo and PR, else per repo and branch (gh-watcher's runs carry no head branch, so the target's own),
+// else per commit. A run target joins the group of a PR, branch or commit target that follows the same run, and is a group of its own otherwise.
+// Groups are ordered by their earliest start, runs within a group likewise.
+export const groupRuns = (list: ActiveRun[]): Group[] => {
+  const groups = new Map<string, Group>()
+  const own = (a: ActiveRun) => {
+    const g = groups.get(targetId(a.target)) ?? { ...groupOf(a.target), runs: [] }
+    groups.set(g.id, g)
+    if (!g.runs.some(r => r.key === a.key)) g.runs.push(a)
+  }
+  for (const a of list) if (a.target.kind !== 'run') own(a)
+  for (const a of list) {
+    if (a.target.kind !== 'run') continue
+    const host = [...groups.values()].find(g => g.kind !== 'run' && g.repo.toLowerCase() === a.target.repo.toLowerCase() && g.runs.some(r => r.key === a.key))
+    if (host) continue
+    own(a)
+  }
+  const out = [...groups.values()]
+  for (const g of out) g.runs.sort((x, y) => startOf(x) - startOf(y) || x.runId - y.runId)
+  const first = (g: Group) => Math.min(...g.runs.map(startOf))
+  return out.sort((x, y) => first(x) - first(y) || (x.id < y.id ? -1 : 1))
+}
+
+export type Summary = { total: number; done: number; failed: number; running: number; queued: number }
+
+const QUEUED = new Set(['queued', 'waiting', 'pending', 'requested'])
+
+export const summaryCounts = (g: Group): Summary => {
+  const s: Summary = { total: g.runs.length, done: 0, failed: 0, running: 0, queued: 0 }
+  for (const a of g.runs) {
+    if (isEnded(a.run) || a.run.status === 'completed') {
+      const c = a.run.conclusion
+      if (c === 'success' || c === 'skipped' || c === 'neutral') s.done++
+      else s.failed++
+    } else if (QUEUED.has(a.run.status)) s.queued++
+    else s.running++
+  }
+  return s
+}
+
+// Expansion keys, one set in state: `g:<group id>`, `r:<run id>`, `j:<run id>:<job name>`.
+export const groupKey = (g: Group): string => `g:${g.id}`
+export const expandKey = (a: ActiveRun): string => `r:${a.runId}`
+export const jobKey = (a: ActiveRun, j: Job): string => `j:${a.runId}:${j.name}`
+
+// Groups start expanded; runs and jobs start collapsed.
+export const defaultExpanded = (groups: Group[]): string[] => groups.map(groupKey)
+
+export const allKeys = (groups: Group[]): string[] =>
+  groups.flatMap(g => [groupKey(g), ...g.runs.flatMap(a => [expandKey(a), ...(a.run.jobs ?? []).map(j => jobKey(a, j))])])
+
+export const toggleKey = (list: string[], key: string): string[] => (list.includes(key) ? list.filter(x => x !== key) : [...list, key])
+
+const dimOf = (look: { color?: string; dim?: boolean }) => ({ ...(look.color ? { color: look.color } : {}), ...(look.dim ? { dim: true } : {}) })
+
+// The segments of a group row after its chevron; `drop` orders what goes first on a narrow band (higher first).
+export const groupSegments = (g: Group, now: number, frame: number): Segment[] => {
+  const sum = summaryCounts(g)
+  const sep = (id: string, drop: number): Segment => ({ id: `sep:${id}`, text: ' │ ', dim: true, drop })
+  const segs: Segment[] = []
+  if (sum.done + sum.failed < sum.total) segs.push({ id: 'spin', text: `${SPINNER[frame % SPINNER.length]} `, color: 'suggestion', drop: 0 })
+  segs.push({ id: 'repo', text: g.repo, dim: true, href: `https://github.com/${g.repo}`, drop: 4 }, { id: 'chev:ref', text: ' › ', dim: true, drop: 4 })
+  segs.push({ id: 'ref', text: g.ref, bold: true, ...(g.href ? { href: g.href } : {}), drop: 0 })
+  segs.push(sep('count', 5), { id: 'count', text: `${sum.total} run${sum.total === 1 ? '' : 's'}`, dim: true, drop: 5 })
+  const parts: Pick<Segment, 'text' | 'color' | 'dim'>[] = []
+  if (sum.done) parts.push({ text: `✓ ${sum.done} done`, color: 'success' })
+  if (sum.failed) parts.push({ text: `✗ ${sum.failed} failed`, color: 'error' })
+  if (sum.running) parts.push({ text: `${sum.running} running`, color: 'suggestion' })
+  if (sum.queued) parts.push({ text: `${sum.queued} queued`, dim: true })
+  if (parts.length) {
+    segs.push(sep('sum', 3))
+    parts.forEach((p, i) => segs.push({ id: i === 0 ? 'sum' : `sum${i}`, ...p, text: i === 0 ? p.text : ` ${p.text}`, drop: 3 }))
+  }
+  const start = Math.min(...g.runs.map(startOf))
+  segs.push(sep('elapsed', 2), { id: 'elapsed', text: formatDuration(now - start), drop: 2 })
+  return segs
+}
+
+// The segments of a run row after its chevron.
+export const runSegments = (a: ActiveRun, now: number): Segment[] => {
+  const p = progressOf(a.run)
+  const look = statusColor(a.run.status)
+  const sep = (id: string, drop: number): Segment => ({ id: `sep:${id}`, text: ' │ ', dim: true, drop })
+  const segs: Segment[] = [{ id: 'wf', text: runName(a), bold: true, ...(a.run.url ? { href: a.run.url } : {}), drop: 0 }]
+  if (QUEUED.has(a.run.status)) segs.push(sep('queued', 5), { id: 'queued', text: a.run.status, dim: true, drop: 5 })
+  if (p.step && p.stepTotal > 0) segs.push(sep('step', 4), { id: 'step', text: `step ${p.stepIndex}/${p.stepTotal}`, drop: 4 })
+  if (p.total > 0) {
+    const b = bar(p.done, p.total)
+    segs.push(sep('fill', 7), { id: 'fill', text: b.filled, ...look, drop: 7 })
+    segs.push({ id: 'empty', text: b.empty, dim: true, drop: 7 })
+  }
+  segs.push(sep('elapsed', 2), { id: 'elapsed', text: formatDuration(now - startOf(a)), drop: 2 })
+  segs.push(sep('updated', 8), { id: 'updated', text: `updated ${formatDuration(now - a.checkedAt)} ago ${sourceNote(a.source)}`, dim: true, drop: 8 })
+  return segs
+}
+
+// The segments of a job row after its chevron: mark, name, then `step n/m` and the step name (`n/m` once it is done).
+export const jobSegments = (j: Job, frame: number): Segment[] => {
+  const look = stateMark(j.status, j.conclusion, frame)
+  const steps = j.steps ?? []
+  const sep = (id: string, drop: number): Segment => ({ id: `sep:${id}`, text: ' │ ', dim: true, drop })
+  const segs: Segment[] = [
+    { id: 'mark', text: `${look.mark} `, ...dimOf(look), drop: 0 },
+    { id: 'name', text: j.name, ...(j.url ? { href: j.url } : {}), drop: 0 },
+  ]
+  if (!steps.length) return segs
+  const current = j.status === 'completed' ? undefined : (steps.find(s => s.status === 'in_progress') ?? steps.find(s => !isDone(s)))
+  if (current) {
+    segs.push(sep('step', 2), { id: 'step', text: `step ${current.number}/${steps.length}`, drop: 2 })
+    segs.push(sep('stepname', 3), { id: 'stepname', text: current.name, dim: true, drop: 3 })
+  } else {
+    segs.push(sep('step', 2), { id: 'step', text: `${steps.filter(isDone).length}/${steps.length}`, dim: true, drop: 2 })
+  }
+  return segs
+}
+
+export type TreeLine = {
+  id: string
+  kind: 'group' | 'run' | 'job' | 'step' | 'more'
+  indent: number
+  // key toggled by the chevron; group, run and job rows without anything to open have none
+  toggle?: string
+  isOpen: boolean
+  segs: Segment[]
+}
+
+export const INDENT = { group: 0, run: 2, job: 6, step: 10 }
+export const MAX_TREE_LINES = 30
+
+// The visible lines of the whole tree, Group > runs > jobs > steps, each fitted to `columns`.
+// A collapsed key hides what is below it; a short viewport (`isTall` false) shows no jobs or steps.
+// At most `MAX_STEP_LINES` step lines and `MAX_TREE_LINES` lines in all, the rest counted in a last `+N more` line.
+export const treeLines = (groups: Group[], open: readonly string[], now: number, frame: number, columns: number, isTall = true): TreeLine[] => {
+  const isOpen = (k: string) => open.includes(k)
+  const fit = (segs: Segment[], indent: number) => fitSegments(segs, columns - indent - 2)
+  const rows: { line: TreeLine; step?: Step }[] = []
+  for (const g of groups) {
+    const gk = groupKey(g)
+    const gOpen = isOpen(gk)
+    rows.push({ line: { id: gk, kind: 'group', indent: INDENT.group, toggle: gk, isOpen: gOpen, segs: fit(groupSegments(g, now, frame), INDENT.group) } })
+    if (!gOpen) continue
+    for (const a of g.runs) {
+      const rk = expandKey(a)
+      const jobs = a.run.jobs ?? []
+      const rOpen = isOpen(rk)
+      rows.push({
+        line: { id: `${gk}/${rk}`, kind: 'run', indent: INDENT.run, ...(jobs.length ? { toggle: rk } : {}), isOpen: rOpen && jobs.length > 0, segs: fit(runSegments(a, now), INDENT.run) },
+      })
+      if (!rOpen || !isTall) continue
+      for (const j of jobs) {
+        const jk = jobKey(a, j)
+        const steps = j.steps ?? []
+        const jOpen = isOpen(jk)
+        rows.push({
+          line: { id: `${gk}/${jk}`, kind: 'job', indent: INDENT.job, ...(steps.length ? { toggle: jk } : {}), isOpen: jOpen && steps.length > 0, segs: fit(jobSegments(j, frame), INDENT.job) },
+        })
+        if (!jOpen) continue
+        for (const s of steps) {
+          const sl = stateMark(s.status, s.conclusion, frame)
+          const room = columns - INDENT.step - 2
+          rows.push({
+            step: s,
+            line: {
+              id: `${gk}/${jk}/s${s.number}`,
+              kind: 'step',
+              indent: INDENT.step,
+              isOpen: false,
+              segs: [
+                { id: 'mark', text: `${sl.mark} `, ...dimOf(sl), drop: 0 },
+                { id: 'name', text: cut(`${s.number} ${s.name}`, room), ...(sl.dim ? { dim: true } : {}), drop: 0 },
+              ],
+            },
+          })
+        }
+      }
     }
-  })
-  if (hidden > 0) lines.push([{ id: 'more', text: cut(`    +${hidden} more`, columns), dim: true, drop: 0 }])
+  }
+  const stepRows = rows.filter(r => r.step)
+  const start = windowStart(stepRows.map(r => r.step as Step), MAX_STEP_LINES)
+  const keep = new Set(stepRows.slice(start, start + MAX_STEP_LINES))
+  let hidden = stepRows.length - keep.size
+  let lines = rows.filter(r => !r.step || keep.has(r)).map(r => r.line)
+  if (lines.length > MAX_TREE_LINES - (hidden > 0 ? 1 : 0)) {
+    const room = MAX_TREE_LINES - 1
+    hidden += lines.length - room
+    lines = lines.slice(0, room)
+  }
+  if (hidden > 0) lines.push({ id: 'more', kind: 'more', indent: INDENT.step, isOpen: false, segs: [{ id: 'more', text: cut(`+${hidden} more`, columns - INDENT.step), dim: true, drop: 0 }] })
   return lines
 }
 

@@ -7,6 +7,7 @@ export type Job = { name: string; status: string; conclusion: string | null; url
 export type Run = {
   databaseId: number
   workflowName: string
+  displayTitle?: string
   status: string
   conclusion: string | null
   url: string
@@ -54,7 +55,7 @@ declare module 'claude-code' {
       results: Record<string, Result>
       // spinner frame, moved by the tick
       frame: number
-      // run ids whose steps are shown; absent means collapsed
+      // expanded keys: `g:<group id>`, `r:<run id>`, `j:<run id>:<job name>`; groups are added when they appear, runs and jobs start collapsed
       expanded: string[]
     }
   }

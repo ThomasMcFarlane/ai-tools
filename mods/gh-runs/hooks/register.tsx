@@ -2,24 +2,25 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import {
+  allKeys,
   canExpand,
   ciPollReason,
   conclusionColor,
-  detailLines,
-  expandKey,
+  defaultExpanded,
   failedStepNames,
-  fitSegments,
+  groupRuns,
   isEnded,
   parseLine,
   parseTrackArg,
   parseWatcherCommands,
   resultKey,
-  rowSegments,
   runKey,
   splitLines,
   summaryOf,
   targetId,
   targetLabel,
+  toggleKey,
+  treeLines,
   USAGE,
 } from './runs'
 import type { ActiveRun, FollowLine, Result, Segment, Target } from './runs'
@@ -67,13 +68,13 @@ const stopTickIfIdle = async ($: EngineInterface) => {
   tick = undefined
 }
 
-// Forgets the expansion of every run that is no longer in the band.
+// Forgets the expansion of every group, run and job that is no longer in the band.
 const pruneExpanded = async ($: EngineInterface) => {
-  const ids = new Set((await read($, active)).map(expandKey))
+  const ids = new Set(allKeys(groupRuns(await read($, active))))
   await update($, expanded, l => (l.every(id => ids.has(id)) ? l : l.filter(id => ids.has(id))))
 }
 
-const toggle = (id: string) => (l: string[]): string[] => (l.includes(id) ? l.filter(x => x !== id) : [...l, id])
+const toggle = (id: string) => (l: string[]): string[] => toggleKey(l, id)
 
 // Removes a target everywhere: follower, band rows and state.
 const drop = async ($: EngineInterface, target: Target, text?: string) => {
@@ -122,10 +123,16 @@ const apply = async ($: EngineInterface, target: Target, line: FollowLine) => {
     const a: ActiveRun = { key: runKey(run), runId: run.databaseId, attempt: run.attempt ?? 1, target, run, source: line.source, checkedAt, seenAt: now }
     ;(isEnded(run) ? ended : live).push(a)
   }
-  await update($, active, list => {
+  const merge = (list: ActiveRun[]): ActiveRun[] => {
     const seen = new Map(list.filter(x => targetId(x.target) === id).map(x => [x.key, x.seenAt]))
     return [...list.filter(x => targetId(x.target) !== id), ...live.map(x => ({ ...x, seenAt: seen.get(x.key) ?? x.seenAt }))]
-  })
+  }
+  // A group that appears is expanded; set before the band can draw it, never during a render.
+  const before = await read($, active)
+  const known = new Set(groupRuns(before).map(g => g.id))
+  const fresh = defaultExpanded(groupRuns(merge(before)).filter(g => !known.has(g.id)))
+  if (fresh.length) await update($, expanded, l => [...l, ...fresh.filter(k => !l.includes(k))])
+  await update($, active, merge)
   await pruneExpanded($)
   for (const a of ended) await announce($, a, line)
 }
@@ -270,10 +277,12 @@ export const register: Register = (on, options) => {
       }
       if (arg === 'expand' || arg === 'collapse') {
         const runs = await read($, active)
+        const groups = groupRuns(runs)
         if (arg === 'collapse') await update($, expanded, () => [])
-        else await update($, expanded, l => [...new Set([...l, ...runs.map(expandKey)])])
+        else await update($, expanded, l => [...new Set([...l, ...allKeys(groups)])])
         if (!runs.length) return { text: 'No active runs.' }
-        return { text: `${arg === 'expand' ? 'Expanded' : 'Collapsed'} ${runs.length} active run${runs.length === 1 ? '' : 's'}.` }
+        const g = `${groups.length} group${groups.length === 1 ? '' : 's'}`
+        return { text: `${arg === 'expand' ? 'Expanded' : 'Collapsed'} ${g} and ${runs.length} active run${runs.length === 1 ? '' : 's'}.` }
       }
       const target = parseTrackArg(arg)
       if (!target) return { text: USAGE }
@@ -297,7 +306,7 @@ export const register: Register = (on, options) => {
       const open = await read($, expanded)
       const { Box, Button, Link, Text } = $.ui.resolve(e)
       const columns = e.props.bodyColumns
-      const isTall = canExpand(e.viewport?.rows)
+      const lines = treeLines(groupRuns(list), open, now, f, columns, canExpand(e.viewport?.rows))
       const paint = (segs: Segment[]) =>
         segs.map(s => {
           const t = (
@@ -315,28 +324,19 @@ export const register: Register = (on, options) => {
         })
       return (
         <Box flexDirection="column">
-          {list.map(a => {
-            const id = expandKey(a)
-            const isOpen = open.includes(id)
-            const rowKey = `${a.key}:${targetId(a.target)}`
-            return (
-              <Box key={`run:${rowKey}`} flexDirection="column">
-                <Box>
-                  <Button key={`expand:${rowKey}`} plain onPress={() => void update($, expanded, toggle(id)).catch(() => undefined)}>
-                    {isOpen ? '▾' : '▸'}
-                  </Button>
-                  <Text wrap="truncate-end">{` `}{paint(fitSegments(rowSegments(a, now, f), columns - 2))}</Text>
-                </Box>
-                {isOpen && isTall
-                  ? detailLines(a.run, columns, f).map((segs, i) => (
-                      <Text key={`detail:${rowKey}:${i}`} wrap="truncate-end">
-                        {paint(segs)}
-                      </Text>
-                    ))
-                  : null}
-              </Box>
-            )
-          })}
+          {lines.map(l => (
+            <Box key={`line:${l.id}`}>
+              {l.indent > 0 ? <Text>{' '.repeat(l.indent)}</Text> : null}
+              {l.kind === 'step' || l.kind === 'more' ? null : l.toggle ? (
+                <Button key={`expand:${l.toggle}`} plain onPress={() => void update($, expanded, toggle(l.toggle as string)).catch(() => undefined)}>
+                  {l.isOpen ? '▾' : '▸'}
+                </Button>
+              ) : (
+                <Text>{'  '}</Text>
+              )}
+              <Text wrap="truncate-end">{l.kind === 'step' || l.kind === 'more' || !l.toggle ? null : ' '}{paint(l.segs)}</Text>
+            </Box>
+          ))}
           {below}
         </Box>
       )
