@@ -1,9 +1,18 @@
 {
   "name": "plan-view",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "author": {
     "name": "Thomas McFarlane"
   },
   "description": "Docked right-hand pane that shows the plan Claude writes, and Markdown files it mentions, as formatted markdown.",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "promptBand": {
+      "type": "boolean",
+      "title": "Offer files above the prompt",
+      "description": "When on, Markdown files Claude mentions are offered in a band above the prompt with Open, Dismiss, Dismiss all and List. When off, they are offered only on the message card and in the list.",
+      "default": true,
+      "required": false
+    }
+  }
 }
