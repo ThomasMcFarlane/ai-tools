@@ -27,7 +27,7 @@
     {
       "name": "context-diet",
       "source": "./mods/context-diet",
-      "description": "Cuts repeated hook boilerplate: the caveman per-prompt reminder on every 10th prompt only, and short post-compaction SessionStart texts."
+      "description": "Cuts repeated hook boilerplate: the caveman per-prompt reminder on every 10th prompt only, short post-compaction SessionStart texts, and a two-line caveman text for subagent workers."
     },
     {
       "name": "gh-runs",
