@@ -28,6 +28,10 @@ function applyDeadline(exec: GhExec, deadline: number | undefined): void {
   (exec as QueuedExec).setDeadline?.(deadline);
 }
 
+function applySignal(exec: GhExec, signal: AbortSignal | undefined): void {
+  (exec as QueuedExec).setSignal?.(signal);
+}
+
 export interface GhClientOptions {
   ghBin?: string;
   exec?: GhExec;
@@ -35,10 +39,17 @@ export interface GhClientOptions {
   detailedRuns?: boolean;
 }
 
-function defaultExec(ghBin: string): GhExec {
+/** A hung gh call must not hold queue locks for ever. */
+export const GH_EXEC_TIMEOUT_MS = 120_000;
+
+export function spawnGh(ghBin: string, timeoutMs: number = GH_EXEC_TIMEOUT_MS): GhExec {
   return (args) =>
     new Promise((resolve, reject) => {
       const child = spawn(ghBin, args, { shell: false });
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error(`gh ${args.slice(0, 2).join(' ')} timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
       let stdout = '';
       let stderr = '';
       child.stdout?.setEncoding('utf8');
@@ -50,9 +61,11 @@ function defaultExec(ghBin: string): GhExec {
         stderr += chunk;
       });
       child.on('error', (error) => {
+        clearTimeout(timer);
         reject(error);
       });
       child.on('close', (code) => {
+        clearTimeout(timer);
         resolve({ stdout, stderr, code: code ?? -1 });
       });
     });
@@ -174,13 +187,18 @@ export class GhClient {
   constructor(options?: GhClientOptions) {
     this.exec =
       options?.exec ??
-      (queueDisabled() ? defaultExec(options?.ghBin ?? 'gh') : createQueuedExec(defaultExec(options?.ghBin ?? 'gh')));
+      (queueDisabled() ? spawnGh(options?.ghBin ?? 'gh') : createQueuedExec(spawnGh(options?.ghBin ?? 'gh')));
     this.runFields = options?.detailedRuns === true ? DETAILED_RUN_FIELDS : RUN_FIELDS;
   }
 
   /** Bound any rate-limit wait by an absolute deadline (epoch ms); undefined lifts the bound. */
   setDeadline(deadline: number | undefined): void {
     applyDeadline(this.exec, deadline);
+  }
+
+  /** Make queued rate-limit sleeps and lock waits end promptly when the signal aborts. */
+  setSignal(signal: AbortSignal | undefined): void {
+    applySignal(this.exec, signal);
   }
 
   async listRuns(repo: string, target: WatchTarget): Promise<GhRunInfo[]> {

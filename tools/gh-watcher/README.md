@@ -221,10 +221,13 @@ How `wait` behaves in event mode:
 3. Long-poll `/api/runs` (25 seconds at a time) with `after=<last seq>`. Each event for the
    commit is applied to the in-memory run list (matched by `run_id`, one run per
    `workflow_name`, stale attempts and older runs ignored) and the state is recomputed locally,
-   with no `gh` call. `gh` is called again only when a run reaches `failure` (to fetch the
-   failed jobs and steps), on the `--fallback-interval` safety net (which also re-resolves a PR
+   with no `gh` call. Event data never ends a wait on its own: when the local state turns
+   terminal, one fresh confirming `gh` check decides the outcome (and fetches failed jobs and
+   steps). `gh` is also called on the `--fallback-interval` safety net (which also re-resolves a PR
    or branch head, so a new push is picked up), after a relay restart, and when an event lacks
-   `run_id`, `workflow_name` or `status`, so it cannot be mapped to a run.
+   `run_id`, `workflow_name` or `status`, or would complete a run whose `attempt` is unknown, so it
+   cannot be trusted. The wait fetches `attempt` and `updatedAt` so stale attempts and
+   out-of-order events are ignored.
 4. If `latest_seq` goes backwards (the relay restarted), the sequence is reset and `gh` is
    re-checked immediately.
 5. Any relay failure (network error, HTTP 5xx or 503, malformed response) logs one line to
@@ -285,13 +288,19 @@ All agents on a host share one `gh` token, so every gh-watcher process sends its
 through a daemon-less queue kept in files under `<state dir>/queue/` (directory mode `0700`,
 files mode `0600`, no tokens stored; only `gh` stdout of successful calls):
 
-- Single-flight response cache: successful calls are cached by their exact `gh` arguments for a
-  short TTL, and an advisory lock file (`O_EXCL`, stale locks recovered by owner PID) ensures
-  that concurrent processes asking the same thing make one `gh` call. Cache entries are written
-  with an atomic rename.
-- Global spacing: calls from all processes are at least a minimum interval apart.
-- Shared cooldown: when any process is rate-limited it records the resume time and every process
-  waits for it before calling `gh`.
+- Single-flight: an advisory lock file per exact `gh` argument list (`O_EXCL`, with a unique
+  token per holder, stale locks recovered by dead owner PID or an age of 3 minutes) ensures that
+  concurrent processes asking the same thing make one `gh` call. The result is shared only with
+  callers that were already waiting while that call ran; a call that starts after it finished
+  always fetches fresh, so a result from before your action is never served. Entries are written
+  with an atomic rename and keyed by host (`GH_HOST`), `GH_CONFIG_DIR` and a hash of
+  `GH_TOKEN`/`GITHUB_TOKEN` as well as the arguments.
+- Global spacing: calls from all processes with the same identity are at least a minimum
+  interval apart. No process sleeps while holding a lock.
+- Shared cooldown: when any process is rate-limited it records the resume time (per host and
+  identity) and every such process waits for it before calling `gh`.
+- A `gh` call that hangs is killed after 2 minutes, and daemon shutdown (SIGINT, SIGTERM) ends
+  any queued wait at once.
 
 Rate limits are a wait, not a failure. Primary limits ("API rate limit exceeded") resume at the
 reset time reported by `gh api rate_limit` (that endpoint is not counted). Secondary limits
@@ -302,7 +311,7 @@ Long-running `watch` commands wait at most 10 minutes per call, then report an e
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `GH_WATCHER_CACHE_TTL` | `10` | Cache lifetime in seconds (fractions allowed, `0` disables the cache). |
+| `GH_WATCHER_CACHE_TTL` | `10` | Upper bound in seconds on how long a finished call may be shared with waiting callers (`0` disables sharing). |
 | `GH_WATCHER_MIN_SPACING` | `1` | Minimum seconds between `gh` calls across processes (`0` disables). |
 | `GH_WATCHER_QUEUE` | on | Set to `0`, `off` or `false` to bypass the shared queue entirely. |
 
