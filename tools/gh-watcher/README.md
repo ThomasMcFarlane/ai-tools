@@ -55,6 +55,7 @@ gh-watcher status [options]
 | `--branch <name>` | | Branch name. |
 | `--commit <sha>` | | Commit sha. |
 | `--run <id>` | | Run id. |
+| `--timeout <duration>` | `10m` | Longest wait for a GitHub rate limit to lift, see [Shared GitHub queue](#shared-github-queue-and-rate-limits). |
 | `--json` | off | Emit the check report as JSON. |
 
 Prints `repo target is <state>`, a table of runs, and any failed steps. Note that
@@ -65,6 +66,7 @@ errors.
 | --- | --- |
 | `0` | Check completed (any state, including `failure`) |
 | `2` | Error: bad target flags, or `gh` failed |
+| `124` | A GitHub rate limit did not lift within `--timeout` |
 
 ### gh-watcher wait
 
@@ -96,6 +98,8 @@ mode the wait finished in. Exit codes:
 | `1` | Aggregate state reached `failure` |
 | `124` | Timed out while still `pending` (JSON outcome: `{"state":"pending","timedOut":true,"source":"poll"}`) |
 | `2` | Error: `gh` failed or bad flags |
+
+A GitHub rate limit is waited out rather than reported as an error; see [Shared GitHub queue](#shared-github-queue-and-rate-limits).
 
 ### gh-watcher follow
 
@@ -213,17 +217,22 @@ How `wait` behaves in event mode:
 
 1. Resolve the target to a head commit (PR head, branch tip, commit, or the run's commit), then
    probe the relay for its current `latest_seq`.
-2. Run one `gh` status check. If it is terminal, exit as usual.
+2. Run one `gh` status check (the baseline). If it is terminal, exit as usual.
 3. Long-poll `/api/runs` (25 seconds at a time) with `after=<last seq>`. Each event for the
-   commit, and every `--fallback-interval`, triggers one `gh` re-check; exit when terminal. The
-   fallback re-check also re-resolves a PR or branch head, so a new push is picked up.
+   commit is applied to the in-memory run list (matched by `run_id`, one run per
+   `workflow_name`, stale attempts and older runs ignored) and the state is recomputed locally,
+   with no `gh` call. `gh` is called again only when a run reaches `failure` (to fetch the
+   failed jobs and steps), on the `--fallback-interval` safety net (which also re-resolves a PR
+   or branch head, so a new push is picked up), after a relay restart, and when an event lacks
+   `run_id`, `workflow_name` or `status`, so it cannot be mapped to a run.
 4. If `latest_seq` goes backwards (the relay restarted), the sequence is reset and `gh` is
    re-checked immediately.
 5. Any relay failure (network error, HTTP 5xx or 503, malformed response) logs one line to
    stderr and the rest of the wait continues as normal polling. The relay never fails a wait.
 
 Exit codes, the JSON outcome and `--timeout` are unchanged. A typical successful wait costs
-two to three `gh` calls in total.
+one baseline `gh` call plus the head-commit resolution; events cost none. Runs created from
+events have an empty `displayTitle` until the next full `gh` check.
 
 `watch run` (the daemon) does not use event mode: it remains poll-only.
 
@@ -269,6 +278,35 @@ seconds.
 
 `owner_mode` is `"app"`, `"poll"` or `"unknown"`; only `"app"` with
 `workflow_run_subscribed: true` makes `auto` choose events.
+
+## Shared GitHub queue and rate limits
+
+All agents on a host share one `gh` token, so every gh-watcher process sends its `gh` calls
+through a daemon-less queue kept in files under `<state dir>/queue/` (directory mode `0700`,
+files mode `0600`, no tokens stored; only `gh` stdout of successful calls):
+
+- Single-flight response cache: successful calls are cached by their exact `gh` arguments for a
+  short TTL, and an advisory lock file (`O_EXCL`, stale locks recovered by owner PID) ensures
+  that concurrent processes asking the same thing make one `gh` call. Cache entries are written
+  with an atomic rename.
+- Global spacing: calls from all processes are at least a minimum interval apart.
+- Shared cooldown: when any process is rate-limited it records the resume time and every process
+  waits for it before calling `gh`.
+
+Rate limits are a wait, not a failure. Primary limits ("API rate limit exceeded") resume at the
+reset time reported by `gh api rate_limit` (that endpoint is not counted). Secondary limits
+honour a `retry-after` when `gh` prints one, else back off exponentially from 60s, capped at 15
+minutes. One stderr line per backoff names the resume time. The wait ends at the command's own
+`--timeout` (`wait`, `follow`, and `status`, default `10m`): exit `124`, as for any timeout.
+Long-running `watch` commands wait at most 10 minutes per call, then report an error.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `GH_WATCHER_CACHE_TTL` | `10` | Cache lifetime in seconds (fractions allowed, `0` disables the cache). |
+| `GH_WATCHER_MIN_SPACING` | `1` | Minimum seconds between `gh` calls across processes (`0` disables). |
+| `GH_WATCHER_QUEUE` | on | Set to `0`, `off` or `false` to bypass the shared queue entirely. |
+
+The state-dir override (`AI_TOOLS_GH_WATCHER_STATE_DIR`) applies to the queue too.
 
 ## Targets
 
@@ -377,6 +415,7 @@ The event payload itself carries: `summary`, `watch`, `repo`, `targetKey`, `stat
 | --- | --- |
 | `~/.local/state/ai-tools/gh-watcher/watchers.json` | Watch specs and per-watch last-fired edges. |
 | `~/.local/state/ai-tools/gh-watcher/events.jsonl` | One JSON event per line, appended on every check. |
+| `~/.local/state/ai-tools/gh-watcher/queue/` | Shared `gh` queue: response cache, call-slot file, cooldown, lock files. |
 
 Path resolution: `AI_TOOLS_GH_WATCHER_STATE_DIR` overrides the whole directory;
 otherwise `XDG_STATE_HOME` is honoured, defaulting to `~/.local/state` (`%LOCALAPPDATA%`
@@ -420,4 +459,4 @@ Polling intervals to know about:
 - All GitHub access goes through your local `gh` binary and its existing
   authentication; no tokens are read or stored by this tool.
 - Watch state stays in the local state directory.
-- No telemetry, no analytics, no network calls beyond `gh`.
+- No telemetry, no analytics, no network calls beyond `gh` (and the event relay, when configured).
