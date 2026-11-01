@@ -21,8 +21,9 @@ function ghRun(id: number, workflow: string, status: string, conclusion: string 
 }
 
 function noAttempt(run: GhRunInfo): GhRunInfo {
-  const { attempt: _attempt, ...rest } = run;
-  return rest;
+  const copy: GhRunInfo = { ...run };
+  delete copy.attempt;
+  return copy;
 }
 
 function event(seq: number, id: number, workflow: string, status: string, conclusion: string | null, extra?: Partial<RunEvent>): RunEvent {
