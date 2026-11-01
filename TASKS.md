@@ -43,4 +43,4 @@ ETA: 2026-11-01 19:30 ICT
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | done | claude | gh-watcher-shared-queue | | 2026-11-01 18:30 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/75 (be79eef).<br>136 tests; 8 concurrent status runs made 1 gh call; wait verified in poll and event modes. |
-| 15 | Release gh-watcher 0.3.0 and install it on hq0 | blocked_on_owner | claude | | 5.14 | 2026-11-01 19:30 ICT | Agent release dispatch denied by auto mode.<br>Owner runs: `gh workflow run release.yml -R ThomasMcFarlane/ai-tools --ref main -f tool=gh-watcher -f version=0.3.0`<br>Agent then installs the binary on hq0. |
+| 15 | Release gh-watcher 0.3.0 and install it on hq0 | done | claude | | 5.14 | 2026-11-01 18:15 ICT | Released gh-watcher-v0.3.0 (run 41291079274); checksum OK.<br>Installed on hq0 behind ~/.local/bin/gh-watcher; 0.2.0 kept as gh-watcher.v0.2.0 for rollback. |
