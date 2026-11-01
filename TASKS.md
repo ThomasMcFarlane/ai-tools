@@ -42,4 +42,4 @@ ETA: 2026-11-01 20:00 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | in_progress | claude | gh-watcher-shared-queue | | 2026-11-01 20:00 ICT | Every wait calls gh itself; re-checks on each relay event; exits 2 on 403/429.<br>Fix: apply relay event status locally, one host-wide flock queue with single-flight cache, wait out rate limits. |
+| 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | in_review | claude | gh-watcher-shared-queue | | 2026-11-01 18:30 ICT | Every wait calls gh itself; re-checks on each relay event; exits 2 on 403/429.<br>Fix: apply relay event status locally, one host-wide flock queue with single-flight cache, wait out rate limits.<br>PR: https://github.com/ThomasMcFarlane/ai-tools/pull/75 |
