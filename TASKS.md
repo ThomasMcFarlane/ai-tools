@@ -44,3 +44,10 @@ ETA: 2026-11-01 19:30 ICT
 |---|---|---|---|---|---|---|---|
 | 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | done | claude | gh-watcher-shared-queue | | 2026-11-01 18:30 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/75 (be79eef).<br>136 tests; 8 concurrent status runs made 1 gh call; wait verified in poll and event modes. |
 | 15 | Release gh-watcher 0.3.0 and install it on hq0 | done | claude | | 5.14 | 2026-11-01 18:15 ICT | Released gh-watcher-v0.3.0 (run 41291079274); checksum OK.<br>Installed on hq0 behind ~/.local/bin/gh-watcher; 0.2.0 kept as gh-watcher.v0.2.0 for rollback. |
+
+## 6. image-view
+ETA: 2026-11-02 01:58 ICT
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| 16 | Inline image viewer mod | done | claude | image-view | | 2026-11-02 01:58 ICT | New mod mods/image-view: a docked pane for the latest image plus a chat item per image<br>Shows images Claude reads (png, jpg, jpeg, gif, webp) and `/image <path>`<br>PNG goes to Image as is; other formats via ffmpeg or ImageMagick<br>validate passes; claude plugin test 10 pass; Live draw proven in plain kitty over SSH; blank inside herdr 0.9.5 (Unicode placeholders, herdr bug) |
