@@ -1,0 +1,9 @@
+{
+  "name": "image-view",
+  "version": "0.1.0",
+  "author": {
+    "name": "Thomas McFarlane"
+  },
+  "description": "Shows images Claude reads in a docked pane and as a chat item, and any local image on request with /image.",
+  "types": "./types/index.d.ts"
+}

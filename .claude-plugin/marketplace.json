@@ -33,6 +33,11 @@
       "name": "gh-runs",
       "source": "./mods/gh-runs",
       "description": "Live band above the prompt for the GitHub Actions runs gh-watcher is tracking, with a coloured chat item when each run ends."
+    },
+    {
+      "name": "image-view",
+      "source": "./mods/image-view",
+      "description": "Shows the images Claude reads, and any local image on request with /image, in a docked pane and as a chat item."
     }
   ]
 }
