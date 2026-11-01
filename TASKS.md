@@ -38,8 +38,9 @@ ETA: 2026-10-25 03:30 ICT
 | 13 | Fix fixer edge cases: trailing prose tables, empty surplus cells, short rows | done | claude | fixboard-edges | | 2026-10-25 03:00 ICT | Done in #55 (6846c92)<br>Tags tasks-board-check-v4.0.1, tasks-board-check-v4, tasks-board-v0.8.1 |
 
 ## 5. gh-watcher GitHub rate-limit resilience
-ETA: 2026-11-01 20:00 ICT
+ETA: 2026-11-01 19:30 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | in_review | claude | gh-watcher-shared-queue | | 2026-11-01 18:30 ICT | Every wait calls gh itself; re-checks on each relay event; exits 2 on 403/429.<br>Fix: apply relay event status locally, one host-wide flock queue with single-flight cache, wait out rate limits.<br>PR: https://github.com/ThomasMcFarlane/ai-tools/pull/75 |
+| 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | done | claude | gh-watcher-shared-queue | | 2026-11-01 18:30 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/75 (be79eef).<br>136 tests; 8 concurrent status runs made 1 gh call; wait verified in poll and event modes. |
+| 15 | Release gh-watcher 0.3.0 and install it on hq0 | blocked_on_owner | claude | | 5.14 | 2026-11-01 19:30 ICT | Agent release dispatch denied by auto mode.<br>Owner runs: `gh workflow run release.yml -R ThomasMcFarlane/ai-tools --ref main -f tool=gh-watcher -f version=0.3.0`<br>Agent then installs the binary on hq0. |
