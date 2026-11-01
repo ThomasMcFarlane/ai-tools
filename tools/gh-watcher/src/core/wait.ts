@@ -1,5 +1,6 @@
 import { fetchRuns, MAX_EVENT_WAIT_SECONDS, type RunsResponse } from './events.js';
 import { GhClient } from './gh.js';
+import { RateLimitTimeoutError } from './queue.js';
 import { collectReport } from './engine.js';
 import type { CheckReport, GhWatchSpec, WatchTarget } from './types.js';
 
@@ -54,13 +55,21 @@ export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {})
   const client = deps.client ?? new GhClient();
   const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const deadline = Date.now() + options.timeoutMs;
+  client.setDeadline(deadline);
   const check = (target: WatchTarget): Promise<CheckReport> =>
     collectReport(adhocSpec(options.repo, target), { client });
 
   if (options.source !== 'poll' && options.eventsUrl !== undefined) {
-    const outcome = await waitWithEvents(options, options.eventsUrl, deadline, client, check, deps, log);
-    if (outcome !== undefined) {
-      return outcome;
+    try {
+      const outcome = await waitWithEvents(options, options.eventsUrl, deadline, client, check, deps, log);
+      if (outcome !== undefined) {
+        return outcome;
+      }
+    } catch (error) {
+      if (error instanceof RateLimitTimeoutError) {
+        return { kind: 'timeout', source: 'events' };
+      }
+      throw error;
     }
   } else if (options.source === 'events') {
     throw new Error('--source events needs an events URL (--events-url or GH_WATCHER_EVENTS_URL)');
@@ -69,6 +78,22 @@ export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {})
 }
 
 async function pollLoop(
+  options: WaitOptions,
+  deadline: number,
+  check: (target: WatchTarget) => Promise<CheckReport>,
+  deps: WaitDeps,
+): Promise<WaitResult> {
+  try {
+    return await pollLoopInner(options, deadline, check, deps);
+  } catch (error) {
+    if (error instanceof RateLimitTimeoutError) {
+      return { kind: 'timeout', source: 'poll' };
+    }
+    throw error;
+  }
+}
+
+async function pollLoopInner(
   options: WaitOptions,
   deadline: number,
   check: (target: WatchTarget) => Promise<CheckReport>,

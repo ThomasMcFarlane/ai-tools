@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createQueuedExec, queueDisabled, RateLimitTimeoutError, type QueuedExec } from './queue.js';
 import type { CheckState, FailedStep, GhJobInfo, GhRunInfo, GhStepInfo, WatchTarget } from './types.js';
 
 const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
@@ -21,6 +22,11 @@ export interface GhExecResult {
 }
 
 export type GhExec = (args: string[]) => Promise<GhExecResult>;
+
+/** Rate-limit waits are bounded by this deadline (epoch ms) when the executor supports it. */
+function applyDeadline(exec: GhExec, deadline: number | undefined): void {
+  (exec as QueuedExec).setDeadline?.(deadline);
+}
 
 export interface GhClientOptions {
   ghBin?: string;
@@ -166,8 +172,15 @@ export class GhClient {
   private readonly runFields: string;
 
   constructor(options?: GhClientOptions) {
-    this.exec = options?.exec ?? defaultExec(options?.ghBin ?? 'gh');
+    this.exec =
+      options?.exec ??
+      (queueDisabled() ? defaultExec(options?.ghBin ?? 'gh') : createQueuedExec(defaultExec(options?.ghBin ?? 'gh')));
     this.runFields = options?.detailedRuns === true ? DETAILED_RUN_FIELDS : RUN_FIELDS;
+  }
+
+  /** Bound any rate-limit wait by an absolute deadline (epoch ms); undefined lifts the bound. */
+  setDeadline(deadline: number | undefined): void {
+    applyDeadline(this.exec, deadline);
   }
 
   async listRuns(repo: string, target: WatchTarget): Promise<GhRunInfo[]> {
@@ -234,7 +247,10 @@ export class GhClient {
       const parsed = parseJson<{ headRefOid?: string; headSha?: string }>(result.stdout);
       const sha = parsed.headRefOid ?? parsed.headSha ?? '';
       return isFull(sha) ? sha.toLowerCase() : undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof RateLimitTimeoutError) {
+        throw error;
+      }
       return undefined;
     }
   }
@@ -249,7 +265,10 @@ export class GhClient {
       }
       const sha = result.stdout.trim();
       return /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof RateLimitTimeoutError) {
+        throw error;
+      }
       return undefined;
     }
   }
