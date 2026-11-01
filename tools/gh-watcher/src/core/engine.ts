@@ -12,6 +12,8 @@ export interface EngineDeps {
 
 export interface RunDaemonOptions {
   pollSeconds?: number;
+  /** External stop request, handled like SIGINT/SIGTERM. */
+  signal?: AbortSignal;
 }
 
 function selectWatchers(watchers: GhWatchSpec[], names: string[] | undefined): GhWatchSpec[] {
@@ -149,12 +151,6 @@ export async function runWatches(names: string[] | undefined, deps?: EngineDeps)
   return events;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 export async function runDaemon(
   names: string[] | undefined,
   opts?: RunDaemonOptions,
@@ -163,11 +159,20 @@ export async function runDaemon(
   const pollMs = (opts?.pollSeconds ?? 5) * 1000;
   const now = deps?.now ?? (() => new Date());
   let running = true;
+  const controller = new AbortController();
   const stop = (): void => {
     running = false;
+    controller.abort();
   };
+  const client = deps?.client ?? new GhClient();
+  client.setSignal(controller.signal);
+  const daemonDeps: EngineDeps = { ...deps, client };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  if (opts?.signal?.aborted === true) {
+    stop();
+  }
+  opts?.signal?.addEventListener('abort', stop, { once: true });
   try {
     while (running) {
       const state = await loadState();
@@ -180,15 +185,32 @@ export async function runDaemon(
         const last = spec.lastCheckedAt !== undefined ? Date.parse(spec.lastCheckedAt) : Number.NaN;
         const due = Number.isNaN(last) || nowMs - last >= spec.intervalSeconds * 1000;
         if (due) {
-          await checkWatch(spec, deps);
+          try {
+            await checkWatch(spec, daemonDeps);
+          } catch (error) {
+            if (!running) {
+              break; // stopped while a queued wait was pending
+            }
+            throw error;
+          }
         }
       }
       if (!running) {
         break;
       }
-      await delay(pollMs);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(done, pollMs);
+        function done(): void {
+          clearTimeout(timer);
+          controller.signal.removeEventListener('abort', done);
+          resolve();
+        }
+        controller.signal.addEventListener('abort', done, { once: true });
+      });
     }
   } finally {
+    client.setSignal(undefined);
+    opts?.signal?.removeEventListener('abort', stop);
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
   }

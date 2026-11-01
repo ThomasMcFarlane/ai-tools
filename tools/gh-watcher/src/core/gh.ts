@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createQueuedExec, queueDisabled, RateLimitTimeoutError, type QueuedExec } from './queue.js';
 import type { CheckState, FailedStep, GhJobInfo, GhRunInfo, GhStepInfo, WatchTarget } from './types.js';
 
 const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
@@ -22,6 +23,15 @@ export interface GhExecResult {
 
 export type GhExec = (args: string[]) => Promise<GhExecResult>;
 
+/** Rate-limit waits are bounded by this deadline (epoch ms) when the executor supports it. */
+function applyDeadline(exec: GhExec, deadline: number | undefined): void {
+  (exec as QueuedExec).setDeadline?.(deadline);
+}
+
+function applySignal(exec: GhExec, signal: AbortSignal | undefined): void {
+  (exec as QueuedExec).setSignal?.(signal);
+}
+
 export interface GhClientOptions {
   ghBin?: string;
   exec?: GhExec;
@@ -29,10 +39,17 @@ export interface GhClientOptions {
   detailedRuns?: boolean;
 }
 
-function defaultExec(ghBin: string): GhExec {
+/** A hung gh call must not hold queue locks for ever. */
+export const GH_EXEC_TIMEOUT_MS = 120_000;
+
+export function spawnGh(ghBin: string, timeoutMs: number = GH_EXEC_TIMEOUT_MS): GhExec {
   return (args) =>
     new Promise((resolve, reject) => {
       const child = spawn(ghBin, args, { shell: false });
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error(`gh ${args.slice(0, 2).join(' ')} timed out after ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
       let stdout = '';
       let stderr = '';
       child.stdout?.setEncoding('utf8');
@@ -44,9 +61,11 @@ function defaultExec(ghBin: string): GhExec {
         stderr += chunk;
       });
       child.on('error', (error) => {
+        clearTimeout(timer);
         reject(error);
       });
       child.on('close', (code) => {
+        clearTimeout(timer);
         resolve({ stdout, stderr, code: code ?? -1 });
       });
     });
@@ -166,8 +185,20 @@ export class GhClient {
   private readonly runFields: string;
 
   constructor(options?: GhClientOptions) {
-    this.exec = options?.exec ?? defaultExec(options?.ghBin ?? 'gh');
+    this.exec =
+      options?.exec ??
+      (queueDisabled() ? spawnGh(options?.ghBin ?? 'gh') : createQueuedExec(spawnGh(options?.ghBin ?? 'gh')));
     this.runFields = options?.detailedRuns === true ? DETAILED_RUN_FIELDS : RUN_FIELDS;
+  }
+
+  /** Bound any rate-limit wait by an absolute deadline (epoch ms); undefined lifts the bound. */
+  setDeadline(deadline: number | undefined): void {
+    applyDeadline(this.exec, deadline);
+  }
+
+  /** Make queued rate-limit sleeps and lock waits end promptly when the signal aborts. */
+  setSignal(signal: AbortSignal | undefined): void {
+    applySignal(this.exec, signal);
   }
 
   async listRuns(repo: string, target: WatchTarget): Promise<GhRunInfo[]> {
@@ -234,7 +265,10 @@ export class GhClient {
       const parsed = parseJson<{ headRefOid?: string; headSha?: string }>(result.stdout);
       const sha = parsed.headRefOid ?? parsed.headSha ?? '';
       return isFull(sha) ? sha.toLowerCase() : undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof RateLimitTimeoutError) {
+        throw error;
+      }
       return undefined;
     }
   }
@@ -249,7 +283,10 @@ export class GhClient {
       }
       const sha = result.stdout.trim();
       return /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
-    } catch {
+    } catch (error) {
+      if (error instanceof RateLimitTimeoutError) {
+        throw error;
+      }
       return undefined;
     }
   }

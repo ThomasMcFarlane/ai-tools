@@ -1,7 +1,9 @@
-import { fetchRuns, MAX_EVENT_WAIT_SECONDS, type RunsResponse } from './events.js';
-import { GhClient } from './gh.js';
+import { fetchRuns, MAX_EVENT_WAIT_SECONDS, type RunEvent, type RunsResponse } from './events.js';
+import { applyRunEvents } from './apply-events.js';
+import { aggregateState, GhClient } from './gh.js';
+import { RateLimitTimeoutError } from './queue.js';
 import { collectReport } from './engine.js';
-import type { CheckReport, GhWatchSpec, WatchTarget } from './types.js';
+import type { CheckReport, GhRunInfo, GhWatchSpec, WatchTarget } from './types.js';
 
 export type SourceChoice = 'auto' | 'events' | 'poll';
 export type WaitSource = 'events' | 'poll';
@@ -51,16 +53,24 @@ function defaultSleep(ms: number): Promise<void> {
 
 /** Wait for a terminal state, using the event source when usable and polling `gh` otherwise. */
 export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {}): Promise<WaitResult> {
-  const client = deps.client ?? new GhClient();
+  const client = deps.client ?? new GhClient({ detailedRuns: true });
   const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const deadline = Date.now() + options.timeoutMs;
+  client.setDeadline(deadline);
   const check = (target: WatchTarget): Promise<CheckReport> =>
     collectReport(adhocSpec(options.repo, target), { client });
 
   if (options.source !== 'poll' && options.eventsUrl !== undefined) {
-    const outcome = await waitWithEvents(options, options.eventsUrl, deadline, client, check, deps, log);
-    if (outcome !== undefined) {
-      return outcome;
+    try {
+      const outcome = await waitWithEvents(options, options.eventsUrl, deadline, client, check, deps, log);
+      if (outcome !== undefined) {
+        return outcome;
+      }
+    } catch (error) {
+      if (error instanceof RateLimitTimeoutError) {
+        return { kind: 'timeout', source: 'events' };
+      }
+      throw error;
     }
   } else if (options.source === 'events') {
     throw new Error('--source events needs an events URL (--events-url or GH_WATCHER_EVENTS_URL)');
@@ -69,6 +79,22 @@ export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {})
 }
 
 async function pollLoop(
+  options: WaitOptions,
+  deadline: number,
+  check: (target: WatchTarget) => Promise<CheckReport>,
+  deps: WaitDeps,
+): Promise<WaitResult> {
+  try {
+    return await pollLoopInner(options, deadline, check, deps);
+  } catch (error) {
+    if (error instanceof RateLimitTimeoutError) {
+      return { kind: 'timeout', source: 'poll' };
+    }
+    throw error;
+  }
+}
+
+async function pollLoopInner(
   options: WaitOptions,
   deadline: number,
   check: (target: WatchTarget) => Promise<CheckReport>,
@@ -148,19 +174,36 @@ async function waitWithEvents(
       log(`gh-watcher: event source failed (${describe(error)}), polling for the rest of the wait`);
       return pollLoop(options, deadline, check, deps);
     }
-    let recheck = false;
+    let full = false;
+    let matching: RunEvent[] = [];
     if (response.latest_seq < after) {
-      recheck = true; // service restarted: the sequence space is new
-      after = response.latest_seq;
+      full = true; // service restarted: the sequence space is new
     } else {
-      after = response.latest_seq;
-      recheck = response.events.some((event) => (event.head_sha ?? '').toLowerCase() === sha);
+      matching = response.events.filter((event) => (event.head_sha ?? '').toLowerCase() === sha);
+    }
+    after = response.latest_seq;
+    let confirm = false;
+    if (matching.length > 0) {
+      const applied = applyRunEvents(report.runs, matching, options.target);
+      if (applied.unmappable) {
+        full = true;
+      } else if (applied.changed) {
+        const local = localReport(report, applied.runs);
+        if (isTerminal(local)) {
+          // Event data alone never ends a wait: confirm with a fresh gh check.
+          confirm = true;
+        } else {
+          report = local;
+          await deps.onPending?.(report, 'events');
+        }
+      }
     }
     const fallbackDue = Date.now() - lastCheck >= options.fallbackMs;
-    if (!recheck && !fallbackDue) {
+    full = full || confirm;
+    if (!full && !fallbackDue) {
       continue;
     }
-    if (fallbackDue && !recheck && options.target.kind !== 'run') {
+    if (fallbackDue && !full && options.target.kind !== 'run') {
       // Safety net: pick up a new head commit (force-push, new PR commit) as well.
       const fresh = await client.resolveHeadSha(options.repo, options.target);
       if (fresh !== undefined) {
@@ -174,6 +217,11 @@ async function waitWithEvents(
     }
     await deps.onPending?.(report, 'events');
   }
+}
+
+/** Recompute the state locally from updated runs; failed steps are only fetched by a confirming check. */
+function localReport(previous: CheckReport, runs: GhRunInfo[]): CheckReport {
+  return { ...previous, state: aggregateState(runs), runs, failedSteps: [], checkedAt: new Date().toISOString() };
 }
 
 function describe(error: unknown): string {

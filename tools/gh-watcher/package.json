@@ -1,6 +1,6 @@
 {
   "name": "@ai-tools/gh-watcher",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "GitHub Actions run and check watch library for AI agents",
   "type": "module",
   "license": "MIT",

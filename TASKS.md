@@ -36,3 +36,10 @@ ETA: 2026-10-25 03:30 ICT
 | 11 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated |
 | 12 | Fix the failing pane-label target test | done | claude | pane-label-test | | 2026-10-25 03:30 ICT | Test stale since #41 (42a78a5): pane auto-opens only after a render reports the sidebar layout<br>Test-only fix: mount AbovePrompt with isFullscreen before asserting<br>claude plugin test 111 pass, 0 fail |
 | 13 | Fix fixer edge cases: trailing prose tables, empty surplus cells, short rows | done | claude | fixboard-edges | | 2026-10-25 03:00 ICT | Done in #55 (6846c92)<br>Tags tasks-board-check-v4.0.1, tasks-board-check-v4, tasks-board-v0.8.1 |
+
+## 5. gh-watcher GitHub rate-limit resilience
+ETA: 2026-11-01 20:00 ICT
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| 14 | Shared deduped GitHub queue, event-payload state, rate-limit backoff | in_review | claude | gh-watcher-shared-queue | | 2026-11-01 18:30 ICT | Every wait calls gh itself; re-checks on each relay event; exits 2 on 403/429.<br>Fix: apply relay event status locally, one host-wide flock queue with single-flight cache, wait out rate limits.<br>PR: https://github.com/ThomasMcFarlane/ai-tools/pull/75 |

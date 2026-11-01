@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { collectReport } from '../core/engine.js';
 import { resolveEventsUrl } from '../core/events.js';
+import { GhClient } from '../core/gh.js';
+import { RateLimitTimeoutError } from '../core/queue.js';
 import { followTarget } from '../core/follow.js';
 import { waitForTerminal, type WaitResult, type WaitSource } from '../core/wait.js';
 import type { CheckReport, CheckState, FailedStep, GhWatchSpec, WatchTarget } from '../core/types.js';
@@ -17,6 +19,7 @@ const MAX_WAIT_TIMEOUT_MS = 24 * 3_600_000;
 interface RepoTargetFlags extends TargetFlags {
   repo?: string;
   json?: boolean;
+  timeout?: string;
 }
 
 interface WaitFlags extends RepoTargetFlags {
@@ -64,10 +67,18 @@ function describeFailedSteps(failedSteps: FailedStep[]): void {
 async function statusAction(flags: RepoTargetFlags): Promise<void> {
   const repo = resolveRepo(flags.repo);
   const target = parseTargetFlagsOrExit(flags);
+  const timeoutMs = Math.min(parseDuration(flags.timeout ?? '10m'), MAX_WAIT_TIMEOUT_MS);
+  const client = new GhClient();
+  client.setDeadline(Date.now() + timeoutMs);
   let report: CheckReport;
   try {
-    report = await collectReport(adhocSpec(repo, target));
+    report = await collectReport(adhocSpec(repo, target), { client });
   } catch (error) {
+    if (error instanceof RateLimitTimeoutError) {
+      console.error(`error: GitHub rate limit not lifted within ${formatDuration(timeoutMs)}`);
+      process.exitCode = 124;
+      return;
+    }
     console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 2;
     return;
@@ -189,6 +200,7 @@ function buildProgram(): Command {
     .option('--branch <name>', 'branch name')
     .option('--commit <sha>', 'commit sha')
     .option('--run <id>', 'run id', parseNumberOption)
+    .option('--timeout <duration>', 'longest wait for a GitHub rate limit to lift, capped at 24h', '10m')
     .option('--json', 'emit the check report as JSON', false)
     .action(async (opts) => {
       await statusAction(opts as RepoTargetFlags);

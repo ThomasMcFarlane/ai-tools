@@ -1,0 +1,318 @@
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { GhClient, spawnGh, type GhExec, type GhExecResult } from '../src/core/gh.js';
+import {
+  acquireLock,
+  createQueuedExec,
+  detectRateLimit,
+  LOCK_STALE_MS,
+  QueueAbortedError,
+  RateLimitTimeoutError,
+  releaseLock,
+  type QueueOptions,
+} from '../src/core/queue.js';
+import { waitForTerminal, type WaitOptions } from '../src/core/wait.js';
+
+const SHA = 'a'.repeat(40);
+const RATE_LIMITED: GhExecResult = {
+  stdout: '',
+  stderr: 'gh: API rate limit exceeded for user ID 1. (HTTP 403)',
+  code: 1,
+};
+const SECONDARY: GhExecResult = {
+  stdout: '',
+  stderr: 'gh: You have exceeded a secondary rate limit. (HTTP 403)',
+  code: 1,
+};
+
+let dir: string;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'gh-watcher-queue-'));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+/** A fake clock whose sleep advances time instantly but still yields to other tasks. */
+function fakeClock(start = 1_000_000): { now: () => number; sleep: (ms: number) => Promise<void>; slept: number[] } {
+  let time = start;
+  const slept: number[] = [];
+  return {
+    now: () => time,
+    sleep: async (ms) => {
+      slept.push(ms);
+      time += ms;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    slept,
+  };
+}
+
+function queueOptions(clock: ReturnType<typeof fakeClock>, extra?: Partial<QueueOptions>): QueueOptions {
+  return { dir, now: clock.now, sleep: clock.sleep, log: () => undefined, ...extra };
+}
+
+async function cooldownName(): Promise<string> {
+  const names = (await readdir(join(dir, 'queue'))).filter((name) => name.startsWith('cooldown-'));
+  expect(names).toHaveLength(1);
+  return names[0] as string;
+}
+
+function ok(stdout: string): GhExecResult {
+  return { stdout, stderr: '', code: 0 };
+}
+
+describe('detectRateLimit', () => {
+  it('classifies primary, secondary and unrelated failures', () => {
+    expect(detectRateLimit(RATE_LIMITED)?.kind).toBe('primary');
+    expect(detectRateLimit(SECONDARY)?.kind).toBe('secondary');
+    expect(detectRateLimit({ stdout: '', stderr: 'HTTP 429: slow down', code: 1 })?.kind).toBe('secondary');
+    expect(detectRateLimit({ stdout: '', stderr: 'retry-after: 42 (HTTP 403)', code: 1 })?.retryAfterMs).toBe(42_000);
+    expect(detectRateLimit({ stdout: '', stderr: 'HTTP 403: Resource not accessible', code: 1 })).toBeUndefined();
+    expect(detectRateLimit({ stdout: '', stderr: 'HTTP 404', code: 1 })).toBeUndefined();
+    expect(detectRateLimit(ok('x'))).toBeUndefined();
+  });
+});
+
+describe('shared queue', () => {
+  it('single-flights concurrent clients asking the same thing', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const inner: GhExec = async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return ok('[]');
+    };
+    const first = createQueuedExec(inner, queueOptions(clock));
+    const second = createQueuedExec(inner, queueOptions(clock));
+    const results = await Promise.all([first(['run', 'list']), second(['run', 'list']), first(['run', 'list'])]);
+    expect(calls).toBe(1);
+    expect(results.map((r) => r.stdout)).toEqual(['[]', '[]', '[]']);
+  });
+
+  it('never serves a result from before the caller started', async () => {
+    const clock = fakeClock();
+    const outputs = ['failure', 'in_progress'];
+    const inner: GhExec = async () => ok(outputs.shift() as string);
+    const exec = createQueuedExec(inner, queueOptions(clock, { minSpacingMs: 0 }));
+    expect((await exec(['run', 'view'])).stdout).toBe('failure');
+    await clock.sleep(5); // the user acts, then asks again within the old TTL
+    expect((await exec(['run', 'view'])).stdout).toBe('in_progress');
+  });
+
+  it('does not cache failures and keeps cache files private and token free', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const inner: GhExec = async () => {
+      calls += 1;
+      return calls === 1 ? { stdout: '', stderr: 'HTTP 404', code: 1 } : ok('fine');
+    };
+    const exec = createQueuedExec(inner, queueOptions(clock, { minSpacingMs: 0 }));
+    expect((await exec(['x'])).code).toBe(1);
+    expect((await exec(['x'])).stdout).toBe('fine');
+    const cacheDir = join(dir, 'queue', 'cache');
+    const files = (await readdir(cacheDir)).filter((name) => name.endsWith('.json'));
+    expect(files).toHaveLength(1);
+    expect((await stat(join(cacheDir, files[0] as string))).mode & 0o777).toBe(0o600);
+    expect((await stat(cacheDir)).mode & 0o777).toBe(0o700);
+    const body = await readFile(join(cacheDir, files[0] as string), 'utf8');
+    expect(Object.keys(JSON.parse(body) as object).sort()).toEqual(['completedAt', 'startedAt', 'stdout']);
+  });
+
+  it('spaces calls across clients by the minimum spacing', async () => {
+    const clock = fakeClock();
+    const times: number[] = [];
+    const inner: GhExec = async () => {
+      times.push(clock.now());
+      return ok('');
+    };
+    const first = createQueuedExec(inner, queueOptions(clock, { cacheTtlMs: 0, minSpacingMs: 1000 }));
+    const second = createQueuedExec(inner, queueOptions(clock, { cacheTtlMs: 0, minSpacingMs: 1000 }));
+    await first(['a']);
+    await second(['b']);
+    await first(['c']);
+    expect(times).toHaveLength(3);
+    expect((times[1] as number) - (times[0] as number)).toBeGreaterThanOrEqual(1000);
+    expect((times[2] as number) - (times[1] as number)).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('recovers a stale lock left by a dead process', async () => {
+    const clock = fakeClock();
+    const exec = createQueuedExec(async () => ok('done'), queueOptions(clock, { minSpacingMs: 0 }));
+    await exec(['warm']);
+    const { createHash } = await import('node:crypto');
+    const key = createHash('sha256').update(JSON.stringify(['stuck'])).digest('hex');
+    await writeFile(join(dir, 'queue', 'cache', `${key}.lock`), JSON.stringify({ pid: 2 ** 22 + 12345, at: clock.now() }));
+    expect((await exec(['stuck'])).stdout).toBe('done');
+  });
+});
+
+describe('locks', () => {
+  it('times out a slot lock held by this process once the deadline passes', async () => {
+    const clock = fakeClock();
+    const exec = createQueuedExec(async () => ok('x'), queueOptions(clock, { minSpacingMs: 1000 }));
+    const { readdir: ls } = await import('node:fs/promises');
+    await exec(['warm']); // creates the scope files
+    const scope = (await ls(join(dir, 'queue'))).find((name) => name.startsWith('slot-') && name.endsWith('.json')) as string;
+    const lock = join(dir, 'queue', scope.replace('.json', '.lock'));
+    await writeFile(lock, JSON.stringify({ pid: process.pid, at: clock.now(), token: 'someone-else' }));
+    exec.setDeadline?.(clock.now() + 100);
+    await expect(exec(['other'])).rejects.toBeInstanceOf(RateLimitTimeoutError);
+  });
+
+  it('releases only a lock that still carries its own token', async () => {
+    const file = join(dir, 'x.lock');
+    const token = (await acquireLock(file)) as string;
+    expect(token).toBeTruthy();
+    expect(await acquireLock(file)).toBeUndefined();
+    await writeFile(file, JSON.stringify({ pid: process.pid, at: Date.now(), token: 'new-owner' }));
+    await releaseLock(file, token);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ token: 'new-owner' });
+  });
+
+  it('recovers a lock of a dead process and a lock older than the stale age', async () => {
+    const file = join(dir, 'y.lock');
+    await writeFile(file, JSON.stringify({ pid: 2 ** 22 + 99, at: Date.now(), token: 'dead' }));
+    const first = await acquireLock(file);
+    expect(first).toBeTruthy();
+    await releaseLock(file, first as string);
+    await writeFile(file, JSON.stringify({ pid: process.pid, at: Date.now() - LOCK_STALE_MS - 1, token: 'old' }));
+    expect(await acquireLock(file)).toBeTruthy();
+    expect((await readdir(dir)).filter((name) => name.includes('.stale.'))).toEqual([]);
+  });
+
+  it('kills a hung gh call after the exec timeout', async () => {
+    const exec = spawnGh('sleep', 50);
+    await expect(exec(['5'])).rejects.toThrow(/timed out/);
+  });
+});
+
+describe('identity scoping', () => {
+  it('keeps separate cache and cooldown per host and token without storing the token', async () => {
+    const clock = fakeClock();
+    let calls = 0;
+    const inner: GhExec = async () => {
+      calls += 1;
+      return ok(String(calls));
+    };
+    const a = createQueuedExec(inner, queueOptions(clock, { minSpacingMs: 0 }), { GH_TOKEN: 'secret-token-a' });
+    const b = createQueuedExec(inner, queueOptions(clock, { minSpacingMs: 0 }), { GH_TOKEN: 'secret-token-b' });
+    const c = createQueuedExec(inner, queueOptions(clock, { minSpacingMs: 0 }), { GH_TOKEN: 'secret-token-a', GH_HOST: 'ghe.example' });
+    await a(['x']);
+    await b(['x']);
+    await c(['x']);
+    expect(calls).toBe(3);
+    for (const name of await readdir(join(dir, 'queue', 'cache'))) {
+      expect(await readFile(join(dir, 'queue', 'cache', name), 'utf8')).not.toContain('secret-token');
+    }
+    const limited = createQueuedExec(async () => SECONDARY, queueOptions(clock, { minSpacingMs: 0 }), { GH_TOKEN: 'secret-token-a' });
+    limited.setDeadline?.(clock.now() + 10);
+    await expect(limited(['y'])).rejects.toBeInstanceOf(RateLimitTimeoutError);
+    expect((await b(['y'])).stdout).toBe('4'); // b is unaffected by a's cooldown
+  });
+});
+
+describe('abort', () => {
+  it('ends a queued sleep promptly when the signal aborts', async () => {
+    const controller = new AbortController();
+    const exec = createQueuedExec(async () => SECONDARY, {
+      dir,
+      minSpacingMs: 0,
+      log: () => undefined,
+      signal: controller.signal,
+    });
+    exec.setDeadline?.(Date.now() + 3_600_000);
+    const pending = exec(['x']);
+    setTimeout(() => controller.abort(), 50);
+    const started = Date.now();
+    await expect(pending).rejects.toBeInstanceOf(QueueAbortedError);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect((await readdir(join(dir, 'queue', 'cache'))).filter((n) => n.endsWith('.lock'))).toEqual([]);
+  });
+});
+
+describe('rate limits', () => {
+  it('honours a cooldown written by another client before calling gh', async () => {
+    const clock = fakeClock();
+    let hits = 0;
+    const limited: GhExec = async () => {
+      hits += 1;
+      return SECONDARY;
+    };
+    const logs: string[] = [];
+    const hitter = createQueuedExec(limited, queueOptions(clock, { minSpacingMs: 0, log: (l) => logs.push(l) }));
+    hitter.setDeadline?.(clock.now() + 1000);
+    await expect(hitter(['x'])).rejects.toBeInstanceOf(RateLimitTimeoutError);
+    expect(hits).toBe(1);
+    expect(logs.length).toBeGreaterThanOrEqual(1);
+
+    const callTimes: number[] = [];
+    const healthy: GhExec = async () => {
+      callTimes.push(clock.now());
+      return ok('fine');
+    };
+    const other = createQueuedExec(healthy, queueOptions(clock, { minSpacingMs: 0 }));
+    const cooldown = JSON.parse(await readFile(join(dir, 'queue', await cooldownName()), 'utf8')) as { until: number };
+    expect(cooldown.until).toBeGreaterThan(clock.now());
+    expect((await other(['y'])).stdout).toBe('fine');
+    expect(callTimes[0]).toBeGreaterThanOrEqual(cooldown.until);
+  });
+
+  it('backs off on a secondary limit then succeeds, logging one line per backoff', async () => {
+    const clock = fakeClock();
+    const responses = [SECONDARY, SECONDARY, ok('fine')];
+    const logs: string[] = [];
+    const exec = createQueuedExec(
+      async () => responses.shift() as GhExecResult,
+      queueOptions(clock, { minSpacingMs: 0, log: (l) => logs.push(l) }),
+    );
+    const start = clock.now();
+    expect((await exec(['x'])).stdout).toBe('fine');
+    expect(clock.now() - start).toBeGreaterThanOrEqual(60_000 + 120_000);
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toMatch(/waiting until \d{4}-\d\d-\d\dT/);
+  });
+
+  it('takes the primary reset time from gh api rate_limit', async () => {
+    const clock = fakeClock(1_700_000_000_000);
+    const reset = Math.floor(clock.now() / 1000) + 300;
+    const calls: string[][] = [];
+    let limitedOnce = false;
+    const inner: GhExec = async (args) => {
+      calls.push(args);
+      if (args[0] === 'api' && args[1] === 'rate_limit') {
+        return ok(JSON.stringify({ resources: { core: { remaining: 0, reset }, graphql: { remaining: 9, reset: 1 } } }));
+      }
+      if (!limitedOnce) {
+        limitedOnce = true;
+        return RATE_LIMITED;
+      }
+      return ok('fine');
+    };
+    const exec = createQueuedExec(inner, queueOptions(clock, { minSpacingMs: 0 }));
+    expect((await exec(['run', 'list'])).stdout).toBe('fine');
+    expect(clock.now()).toBeGreaterThanOrEqual(reset * 1000);
+    expect(calls.filter((c) => c[0] === 'api')).toHaveLength(1);
+  });
+
+  it('returns the 124 path when the wait times out during a backoff', async () => {
+    const clock = fakeClock(Date.now()); // the wait computes its deadline from the real clock
+    const client = new GhClient({ exec: createQueuedExec(async () => SECONDARY, queueOptions(clock, { minSpacingMs: 0 })) });
+    const options: WaitOptions = {
+      repo: 'o/r',
+      target: { kind: 'commit', sha: SHA },
+      intervalMs: 1000,
+      timeoutMs: 30_000,
+      fallbackMs: 60_000,
+      source: 'poll',
+    };
+    const start = clock.now();
+    const result = await waitForTerminal(options, { client, sleep: clock.sleep, log: () => undefined });
+    expect(result).toEqual({ kind: 'timeout', source: 'poll' });
+    expect(clock.now() - start).toBeLessThanOrEqual(31_000);
+  });
+});

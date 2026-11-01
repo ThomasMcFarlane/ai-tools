@@ -5,3 +5,5 @@ export * from './core/engine.js';
 export * from './core/events.js';
 export * from './core/wait.js';
 export * from './core/follow.js';
+export * from './core/queue.js';
+export * from './core/apply-events.js';
