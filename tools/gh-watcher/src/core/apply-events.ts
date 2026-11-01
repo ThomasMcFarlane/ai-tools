@@ -40,6 +40,11 @@ export function applyRunEvents(runs: GhRunInfo[], events: RunEvent[], target: Wa
       if (event.run_attempt !== undefined && existing.attempt !== undefined && event.run_attempt < existing.attempt) {
         continue;
       }
+      if (existing.attempt === undefined && existing.status !== 'completed' && event.status === 'completed') {
+        // Without the attempt we cannot tell a stale attempt from a current one: ask gh.
+        unmappable = true;
+        continue;
+      }
       if (event.updated_at !== undefined && existing.updatedAt !== undefined && event.updated_at < existing.updatedAt) {
         continue;
       }

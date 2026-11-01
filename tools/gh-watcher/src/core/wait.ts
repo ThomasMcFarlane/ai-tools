@@ -53,7 +53,7 @@ function defaultSleep(ms: number): Promise<void> {
 
 /** Wait for a terminal state, using the event source when usable and polling `gh` otherwise. */
 export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {}): Promise<WaitResult> {
-  const client = deps.client ?? new GhClient();
+  const client = deps.client ?? new GhClient({ detailedRuns: true });
   const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const deadline = Date.now() + options.timeoutMs;
   client.setDeadline(deadline);
@@ -182,19 +182,24 @@ async function waitWithEvents(
       matching = response.events.filter((event) => (event.head_sha ?? '').toLowerCase() === sha);
     }
     after = response.latest_seq;
+    let confirm = false;
     if (matching.length > 0) {
       const applied = applyRunEvents(report.runs, matching, options.target);
       if (applied.unmappable) {
         full = true;
       } else if (applied.changed) {
-        report = await localReport(client, options, report, applied.runs);
-        if (isTerminal(report)) {
-          return { kind: 'terminal', report, source: 'events' };
+        const local = localReport(report, applied.runs);
+        if (isTerminal(local)) {
+          // Event data alone never ends a wait: confirm with a fresh gh check.
+          confirm = true;
+        } else {
+          report = local;
+          await deps.onPending?.(report, 'events');
         }
-        await deps.onPending?.(report, 'events');
       }
     }
     const fallbackDue = Date.now() - lastCheck >= options.fallbackMs;
+    full = full || confirm;
     if (!full && !fallbackDue) {
       continue;
     }
@@ -214,21 +219,9 @@ async function waitWithEvents(
   }
 }
 
-/** Recompute the report from locally updated runs; gh is only asked for failed steps. */
-async function localReport(
-  client: GhClient,
-  options: WaitOptions,
-  previous: CheckReport,
-  runs: GhRunInfo[],
-): Promise<CheckReport> {
-  const state = aggregateState(runs);
-  return {
-    ...previous,
-    state,
-    runs,
-    failedSteps: state === 'failure' ? await client.collectFailures(options.repo, runs) : [],
-    checkedAt: new Date().toISOString(),
-  };
+/** Recompute the state locally from updated runs; failed steps are only fetched by a confirming check. */
+function localReport(previous: CheckReport, runs: GhRunInfo[]): CheckReport {
+  return { ...previous, state: aggregateState(runs), runs, failedSteps: [], checkedAt: new Date().toISOString() };
 }
 
 function describe(error: unknown): string {
