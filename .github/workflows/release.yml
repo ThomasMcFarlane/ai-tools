@@ -176,7 +176,7 @@ jobs:
           name: release-assets
           path: release-assets/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   publish:
     name: Tag and publish release
