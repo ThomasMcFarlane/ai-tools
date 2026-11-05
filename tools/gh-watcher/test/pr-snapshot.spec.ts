@@ -3,7 +3,7 @@ import { GhClient, type GhExec, type GhExecResult } from '../src/core/gh.js';
 
 const REPO = 'octo-org/hello-world';
 const PR_FIELDS =
-  'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews';
+  'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews,updatedAt';
 
 function ok(stdout: string): GhExecResult {
   return { stdout, stderr: '', code: 0 };
@@ -34,6 +34,7 @@ const VIEW = JSON.stringify({
   headRefOid: 'c'.repeat(40),
   headRefName: 'feature',
   reviewDecision: 'APPROVED',
+  updatedAt: '2026-01-06T00:00:00Z',
   mergedAt: '2026-01-05T00:00:00Z',
   closedAt: '2026-01-05T00:00:00Z',
   comments: [{ id: 'IC_1', author: { login: 'alice' }, createdAt: '2026-01-02T00:00:00Z', url: 'https://example.com/c1', body: 'x' }],
@@ -68,6 +69,7 @@ describe('GhClient.prSnapshot', () => {
       reviewDecision: 'APPROVED',
       mergedAt: '2026-01-05T00:00:00Z',
       closedAt: '2026-01-05T00:00:00Z',
+      updatedAt: '2026-01-06T00:00:00Z',
       comments: [{ id: 'IC_1', author: 'alice', createdAt: '2026-01-02T00:00:00Z', url: 'https://example.com/c1' }],
       reviews: [{ id: 'PRR_1', author: 'bob', state: 'APPROVED', submittedAt: '2026-01-03T00:00:00Z' }],
       reviewComments: [
@@ -110,6 +112,36 @@ describe('GhClient.prSnapshot', () => {
   it('fails on malformed inline comment output', async () => {
     const { exec } = fakeExec([ok(VIEW), ok('not json')]);
     await expect(new GhClient({ exec }).prSnapshot(REPO, 7)).rejects.toThrow(/malformed output/);
+  });
+});
+
+describe('GhClient.prSnapshot reuse', () => {
+  const stub = [{ id: '101', author: 'dave', createdAt: 't', url: 'u' }];
+
+  it('skips the inline comments call when updatedAt is unchanged', async () => {
+    const { exec, calls } = fakeExec([ok(VIEW)]);
+    const snapshot = await new GhClient({ exec }).prSnapshot(REPO, 7, {
+      updatedAt: '2026-01-06T00:00:00Z',
+      reviewComments: stub,
+    });
+    expect(calls).toHaveLength(1);
+    expect(snapshot.reviewComments).toEqual(stub);
+  });
+
+  it('fetches the inline comments again when updatedAt changed', async () => {
+    const { exec, calls } = fakeExec([ok(VIEW), ok(INLINE)]);
+    const snapshot = await new GhClient({ exec }).prSnapshot(REPO, 7, {
+      updatedAt: '2026-01-01T00:00:00Z',
+      reviewComments: stub,
+    });
+    expect(calls).toHaveLength(2);
+    expect(snapshot.reviewComments).toHaveLength(2);
+  });
+
+  it('never reuses when the view has no updatedAt', async () => {
+    const { exec, calls } = fakeExec([ok(JSON.stringify({ number: 3 })), ok('')]);
+    await new GhClient({ exec }).prSnapshot(REPO, 3, { updatedAt: '', reviewComments: stub });
+    expect(calls).toHaveLength(2);
   });
 });
 

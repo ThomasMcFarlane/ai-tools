@@ -212,6 +212,22 @@ describe('waitForPrEvent', () => {
   });
 });
 
+describe('branch targets across pull requests', () => {
+  it('reports opened when a new pull request replaces a merged one', async () => {
+    const h = harness(
+      [snap({ number: 5, state: 'MERGED', mergedAt: '2026-01-01T00:00:00Z' }), snap({ number: 6 })],
+      [5, 6],
+    );
+    const result = await waitForPrEvent(
+      options({ target: { kind: 'branch', branch: 'feature' }, kinds: ['opened', 'merged'], changesOnly: true }),
+      { client: h.client, sleep: h.sleep, now: h.now },
+    );
+    expect(result.kind).toBe('matched');
+    expect(result.events.map((event) => event.kind)).toEqual(['opened']);
+    expect(result.pr).toMatchObject({ number: 6 });
+  });
+});
+
 describe('followPrEvents', () => {
   it('emits each wanted event and ends when the pull request is merged', async () => {
     const h = harness([

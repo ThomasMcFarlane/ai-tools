@@ -1,4 +1,4 @@
-import { GhClient } from './gh.js';
+import { GhClient, type PrSnapshotReuse } from './gh.js';
 import { fetchPrEvents, MAX_EVENT_WAIT_SECONDS, type PrRelayEvent } from './events.js';
 import { diffPr, sinceEvents, stateEvents, summarisePr } from './pr.js';
 import { RateLimitTimeoutError } from './queue.js';
@@ -8,7 +8,7 @@ import type { PrEvent, PrEventKind, PrSnapshot, PrSummary } from './types.js';
 export type PrTarget = { kind: 'pr'; number: number } | { kind: 'branch'; branch: string };
 
 export interface PrWatchClient {
-  prSnapshot(repo: string, number: number): Promise<PrSnapshot>;
+  prSnapshot(repo: string, number: number, reuse?: PrSnapshotReuse): Promise<PrSnapshot>;
   findPrForBranch(repo: string, branch: string): Promise<number | undefined>;
   setDeadline?(deadline: number | undefined): void;
 }
@@ -56,6 +56,10 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function reuseFrom(previous: PrSnapshot | undefined): PrSnapshotReuse | undefined {
+  return previous === undefined ? undefined : { updatedAt: previous.updatedAt, reviewComments: previous.reviewComments };
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -69,7 +73,7 @@ async function watchPr(options: PrWaitOptions, deps: PrWaitDeps, follow: boolean
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? Date.now;
   const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
-  const fallbackMs = options.fallbackMs ?? DEFAULT_FALLBACK_MS;
+  const fallbackMs = Math.max(options.fallbackMs ?? DEFAULT_FALLBACK_MS, options.intervalMs, 1);
   const deadline = now() + options.timeoutMs;
   client.setDeadline?.(deadline);
   const wanted = new Set<PrEventKind>(options.kinds);
@@ -78,9 +82,11 @@ async function watchPr(options: PrWaitOptions, deps: PrWaitDeps, follow: boolean
   let previous: PrSnapshot | undefined;
   let number: number | undefined = options.target.kind === 'pr' ? options.target.number : undefined;
   let source: PrWaitSource = 'poll';
+  let lastEventCount = 0;
 
   const settle = (events: PrEvent[], snapshot: PrSnapshot): PrWaitResult | undefined => {
     summary = summarisePr(snapshot);
+    lastEventCount = events.length;
     let matched = false;
     for (const event of events) {
       seen.push(event);
@@ -97,25 +103,28 @@ async function watchPr(options: PrWaitOptions, deps: PrWaitDeps, follow: boolean
 
   /** One gh check against the previous snapshot; gh stays the source of truth in both modes. */
   const check = async (): Promise<PrWaitResult | undefined> => {
+    if (options.target.kind === 'branch' && (number === undefined || previous?.state !== 'OPEN')) {
+      const found = await client.findPrForBranch(options.repo, options.target.branch);
+      if (found !== undefined && found !== number) {
+        number = found;
+        previous = undefined;
+      }
+    }
     if (number === undefined) {
-      if (options.target.kind === 'branch') {
-        number = await client.findPrForBranch(options.repo, options.target.branch);
-      }
       deps.onPoll?.();
-      if (number === undefined) {
-        return undefined;
-      }
-      const snapshot = await client.prSnapshot(options.repo, number);
-      previous = snapshot;
-      const events = diffPr(undefined, snapshot);
+      return undefined;
+    }
+    const snapshot = await client.prSnapshot(options.repo, number, reuseFrom(previous));
+    deps.onPoll?.();
+    let events: PrEvent[];
+    if (previous === undefined) {
+      events = diffPr(undefined, snapshot);
       if (options.since !== undefined) {
         events.push(...sinceEvents(snapshot, options.since));
       }
-      return settle(events, snapshot);
+    } else {
+      events = diffPr(previous, snapshot);
     }
-    const snapshot = await client.prSnapshot(options.repo, number);
-    deps.onPoll?.();
-    const events = previous === undefined ? [] : diffPr(previous, snapshot);
     previous = snapshot;
     return settle(events, snapshot);
   };
@@ -187,48 +196,59 @@ async function watchPr(options: PrWaitOptions, deps: PrWaitDeps, follow: boolean
     }
 
     let lastCheck = now();
+    let lagRecheck = false;
     for (;;) {
-      if (now() >= deadline) {
+      const remaining = deadline - now();
+      if (remaining <= 0) {
         return { kind: 'timeout', events: seen, pr: summary, source };
       }
-      if (source === 'poll') {
-        await sleep(Math.min(options.intervalMs, Math.max(0, deadline - now())));
+      let wake = false;
+      if (source === 'poll' || lagRecheck) {
+        await sleep(Math.min(options.intervalMs, remaining));
+        lagRecheck = false;
       } else {
         const untilFallback = Math.max(0, fallbackMs - (now() - lastCheck));
-        const waitSeconds = Math.min(
-          MAX_EVENT_WAIT_SECONDS,
-          Math.ceil(Math.min(deadline - now(), untilFallback) / 1000),
-        );
-        let wake = false;
-        try {
-          const response = await fetchPrEvents({
-            baseUrl: options.eventsUrl as string,
-            repo: options.repo,
-            ...relayParams(),
-            after,
-            waitSeconds,
-            fetchFn: deps.fetchFn,
-          });
-          if (response.latest_seq < after) {
-            wake = true; // relay restarted: the sequence space is new
+        if (untilFallback > 0) {
+          const seconds = Math.min(MAX_EVENT_WAIT_SECONDS, Math.floor(Math.min(remaining, untilFallback) / 1000));
+          if (seconds < 1) {
+            if (remaining < 1000) {
+              return { kind: 'timeout', events: seen, pr: summary, source };
+            }
+            await sleep(untilFallback);
           } else {
-            wake = response.events.some((event) => isRelevant(event));
+            try {
+              const response = await fetchPrEvents({
+                baseUrl: options.eventsUrl as string,
+                repo: options.repo,
+                ...relayParams(),
+                after,
+                waitSeconds: seconds,
+                fetchFn: deps.fetchFn,
+              });
+              const restarted = response.latest_seq < after;
+              wake = response.events.some((event) => isRelevant(event));
+              after = response.latest_seq;
+              if (!restarted && !wake && now() - lastCheck < fallbackMs) {
+                continue;
+              }
+              wake = wake && !restarted;
+            } catch (error) {
+              log(`gh-watcher: event source failed (${describe(error)}), polling for the rest of the wait`);
+              source = 'poll';
+              continue;
+            }
           }
-          after = response.latest_seq;
-        } catch (error) {
-          log(`gh-watcher: event source failed (${describe(error)}), polling for the rest of the wait`);
-          source = 'poll';
-          continue;
         }
-        if (!wake && now() - lastCheck < fallbackMs) {
-          continue;
-        }
+      }
+      if (now() > deadline) {
+        return { kind: 'timeout', events: seen, pr: summary, source };
       }
       const result = await check();
       lastCheck = now();
       if (result !== undefined) {
         return result;
       }
+      lagRecheck = wake && lastEventCount === 0;
     }
   } catch (error) {
     if (error instanceof RateLimitTimeoutError) {

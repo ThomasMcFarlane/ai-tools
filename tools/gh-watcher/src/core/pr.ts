@@ -1,5 +1,5 @@
 import { PR_EVENT_KINDS } from './types.js';
-import type { PrEvent, PrEventKind, PrLastState, PrReview, PrSnapshot, PrSummary } from './types.js';
+import type { PrEvent, PrEventKind, PrLastState, PrReview, PrReviewComment, PrSnapshot, PrSummary } from './types.js';
 
 /** The part of a snapshot a diff needs; a full snapshot satisfies it. */
 export interface PrDiffBase {
@@ -150,9 +150,18 @@ export function toLastState(snapshot: PrSnapshot): PrLastState {
     isDraft: snapshot.isDraft,
     headSha: snapshot.headSha,
     reviewDecision: snapshot.reviewDecision,
+    ...(snapshot.updatedAt !== undefined ? { updatedAt: snapshot.updatedAt } : {}),
     commentIds: snapshot.comments.map((item) => item.id),
     reviewIds: snapshot.reviews.map((item) => item.id),
     reviewCommentIds: snapshot.reviewComments.map((item) => item.id),
+  };
+}
+
+/** Stand-ins for the stored inline comment ids, enough to skip refetching an unchanged list. */
+export function lastStateToReuse(last: PrLastState): { updatedAt?: string; reviewComments: PrReviewComment[] } {
+  return {
+    ...(last.updatedAt !== undefined ? { updatedAt: last.updatedAt } : {}),
+    reviewComments: last.reviewCommentIds.map((id) => ({ id, author: '', createdAt: '', url: '' })),
   };
 }
 

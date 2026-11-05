@@ -1,7 +1,7 @@
 import { fireHook, type HookEvent, type HookResult } from '@ai-tools/hooks';
 import { aggregateState, GhClient, runsKey } from './gh.js';
 import { appendEvent, loadState, saveState } from './store.js';
-import { describePrEvent, diffPr, lastStateToBase, summarisePr, toLastState } from './pr.js';
+import { describePrEvent, diffPr, lastStateToBase, lastStateToReuse, summarisePr, toLastState } from './pr.js';
 import { targetKey } from './types.js';
 import type {
   CheckReport,
@@ -92,12 +92,14 @@ async function checkPr(spec: GhWatchSpec, last: PrLastState | null | undefined, 
   if (number === undefined) {
     return { matched: [], next: last === undefined ? null : last };
   }
-  const snapshot = await client.prSnapshot(spec.repo, number);
+  const sameNumber = last !== null && last !== undefined && last.number === number;
+  const snapshot = await client.prSnapshot(spec.repo, number, sameNumber ? lastStateToReuse(last) : undefined);
   const next = toLastState(snapshot);
   if (last === undefined) {
     return { snapshot, matched: [], next };
   }
-  const events = diffPr(last === null ? undefined : lastStateToBase(last), snapshot);
+  const replaced = last !== null && last.number !== snapshot.number;
+  const events = diffPr(last === null || replaced ? undefined : lastStateToBase(last), snapshot);
   return { snapshot, matched: events.filter((event) => wanted.has(event.kind)), next };
 }
 

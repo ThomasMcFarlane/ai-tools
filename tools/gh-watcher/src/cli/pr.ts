@@ -34,12 +34,27 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
+const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
 function resolveRepo(repo: string | undefined): string {
   const value = repo ?? process.env['GH_REPO'];
   if (value === undefined || value.trim().length === 0) {
     return fail('no repository specified (use --repo OWNER/NAME or set GH_REPO)');
   }
+  if (!REPO_PATTERN.test(value) || value.split('/').some((part) => part === '.' || part === '..')) {
+    return fail(`invalid repository "${value}": use OWNER/NAME`);
+  }
   return value;
+}
+
+/** Run option parsing so any failure, including a bad duration, exits 2. */
+function parsing<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    process.exitCode = 2;
+    throw error;
+  }
 }
 
 function parsePrTarget(flags: PrTargetFlags): PrTarget {
@@ -81,9 +96,11 @@ function printSnapshot(snapshot: PrSnapshot, repo: string): void {
 }
 
 async function statusAction(flags: PrTargetFlags): Promise<void> {
-  const repo = resolveRepo(flags.repo);
-  const target = parsePrTarget(flags);
-  const timeoutMs = Math.min(parseDuration(flags.timeout ?? '10m'), MAX_WAIT_TIMEOUT_MS);
+  const { repo, target, timeoutMs } = parsing(() => ({
+    repo: resolveRepo(flags.repo),
+    target: parsePrTarget(flags),
+    timeoutMs: Math.min(parseDuration(flags.timeout ?? '10m'), MAX_WAIT_TIMEOUT_MS),
+  }));
   const client = new GhClient();
   client.setDeadline(Date.now() + timeoutMs);
   let snapshot: PrSnapshot | undefined;
@@ -115,6 +132,10 @@ async function statusAction(flags: PrTargetFlags): Promise<void> {
 }
 
 function buildWaitOptions(flags: PrWaitFlags): { options: PrWaitOptions; timeoutMs: number } {
+  return parsing(() => parseWaitOptions(flags));
+}
+
+function parseWaitOptions(flags: PrWaitFlags): { options: PrWaitOptions; timeoutMs: number } {
   const repo = resolveRepo(flags.repo);
   const target = parsePrTarget(flags);
   let parsed;
@@ -136,6 +157,9 @@ function buildWaitOptions(flags: PrWaitFlags): { options: PrWaitOptions; timeout
     return fail(`invalid --source "${source}": use auto, events or poll`);
   }
   const fallbackMs = parseDuration(flags.fallbackInterval ?? '5m');
+  if (fallbackMs <= 0) {
+    return fail(`invalid fallback interval "${String(flags.fallbackInterval)}": use a positive duration`);
+  }
   return {
     timeoutMs,
     options: {

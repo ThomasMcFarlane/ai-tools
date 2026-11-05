@@ -365,7 +365,7 @@ events have an empty `displayTitle` until the next full `gh` check.
 ### Pull request event mode
 
 `pr wait` and `pr follow` accept `--source auto|events|poll` (default `auto`), `--events-url` and
-`--fallback-interval`, with the same meaning and validation as for `wait`. The relay's
+`--fallback-interval`, with the same meaning and validation as for `wait`. `--interval` and `--fallback-interval` must be positive, and the fallback is never shorter than the poll interval. `--repo` must be `OWNER/NAME` (letters, digits, `_`, `.` and `-`); anything else exits `2`. The relay's
 `workflow_run` endpoint is not used for them: they call `GET <base>/api/prs` (contract below).
 Relay events are only wake-ups; `gh` stays the source of truth.
 

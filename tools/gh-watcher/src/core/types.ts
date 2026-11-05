@@ -116,6 +116,8 @@ export interface PrSnapshot {
   comments: PrComment[];
   reviews: PrReview[];
   reviewComments: PrReviewComment[];
+  /** PR `updatedAt`; lets the next snapshot skip the inline comments call when unchanged. */
+  updatedAt?: string;
   checkedAt: string;
 }
 
@@ -147,6 +149,7 @@ export interface PrLastState {
   isDraft: boolean;
   headSha: string;
   reviewDecision: string | null;
+  updatedAt?: string;
   commentIds: string[];
   reviewIds: string[];
   reviewCommentIds: string[];

@@ -21,6 +21,7 @@ let stateRoot: string;
 let previousEnv: string | undefined;
 let snapshots: Map<number, PrSnapshot>;
 let branchPr: number | undefined;
+let reuseArgs: unknown[];
 let runs: GhRunInfo[];
 const fixedNow = new Date('2026-01-01T00:00:00.000Z');
 
@@ -30,6 +31,7 @@ beforeEach(async () => {
   process.env['AI_TOOLS_GH_WATCHER_STATE_DIR'] = stateRoot;
   snapshots = new Map();
   branchPr = undefined;
+  reuseArgs = [];
   runs = [];
 });
 
@@ -67,7 +69,10 @@ function build(): { deps: EngineDeps; hookCalls: Record<string, unknown>[]; list
   const client = {
     listRuns,
     collectFailures: async () => [],
-    prSnapshot: async (_repo: string, number: number) => snapshots.get(number) as PrSnapshot,
+    prSnapshot: async (_repo: string, number: number, reuse?: unknown) => {
+      reuseArgs.push(reuse);
+      return snapshots.get(number) as PrSnapshot;
+    },
     findPrForBranch: async () => branchPr,
   } as unknown as GhClient;
   const fireHookFn = vi.fn(async (_hook: HookConfig, event: HookEvent): Promise<HookResult> => {
@@ -198,6 +203,42 @@ describe('checkWatch with pull request events', () => {
     expect(hookCalls).toHaveLength(2);
     expect(hookCalls[1]?.['state']).toBeUndefined();
     expect(hookCalls[1]?.['prEvents']).toBeDefined();
+  });
+});
+
+describe('branch watches across pull requests', () => {
+  it('treats a new pull request on the same branch as new and fires only opened', async () => {
+    const { deps, hookCalls } = build();
+    const spec = prSpec({ target: { kind: 'branch', branch: 'feature' }, prEvents: ['opened', 'merged', 'closed', 'comment'] });
+    branchPr = 5;
+    snapshots.set(5, snap({ number: 5, state: 'OPEN' }));
+    await checkWatch(spec, deps);
+    branchPr = 6;
+    snapshots.set(
+      6,
+      snap({
+        number: 6,
+        headSha: 'c'.repeat(40),
+        comments: [{ id: 'c1', author: 'alice', createdAt: '2026-01-01T12:00:00Z', url: 'u' }],
+      }),
+    );
+    const event = await checkWatch(spec, deps);
+    expect(event.prEvents?.map((item) => item.kind)).toEqual(['opened']);
+    expect(hookCalls).toHaveLength(1);
+    expect((await loadState()).watchers[0]?.lastPr?.number).toBe(6);
+    const again = await checkWatch(spec, deps);
+    expect(again.fired).toBe(false);
+  });
+});
+
+describe('snapshot reuse', () => {
+  it('passes the stored updatedAt and inline comment ids for the same pull request only', async () => {
+    snapshots.set(5, snap({ updatedAt: '2026-01-01T00:00:00Z', reviewComments: [{ id: '9', author: 'a', createdAt: 't', url: 'u' }] }));
+    const { deps } = build();
+    await checkWatch(prSpec(), deps);
+    await checkWatch(prSpec(), deps);
+    expect(reuseArgs[0]).toBeUndefined();
+    expect(reuseArgs[1]).toMatchObject({ updatedAt: '2026-01-01T00:00:00Z', reviewComments: [{ id: '9' }] });
   });
 });
 

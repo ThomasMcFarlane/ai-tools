@@ -17,7 +17,7 @@ import type {
 const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
 const DETAILED_RUN_FIELDS = `${RUN_FIELDS},startedAt,updatedAt,attempt`;
 const PR_FIELDS =
-  'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews';
+  'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews,updatedAt';
 const REVIEW_COMMENT_JQ =
   '.[] | {id: .id, author: .user.login, createdAt: .created_at, path: .path, url: .html_url}';
 
@@ -46,6 +46,12 @@ function applyDeadline(exec: GhExec, deadline: number | undefined): void {
 
 function applySignal(exec: GhExec, signal: AbortSignal | undefined): void {
   (exec as QueuedExec).setSignal?.(signal);
+}
+
+/** What a previous snapshot of the same pull request offers for skipping the inline comments call. */
+export interface PrSnapshotReuse {
+  updatedAt?: string;
+  reviewComments: PrReviewComment[];
 }
 
 export interface GhClientOptions {
@@ -182,7 +188,7 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function normalisePr(raw: unknown, reviewComments: unknown[], checkedAt: string): PrSnapshot {
+function normalisePr(raw: unknown, reviewComments: PrReviewComment[], checkedAt: string): PrSnapshot {
   const record = (raw ?? {}) as Record<string, unknown>;
   const snapshot: PrSnapshot = {
     number: Number(record['number']),
@@ -197,7 +203,7 @@ function normalisePr(raw: unknown, reviewComments: unknown[], checkedAt: string)
     reviews: asArray(record['reviews'])
       .map((item) => normalisePrReview(item))
       .filter((review) => review.state !== 'PENDING'),
-    reviewComments: reviewComments.map((item) => normalisePrReviewComment(item)),
+    reviewComments,
     checkedAt,
   };
   if (text(record['mergedAt']).length > 0) {
@@ -205,6 +211,9 @@ function normalisePr(raw: unknown, reviewComments: unknown[], checkedAt: string)
   }
   if (text(record['closedAt']).length > 0) {
     snapshot.closedAt = text(record['closedAt']);
+  }
+  if (text(record['updatedAt']).length > 0) {
+    snapshot.updatedAt = text(record['updatedAt']);
   }
   return snapshot;
 }
@@ -320,13 +329,26 @@ export class GhClient {
     applySignal(this.exec, signal);
   }
 
-  /** One pull request with its comments, reviews and inline review comments. */
-  async prSnapshot(repo: string, number: number): Promise<PrSnapshot> {
+  /**
+   * One pull request with its comments, reviews and inline review comments. When `reuse` carries the
+   * same `updatedAt`, the paginated inline comments call is skipped and `reuse.reviewComments` kept.
+   */
+  async prSnapshot(repo: string, number: number, reuse?: PrSnapshotReuse): Promise<PrSnapshot> {
     const view = await this.exec(['pr', 'view', String(number), '--repo', repo, '--json', PR_FIELDS]);
     assertOk(view, `pr view ${number}`);
-    const inline = await this.exec(['api', `repos/${repo}/pulls/${number}/comments`, '--paginate', '--jq', REVIEW_COMMENT_JQ]);
-    assertOk(inline, `api pulls/${number}/comments`);
-    return normalisePr(parseJson(view.stdout), parseJsonLines(inline.stdout, `api pulls/${number}/comments`), this.now().toISOString());
+    const raw = parseJson<Record<string, unknown>>(view.stdout);
+    const updatedAt = text(raw['updatedAt']);
+    let reviewComments: PrReviewComment[];
+    if (reuse?.updatedAt !== undefined && updatedAt.length > 0 && reuse.updatedAt === updatedAt) {
+      reviewComments = reuse.reviewComments;
+    } else {
+      const inline = await this.exec(['api', `repos/${repo}/pulls/${number}/comments`, '--paginate', '--jq', REVIEW_COMMENT_JQ]);
+      assertOk(inline, `api pulls/${number}/comments`);
+      reviewComments = parseJsonLines(inline.stdout, `api pulls/${number}/comments`).map((item) =>
+        normalisePrReviewComment(item),
+      );
+    }
+    return normalisePr(raw, reviewComments, this.now().toISOString());
   }
 
   /** Newest pull request (any state) whose head branch is `branch`; undefined when there is none. */

@@ -293,6 +293,61 @@ describe('pr wait in event mode', () => {
   });
 });
 
+describe('pr wait timing in event mode', () => {
+  it('clamps the fallback interval to the poll interval', async () => {
+    const e = env([snap()], [{ latest_seq: 1 }, { latest_seq: 1, advanceMs: 25_000 }]);
+    await waitForPrEvent(options({ fallbackMs: 1, intervalMs: 60_000, timeoutMs: 30_000 }), deps(e));
+    expect(e.urls[1]?.searchParams.get('wait')).toBe('25');
+  });
+
+  it('floors the long-poll to the remaining time', async () => {
+    const e = env([snap()], [{ latest_seq: 1 }, { latest_seq: 1, advanceMs: 10_000 }]);
+    await waitForPrEvent(options({ timeoutMs: 10_500, fallbackMs: 1_000_000 }), deps(e));
+    expect(e.urls[1]?.searchParams.get('wait')).toBe('9');
+  });
+
+  it('does not long-poll when under a second remains', async () => {
+    const e = env([snap()], [{ latest_seq: 1 }]);
+    const result = await waitForPrEvent(options({ timeoutMs: 900 }), deps(e));
+    expect(result.kind).toBe('timeout');
+    expect(e.urls).toHaveLength(1);
+  });
+
+  it('runs no gh check after the deadline', async () => {
+    const e = env(
+      [snap(), MERGED],
+      [{ latest_seq: 1 }, { latest_seq: 2, advanceMs: 20_000, events: [{ seq: 2, pr: 5 }] }],
+    );
+    const result = await waitForPrEvent(options({ timeoutMs: 10_000 }), deps(e));
+    expect(result.kind).toBe('timeout');
+    expect(e.snapshotCalls()).toBe(1);
+  });
+
+  it('re-checks once after the interval when gh lags behind a relay wake', async () => {
+    const e = env(
+      [snap(), snap(), MERGED],
+      [{ latest_seq: 1 }, { latest_seq: 2, events: [{ seq: 2, pr: 5 }] }],
+    );
+    const result = await waitForPrEvent(options({ intervalMs: 7000 }), deps(e));
+    expect(result.kind).toBe('matched');
+    expect(result.source).toBe('events');
+    expect(e.sleeps).toEqual([7000]);
+    expect(e.urls).toHaveLength(2);
+    expect(e.snapshotCalls()).toBe(3);
+  });
+
+  it('goes back to the long-poll when the lag re-check finds nothing', async () => {
+    const e = env(
+      [snap()],
+      [{ latest_seq: 1 }, { latest_seq: 2, events: [{ seq: 2, pr: 5 }] }, { latest_seq: 2, advanceMs: 600_000 }],
+    );
+    const result = await waitForPrEvent(options({ intervalMs: 7000, timeoutMs: 100_000 }), deps(e));
+    expect(result.kind).toBe('timeout');
+    expect(e.sleeps).toEqual([7000]);
+    expect(e.urls).toHaveLength(3);
+  });
+});
+
 describe('parsePrEventsResponse', () => {
   it('defaults the flags and rejects malformed bodies', () => {
     expect(parsePrEventsResponse({ latest_seq: 1, events: [] })).toMatchObject({
@@ -326,6 +381,42 @@ describe('pr wait flags', () => {
       await run(['node', 'gh-watcher', 'pr', command, '--repo', 'octo-org/hello-world', '--pr', '5', '--source', 'events']);
       expect(process.exitCode).toBe(2);
     }
+  });
+
+  it.each([
+    [['--interval', 'abc'], /invalid duration/],
+    [['--interval', '0'], /invalid interval/],
+    [['--fallback-interval', '0'], /invalid fallback interval/],
+    [['--fallback-interval', 'x'], /invalid duration/],
+    [['--timeout', 'soon'], /invalid duration/],
+  ] as const)('exits 2 for bad duration flags %j', async (flags, message) => {
+    for (const command of ['wait', 'follow']) {
+      process.exitCode = undefined;
+      await expect(
+        run(['node', 'gh-watcher', 'pr', command, '--repo', 'octo-org/hello-world', '--pr', '5', ...flags]),
+      ).rejects.toThrow(message);
+      expect(process.exitCode).toBe(2);
+    }
+  });
+
+  it.each(['octo-org', 'octo-org/hello/world', '../hello-world', 'octo-org/..', 'octo org/hello', '-x;rm/y z'])(
+    'exits 2 for invalid repository %s',
+    async (repo) => {
+      for (const command of ['status', 'wait', 'follow']) {
+        process.exitCode = undefined;
+        await expect(run(['node', 'gh-watcher', 'pr', command, '--repo', repo, '--pr', '5'])).rejects.toThrow(
+          /invalid repository/,
+        );
+        expect(process.exitCode).toBe(2);
+      }
+    },
+  );
+
+  it('exits 2 for a bad status timeout', async () => {
+    await expect(
+      run(['node', 'gh-watcher', 'pr', 'status', '--repo', 'octo-org/hello-world', '--pr', '5', '--timeout', 'soon']),
+    ).rejects.toThrow(/invalid duration/);
+    expect(process.exitCode).toBe(2);
   });
 
   it('exits 2 for an invalid --source', async () => {
