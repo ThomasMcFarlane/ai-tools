@@ -61,6 +61,100 @@ export interface CheckReport {
 
 export type Trigger = 'failure' | 'success';
 
+export const PR_EVENT_KINDS = [
+  'opened',
+  'reopened',
+  'closed',
+  'merged',
+  'draft',
+  'ready',
+  'comment',
+  'review',
+  'review_comment',
+  'push',
+  'review_decision',
+] as const;
+
+export type PrEventKind = (typeof PR_EVENT_KINDS)[number];
+
+export type PrState = 'OPEN' | 'CLOSED' | 'MERGED';
+
+export interface PrComment {
+  id: string;
+  author: string;
+  createdAt: string;
+  url: string;
+}
+
+export interface PrReview {
+  id: string;
+  author: string;
+  state: string;
+  submittedAt: string;
+  url?: string;
+}
+
+export interface PrReviewComment {
+  id: string;
+  author: string;
+  createdAt: string;
+  path?: string;
+  url: string;
+}
+
+export interface PrSnapshot {
+  number: number;
+  url: string;
+  title: string;
+  state: PrState;
+  isDraft: boolean;
+  headSha: string;
+  headRef: string;
+  reviewDecision: string | null;
+  mergedAt?: string;
+  closedAt?: string;
+  comments: PrComment[];
+  reviews: PrReview[];
+  reviewComments: PrReviewComment[];
+  /** PR `updatedAt`; lets the next snapshot skip the inline comments call when unchanged. */
+  updatedAt?: string;
+  checkedAt: string;
+}
+
+export interface PrSummary {
+  number: number;
+  url: string;
+  state: PrState;
+  isDraft: boolean;
+  headSha: string;
+  reviewDecision: string | null;
+}
+
+export interface PrEvent {
+  kind: PrEventKind;
+  at: string;
+  author?: string;
+  url?: string;
+  path?: string;
+  reviewState?: string;
+  from?: string | null;
+  to?: string | null;
+  initial?: boolean;
+}
+
+/** What a persistent watch remembers about a pull request between checks. */
+export interface PrLastState {
+  number: number;
+  state: PrState;
+  isDraft: boolean;
+  headSha: string;
+  reviewDecision: string | null;
+  updatedAt?: string;
+  commentIds: string[];
+  reviewIds: string[];
+  reviewCommentIds: string[];
+}
+
 export interface GhWatchSpec {
   name: string;
   repo: string;
@@ -73,6 +167,10 @@ export interface GhWatchSpec {
   lastFiredAt?: string;
   lastState?: CheckState;
   lastRunsKey?: string;
+  /** Pull request event kinds to fire on; absent for CI-only watches. */
+  prEvents?: PrEventKind[];
+  /** Pull request seen at the last check; null when the target had no pull request, absent before the first check. */
+  lastPr?: PrLastState | null;
 }
 
 export interface GhEvent {
@@ -85,6 +183,7 @@ export interface GhEvent {
   checkedAt: string;
   fired: boolean;
   error?: string;
+  prEvents?: PrEvent[];
 }
 
 export interface GhWatcherState {

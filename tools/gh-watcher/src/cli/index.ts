@@ -12,6 +12,7 @@ import type { CheckReport, CheckState, FailedStep, GhWatchSpec, WatchTarget } fr
 import { formatDuration, parseDuration } from './duration.js';
 import { printJson, printTable } from './output.js';
 import { parseNumberOption, parseTargetFlagsOrExit, type TargetFlags } from './target.js';
+import { registerPrCommands } from './pr.js';
 import { registerWatchCommands } from './watch.js';
 
 const MAX_WAIT_TIMEOUT_MS = 24 * 3_600_000;
@@ -236,6 +237,7 @@ function buildProgram(): Command {
     .action(async (opts) => {
       await followAction(opts as WaitFlags);
     });
+  registerPrCommands(p);
   registerWatchCommands(p);
   return p;
 }

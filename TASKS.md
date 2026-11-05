@@ -51,3 +51,11 @@ ETA: 2026-11-02 01:58 ICT
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 16 | Inline image viewer mod | done | claude | image-view | | 2026-11-02 01:58 ICT | New mod mods/image-view: a docked pane for the latest image plus a chat item per image<br>Shows images Claude reads (png, jpg, jpeg, gif, webp) and `/image <path>`<br>PNG goes to Image as is; other formats via ffmpeg or ImageMagick<br>validate passes; claude plugin test 10 pass; Live draw proven in plain kitty over SSH; blank inside herdr 0.9.5 (Unicode placeholders, herdr bug) |
+
+## 7. gh-watcher pull request events
+ETA: 2026-11-05 22:00 ICT
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| 17 | Watch PR events: draft/ready, merged, closed, opened, comments, reviews | in_progress | claude | gh-watcher-pr-events | | 2026-11-05 21:00 ICT | pr status, pr wait, pr follow; PR kinds in watch add --on<br>Event mode via relay /api/prs (needs the four PR events subscribed); falls back to polling |
+| 18 | Release gh-watcher 0.4.0 and install it on hq0 | todo | claude | | 7.17 | 2026-11-05 22:00 ICT | |

@@ -1,9 +1,25 @@
 import { spawn } from 'node:child_process';
 import { createQueuedExec, queueDisabled, RateLimitTimeoutError, type QueuedExec } from './queue.js';
-import type { CheckState, FailedStep, GhJobInfo, GhRunInfo, GhStepInfo, WatchTarget } from './types.js';
+import type {
+  CheckState,
+  FailedStep,
+  GhJobInfo,
+  GhRunInfo,
+  GhStepInfo,
+  PrComment,
+  PrReview,
+  PrReviewComment,
+  PrSnapshot,
+  PrState,
+  WatchTarget,
+} from './types.js';
 
 const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
 const DETAILED_RUN_FIELDS = `${RUN_FIELDS},startedAt,updatedAt,attempt`;
+const PR_FIELDS =
+  'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews,updatedAt';
+const REVIEW_COMMENT_JQ =
+  '.[] | {id: .id, author: .user.login, createdAt: .created_at, path: .path, url: .html_url}';
 
 export const FAILURE_CONCLUSIONS: readonly string[] = [
   'failure',
@@ -32,11 +48,19 @@ function applySignal(exec: GhExec, signal: AbortSignal | undefined): void {
   (exec as QueuedExec).setSignal?.(signal);
 }
 
+/** What a previous snapshot of the same pull request offers for skipping the inline comments call. */
+export interface PrSnapshotReuse {
+  updatedAt?: string;
+  reviewComments: PrReviewComment[];
+}
+
 export interface GhClientOptions {
   ghBin?: string;
   exec?: GhExec;
   /** Also request startedAt, updatedAt and attempt for each run. */
   detailedRuns?: boolean;
+  /** Clock for snapshot timestamps; defaults to the system clock. */
+  now?: () => Date;
 }
 
 /** A hung gh call must not hold queue locks for ever. */
@@ -106,6 +130,108 @@ function normaliseRun(raw: unknown): GhRunInfo {
     run.attempt = Number(record.attempt);
   }
   return run;
+}
+
+function loginOf(raw: unknown): string {
+  const record = (raw ?? {}) as { login?: unknown };
+  return typeof record.login === 'string' ? record.login : '';
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function normalisePrState(value: unknown): PrState {
+  const upper = text(value).toUpperCase();
+  return upper === 'MERGED' || upper === 'CLOSED' ? upper : 'OPEN';
+}
+
+function normalisePrComment(raw: unknown): PrComment {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: String(record['id'] ?? ''),
+    author: loginOf(record['author']),
+    createdAt: text(record['createdAt']),
+    url: text(record['url']),
+  };
+}
+
+function normalisePrReview(raw: unknown): PrReview {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const review: PrReview = {
+    id: String(record['id'] ?? ''),
+    author: loginOf(record['author']),
+    state: text(record['state']).toUpperCase(),
+    submittedAt: text(record['submittedAt']),
+  };
+  if (typeof record['url'] === 'string' && record['url'].length > 0) {
+    review.url = record['url'];
+  }
+  return review;
+}
+
+function normalisePrReviewComment(raw: unknown): PrReviewComment {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const comment: PrReviewComment = {
+    id: String(record['id'] ?? ''),
+    author: typeof record['author'] === 'string' ? record['author'] : loginOf(record['author']),
+    createdAt: text(record['createdAt']),
+    url: text(record['url']),
+  };
+  if (typeof record['path'] === 'string' && record['path'].length > 0) {
+    comment.path = record['path'];
+  }
+  return comment;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalisePr(raw: unknown, reviewComments: PrReviewComment[], checkedAt: string): PrSnapshot {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const snapshot: PrSnapshot = {
+    number: Number(record['number']),
+    url: text(record['url']),
+    title: text(record['title']),
+    state: normalisePrState(record['state']),
+    isDraft: record['isDraft'] === true,
+    headSha: text(record['headRefOid']),
+    headRef: text(record['headRefName']),
+    reviewDecision: text(record['reviewDecision']).length > 0 ? text(record['reviewDecision']) : null,
+    comments: asArray(record['comments']).map((item) => normalisePrComment(item)),
+    reviews: asArray(record['reviews'])
+      .map((item) => normalisePrReview(item))
+      .filter((review) => review.state !== 'PENDING'),
+    reviewComments,
+    checkedAt,
+  };
+  if (text(record['mergedAt']).length > 0) {
+    snapshot.mergedAt = text(record['mergedAt']);
+  }
+  if (text(record['closedAt']).length > 0) {
+    snapshot.closedAt = text(record['closedAt']);
+  }
+  if (text(record['updatedAt']).length > 0) {
+    snapshot.updatedAt = text(record['updatedAt']);
+  }
+  return snapshot;
+}
+
+function parseJsonLines(stdout: string, context: string): unknown[] {
+  const items: unknown[] = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    try {
+      items.push(JSON.parse(trimmed));
+    } catch {
+      throw new Error(`gh ${context} returned malformed output`);
+    }
+  }
+  return items;
 }
 
 function normaliseStep(raw: unknown): GhStepInfo {
@@ -183,12 +309,14 @@ function newestCommitRuns(runs: GhRunInfo[]): GhRunInfo[] {
 export class GhClient {
   private readonly exec: GhExec;
   private readonly runFields: string;
+  private readonly now: () => Date;
 
   constructor(options?: GhClientOptions) {
     this.exec =
       options?.exec ??
       (queueDisabled() ? spawnGh(options?.ghBin ?? 'gh') : createQueuedExec(spawnGh(options?.ghBin ?? 'gh')));
     this.runFields = options?.detailedRuns === true ? DETAILED_RUN_FIELDS : RUN_FIELDS;
+    this.now = options?.now ?? (() => new Date());
   }
 
   /** Bound any rate-limit wait by an absolute deadline (epoch ms); undefined lifts the bound. */
@@ -199,6 +327,60 @@ export class GhClient {
   /** Make queued rate-limit sleeps and lock waits end promptly when the signal aborts. */
   setSignal(signal: AbortSignal | undefined): void {
     applySignal(this.exec, signal);
+  }
+
+  /**
+   * One pull request with its comments, reviews and inline review comments. When `reuse` carries the
+   * same `updatedAt`, the paginated inline comments call is skipped and `reuse.reviewComments` kept.
+   */
+  async prSnapshot(repo: string, number: number, reuse?: PrSnapshotReuse): Promise<PrSnapshot> {
+    const view = await this.exec(['pr', 'view', String(number), '--repo', repo, '--json', PR_FIELDS]);
+    assertOk(view, `pr view ${number}`);
+    const raw = parseJson<Record<string, unknown>>(view.stdout);
+    const updatedAt = text(raw['updatedAt']);
+    let reviewComments: PrReviewComment[];
+    if (reuse?.updatedAt !== undefined && updatedAt.length > 0 && reuse.updatedAt === updatedAt) {
+      reviewComments = reuse.reviewComments;
+    } else {
+      const inline = await this.exec(['api', `repos/${repo}/pulls/${number}/comments`, '--paginate', '--jq', REVIEW_COMMENT_JQ]);
+      assertOk(inline, `api pulls/${number}/comments`);
+      reviewComments = parseJsonLines(inline.stdout, `api pulls/${number}/comments`).map((item) =>
+        normalisePrReviewComment(item),
+      );
+    }
+    return normalisePr(raw, reviewComments, this.now().toISOString());
+  }
+
+  /** Newest pull request (any state) whose head branch is `branch`; undefined when there is none. */
+  async findPrForBranch(repo: string, branch: string): Promise<number | undefined> {
+    const result = await this.exec([
+      'pr',
+      'list',
+      '--repo',
+      repo,
+      '--head',
+      branch,
+      '--state',
+      'all',
+      '--limit',
+      '5',
+      '--json',
+      'number,createdAt',
+    ]);
+    assertOk(result, `pr list ${branch}`);
+    let newest: { number: number; createdAt: string } | undefined;
+    for (const item of asArray(parseJson<unknown>(result.stdout))) {
+      const record = (item ?? {}) as Record<string, unknown>;
+      const number = Number(record['number']);
+      if (!Number.isInteger(number) || number <= 0) {
+        continue;
+      }
+      const createdAt = text(record['createdAt']);
+      if (newest === undefined || createdAt > newest.createdAt || (createdAt === newest.createdAt && number > newest.number)) {
+        newest = { number, createdAt };
+      }
+    }
+    return newest?.number;
   }
 
   async listRuns(repo: string, target: WatchTarget): Promise<GhRunInfo[]> {
