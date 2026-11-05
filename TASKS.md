@@ -57,5 +57,5 @@ ETA: 2026-11-05 22:00 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 17 | Watch PR events: draft/ready, merged, closed, opened, comments, reviews | in_progress | claude | gh-watcher-pr-events | | 2026-11-05 21:00 ICT | pr status, pr wait, pr follow; PR kinds in watch add --on<br>Event mode via relay /api/prs (needs the four PR events subscribed); falls back to polling |
-| 18 | Release gh-watcher 0.4.0 and install it on hq0 | todo | claude | | 7.17 | 2026-11-05 22:00 ICT | |
+| 17 | Watch PR events: draft/ready, merged, closed, opened, comments, reviews | done | claude | gh-watcher-pr-events | | 2026-11-05 21:00 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/80 (0e51843)<br>238 tests; event mode via relay /api/prs with poll fallback |
+| 18 | Release gh-watcher 0.4.0 and install it on hq0 | blocked_on_owner | Thomas | | 7.17 | 2026-11-05 22:00 ICT | Owner runs: `gh workflow run release.yml -R ThomasMcFarlane/ai-tools --ref main -f tool=gh-watcher -f version=0.4.0`<br>Agent then installs on hq0 |
