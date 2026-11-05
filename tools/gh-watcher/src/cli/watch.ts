@@ -1,12 +1,16 @@
 import type { Command } from 'commander';
 import { checkWatchManual, describeEvent, runDaemon } from '../core/engine.js';
 import { getWatcher, loadState, readEvents, removeWatcher, upsertWatcher } from '../core/store.js';
+import { PR_EVENT_KINDS } from '../core/types.js';
+import { isPrEventKind } from '../core/pr.js';
 import {
   targetKey,
   type GhEvent,
   type GhWatchSpec,
   type GhWatcherState,
   type HookConfig,
+  type PrEventKind,
+  type WatchTarget,
 } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
 import { printJson, printTable } from './output.js';
@@ -14,7 +18,6 @@ import { parseNumberOption, parseTargetFlagsOrExit } from './target.js';
 
 const HOOK_USAGE =
   'use none, exec:<command>, webhook:<url>, file:<path>, notify:claude, notify:codex or notify:opencode';
-const ON_VALUES: readonly string[] = ['failure', 'success', 'complete'];
 
 interface AddFlags {
   repo: string;
@@ -89,23 +92,61 @@ function describeHook(hook: HookConfig): string {
   }
 }
 
-function triggersFor(on: string): { failure: boolean; success: boolean } {
-  if (on === 'failure') {
-    return { failure: true, success: false };
-  }
-  if (on === 'success') {
-    return { failure: false, success: true };
-  }
-  return { failure: true, success: true };
+export interface ParsedOn {
+  triggers: { failure: boolean; success: boolean };
+  prEvents?: PrEventKind[];
 }
 
-function describeTriggers(triggers: { failure: boolean; success: boolean }): string {
+/** Parse a comma-separated `--on` list mixing CI triggers and pull request event kinds. */
+export function parseOn(on: string, target: WatchTarget): ParsedOn {
+  const usage = `use failure, success, complete, any or pull request kinds (${PR_EVENT_KINDS.join(', ')}), comma-separated`;
+  const tokens = on
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
+    throw new Error(`invalid value "${on}" for --on: ${usage}`);
+  }
+  const triggers = { failure: false, success: false };
+  const prEvents: PrEventKind[] = [];
+  for (const token of tokens) {
+    if (token === 'failure') {
+      triggers.failure = true;
+    } else if (token === 'success') {
+      triggers.success = true;
+    } else if (token === 'complete') {
+      triggers.failure = true;
+      triggers.success = true;
+    } else if (token === 'any') {
+      prEvents.push(...PR_EVENT_KINDS.filter((kind) => !prEvents.includes(kind)));
+    } else if (isPrEventKind(token)) {
+      if (!prEvents.includes(token)) {
+        prEvents.push(token);
+      }
+    } else {
+      throw new Error(`invalid value "${token}" for --on: ${usage}`);
+    }
+  }
+  if (prEvents.length === 0) {
+    return { triggers };
+  }
+  if (target.kind !== 'pr' && target.kind !== 'branch') {
+    throw new Error('pull request events in --on need a --pr or --branch target');
+  }
+  return { triggers, prEvents };
+}
+
+function describeTriggers(spec: GhWatchSpec): string {
   const parts: string[] = [];
-  if (triggers.failure) {
+  if (spec.triggers.failure) {
     parts.push('failure');
   }
-  if (triggers.success) {
+  if (spec.triggers.success) {
     parts.push('success');
+  }
+  const kinds = spec.prEvents ?? [];
+  if (kinds.length > 0) {
+    parts.push(`pr:${kinds.length === PR_EVENT_KINDS.length ? 'any' : kinds.join(',')}`);
   }
   return parts.length > 0 ? parts.join('+') : 'none';
 }
@@ -129,9 +170,12 @@ function selectedNames(state: GhWatcherState, names: string[]): string[] {
 
 async function addAction(name: string, flags: AddFlags): Promise<void> {
   const target = parseTargetFlagsOrExit(flags);
-  const on = flags.on ?? 'complete';
-  if (!ON_VALUES.includes(on)) {
-    throw new Error(`invalid value "${on}" for --on: use failure, success or complete`);
+  let parsedOn: ParsedOn;
+  try {
+    parsedOn = parseOn(flags.on ?? 'complete', target);
+  } catch (error) {
+    process.exitCode = 2;
+    throw error;
   }
   const hook = parseHookSpec(flags.hook ?? 'none');
   const intervalMs = parseDuration(flags.interval ?? '60s');
@@ -147,11 +191,14 @@ async function addAction(name: string, flags: AddFlags): Promise<void> {
     name,
     repo: flags.repo,
     target,
-    triggers: triggersFor(on),
+    triggers: parsedOn.triggers,
     hook,
     intervalSeconds: intervalMs / 1000,
     createdAt: new Date().toISOString(),
   };
+  if (parsedOn.prEvents !== undefined) {
+    spec.prEvents = parsedOn.prEvents;
+  }
   await upsertWatcher(spec);
   if (flags.json) {
     printJson(spec);
@@ -162,7 +209,7 @@ async function addAction(name: string, flags: AddFlags): Promise<void> {
     ['name', spec.name],
     ['repo', spec.repo],
     ['target', targetKey(spec.target)],
-    ['triggers', describeTriggers(spec.triggers)],
+    ['triggers', describeTriggers(spec)],
     ['interval', formatDuration(spec.intervalSeconds * 1000)],
     ['hook', describeHook(spec.hook)],
   ]);
@@ -180,7 +227,7 @@ async function listAction(flags: ListFlags): Promise<void> {
       spec.name,
       spec.repo,
       targetKey(spec.target),
-      describeTriggers(spec.triggers),
+      describeTriggers(spec),
       formatDuration(spec.intervalSeconds * 1000),
       describeHook(spec.hook),
       spec.lastCheckedAt ?? '-',
@@ -272,7 +319,7 @@ export function registerWatchCommands(program: Command): void {
     .option('--branch <name>', 'watch runs for this branch')
     .option('--commit <sha>', 'watch runs for this commit')
     .option('--run <id>', 'watch this run', parseNumberOption)
-    .option('--on <event>', 'fire on failure, success or complete (any terminal state)', 'complete')
+    .option('--on <event>', 'comma-separated: failure, success, complete (any terminal state), any, or pull request kinds (opened, reopened, closed, merged, draft, ready, comment, review, review_comment, push, review_decision); pull request kinds need --pr or --branch', 'complete')
     .option('--interval <duration>', 'poll interval', '60s')
     .option('--hook <spec>', `hook: ${HOOK_USAGE}`, 'none')
     .option('--json', 'emit the saved spec as JSON', false)

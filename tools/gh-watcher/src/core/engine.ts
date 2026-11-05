@@ -1,8 +1,19 @@
-import { fireHook, type HookResult } from '@ai-tools/hooks';
+import { fireHook, type HookEvent, type HookResult } from '@ai-tools/hooks';
 import { aggregateState, GhClient, runsKey } from './gh.js';
 import { appendEvent, loadState, saveState } from './store.js';
+import { describePrEvent, diffPr, lastStateToBase, summarisePr, toLastState } from './pr.js';
 import { targetKey } from './types.js';
-import type { CheckReport, CheckState, FailedStep, GhEvent, GhWatchSpec, GhWatcherState } from './types.js';
+import type {
+  CheckReport,
+  CheckState,
+  FailedStep,
+  GhEvent,
+  GhWatchSpec,
+  GhWatcherState,
+  PrEvent,
+  PrLastState,
+  PrSnapshot,
+} from './types.js';
 
 export interface EngineDeps {
   client?: GhClient;
@@ -36,6 +47,11 @@ function syncSpec(target: GhWatchSpec, spec: GhWatchSpec): void {
   target.hook = spec.hook;
   target.intervalSeconds = spec.intervalSeconds;
   target.createdAt = spec.createdAt;
+  if (spec.prEvents === undefined) {
+    delete target.prEvents;
+  } else {
+    target.prEvents = spec.prEvents;
+  }
 }
 
 function summaryLines(repo: string, key: string, state: CheckState, failedSteps: FailedStep[]): string[] {
@@ -50,10 +66,39 @@ function summaryLines(repo: string, key: string, state: CheckState, failedSteps:
 
 export function describeEvent(event: GhEvent): string {
   const lines = summaryLines(event.repo, event.targetKey, event.state, event.failedSteps);
+  for (const prEvent of event.prEvents ?? []) {
+    lines.push(`pr event: ${describePrEvent(prEvent)}`);
+  }
   if (event.error !== undefined) {
     lines.push(`error: ${event.error}`);
   }
   return lines.join('\n');
+}
+
+interface PrCheck {
+  snapshot?: PrSnapshot;
+  matched: PrEvent[];
+  next: PrLastState | null | undefined;
+}
+
+async function checkPr(spec: GhWatchSpec, last: PrLastState | null | undefined, client: GhClient): Promise<PrCheck> {
+  const wanted = new Set(spec.prEvents ?? []);
+  let number: number | undefined;
+  if (spec.target.kind === 'pr') {
+    number = spec.target.number;
+  } else if (spec.target.kind === 'branch') {
+    number = await client.findPrForBranch(spec.repo, spec.target.branch);
+  }
+  if (number === undefined) {
+    return { matched: [], next: last === undefined ? null : last };
+  }
+  const snapshot = await client.prSnapshot(spec.repo, number);
+  const next = toLastState(snapshot);
+  if (last === undefined) {
+    return { snapshot, matched: [], next };
+  }
+  const events = diffPr(last === null ? undefined : lastStateToBase(last), snapshot);
+  return { snapshot, matched: events.filter((event) => wanted.has(event.kind)), next };
 }
 
 export async function collectReport(spec: GhWatchSpec, deps?: EngineDeps): Promise<CheckReport> {
@@ -84,16 +129,31 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
   } else {
     syncSpec(target, spec);
   }
-  const report = await collectReport(spec, deps);
+  const wantsPr = spec.prEvents !== undefined && spec.prEvents.length > 0;
+  const wantsCi = !wantsPr || spec.triggers.failure || spec.triggers.success;
+  const report: CheckReport = wantsCi
+    ? await collectReport(spec, deps)
+    : {
+        repo: spec.repo,
+        target: spec.target,
+        targetKey: targetKey(spec.target),
+        state: 'none',
+        runs: [],
+        failedSteps: [],
+        checkedAt: (deps?.now ?? (() => new Date()))().toISOString(),
+      };
   const key = runsKey(report.runs);
   const last = state.lastFired[spec.name];
   const edgeReset = last !== undefined && last.runsKey !== key;
   const previousState: CheckState = last === undefined || edgeReset ? 'none' : last.state;
   const failureDue =
-    report.state === 'failure' && spec.triggers.failure && (manual || previousState !== 'failure');
+    wantsCi && report.state === 'failure' && spec.triggers.failure && (manual || previousState !== 'failure');
   const successDue =
-    report.state === 'success' && spec.triggers.success && (manual || previousState !== 'success');
-  const shouldFire = failureDue || successDue;
+    wantsCi && report.state === 'success' && spec.triggers.success && (manual || previousState !== 'success');
+  const ciDue = failureDue || successDue;
+  const pr = wantsPr ? await checkPr(spec, target.lastPr, deps?.client ?? new GhClient()) : undefined;
+  const prMatched = pr?.matched ?? [];
+  const shouldFire = ciDue || prMatched.length > 0;
   const event: GhEvent = {
     watch: spec.name,
     repo: spec.repo,
@@ -104,30 +164,53 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
     checkedAt: report.checkedAt,
     fired: false,
   };
+  if (prMatched.length > 0) {
+    event.prEvents = prMatched;
+  }
   if (shouldFire) {
-    const payload = {
-      summary: summaryLines(spec.repo, report.targetKey, report.state, report.failedSteps).join('\n'),
+    const summary = [
+      ...(ciDue ? summaryLines(spec.repo, report.targetKey, report.state, report.failedSteps) : []),
+      ...(pr?.snapshot !== undefined && prMatched.length > 0
+        ? [
+            `gh-watcher: ${spec.repo} ${report.targetKey} PR #${pr.snapshot.number} "${pr.snapshot.title}"`,
+            ...prMatched.map((prEvent) => `- ${describePrEvent(prEvent)}`),
+          ]
+        : []),
+    ].join('\n');
+    const payload: Record<string, unknown> = {
+      summary,
       watch: spec.name,
       repo: spec.repo,
       targetKey: report.targetKey,
-      state: report.state,
-      failedSteps: report.failedSteps,
-      runsCount: report.runs.length,
-      checkedAt: report.checkedAt,
     };
-    const hookResult: HookResult = await fireHookFn(spec.hook, payload);
+    if (ciDue) {
+      payload['state'] = report.state;
+      payload['failedSteps'] = report.failedSteps;
+      payload['runsCount'] = report.runs.length;
+      payload['checkedAt'] = report.checkedAt;
+    }
+    if (pr?.snapshot !== undefined && prMatched.length > 0) {
+      payload['prEvents'] = prMatched;
+      payload['pr'] = summarisePr(pr.snapshot);
+    }
+    const hookResult: HookResult = await fireHookFn(spec.hook, payload as unknown as HookEvent);
     event.fired = hookResult.ok;
     if (!hookResult.ok && hookResult.detail !== undefined) {
       event.error = hookResult.detail;
     }
   }
   target.lastCheckedAt = report.checkedAt;
-  target.lastState = report.state;
-  target.lastRunsKey = key;
+  if (wantsCi) {
+    target.lastState = report.state;
+    target.lastRunsKey = key;
+    state.lastFired[spec.name] = { state: report.state, runsKey: key };
+  }
+  if (pr !== undefined && pr.next !== undefined) {
+    target.lastPr = pr.next;
+  }
   if (event.fired) {
     target.lastFiredAt = report.checkedAt;
   }
-  state.lastFired[spec.name] = { state: report.state, runsKey: key };
   await saveState(state);
   await appendEvent(event);
   return event;
