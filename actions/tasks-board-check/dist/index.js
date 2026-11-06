@@ -220,6 +220,19 @@ var EPIC_NAME_DENY = [
   new RegExp(DATE_END, "i")
 ];
 var isVagueEpicName = (name) => EPIC_NAME_DENY.some((re) => re.test(name.trim()));
+var APPEND_GAP = 50;
+var CLOSED_STATUSES = ["done", "dropped", "superseded"];
+function appendedRows(rows) {
+  const closed = rows.filter((r) => CLOSED_STATUSES.includes(r.status));
+  if (closed.length === 0) return [];
+  const maxClosed = Math.max(...closed.map((r) => r.id));
+  const lastClosedLine = Math.max(...closed.map((r) => r.no));
+  const open = rows.filter((r) => !CLOSED_STATUSES.includes(r.status));
+  const late = (r) => r.id > maxClosed + APPEND_GAP;
+  if (open.some((r) => !late(r) && r.status !== "parked")) return [];
+  return open.filter((r) => late(r) && r.no > lastClosedLine);
+}
+var CATCH_ALL_EPIC = /\b(?:backlog|additional|misc|miscellaneous|others?)\b(?!-)/i;
 var cellCountMessage = (expected, actual) => `row has ${actual} cells but the header has ${expected}; escape literal pipes in a cell as \\|`;
 function lintBoard(text2) {
   const findings = [];
@@ -241,7 +254,7 @@ function lintBoard(text2) {
   });
   for (const { text: line, no } of joinRowsNumbered(raw)) {
     const heading = /^##\s+(.*)$/.exec(line);
-    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1].trim())?.[1], name: heading[1].trim().replace(/^\d+\.\s+/, ""), hasTable: false, open: false, walls: [] });
+    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1].trim())?.[1], name: heading[1].trim().replace(/^\d+\.\s+/, ""), hasTable: false, open: false, walls: [], rows: [] });
     if (!heading && !line.startsWith("|") && !/^#{1,6}\s/.test(line) && line.length > PROSE_MAX) epics[epics.length - 1]?.walls.push(no);
     if (/^- \[( |x|X)\]/.test(line)) {
       items += 1;
@@ -292,6 +305,7 @@ function lintBoard(text2) {
     }
     const epicNum = epics[epics.length - 1]?.num;
     if (epicNum !== void 0) refs.add(`${epicNum}.${c[col.id]}`);
+    if (/^[1-9]\d*$/.test(c[col.id]) && FORMAT_STATUSES.includes(c[col.status] ?? "")) epics[epics.length - 1]?.rows.push({ no, id: Number(c[col.id]), status: c[col.status] });
     if (col.depends >= 0 && (c[col.depends] ?? "") !== "") deps.push({ no, value: c[col.depends] });
     const eta = c[col.eta] ?? "";
     if (eta !== "" && !ETA_FORMAT.test(eta)) add(no, "eta", `ETA not YYYY-MM-DD HH:MM <timezone>: "${eta}"`);
@@ -306,6 +320,12 @@ function lintBoard(text2) {
     if (isVagueEpicName(e.name))
       add(e.no, "epic-name", `epic name "${e.name}" is not descriptive: name the outcome or area (for example "Sailfish card parity with mobile web"), not its position, status or date`);
     for (const w of e.walls) add(w, "wall-of-text", `line over ${PROSE_MAX} characters under an epic with open rows: break it into a short list`);
+  }
+  const lastEpic = epics.filter((x) => x.hasTable).pop();
+  if (lastEpic) {
+    const maxClosed = Math.max(...lastEpic.rows.filter((r) => CLOSED_STATUSES.includes(r.status)).map((r) => r.id));
+    for (const r of appendedRows(lastEpic.rows))
+      add(r.no, "epic-placement", `open row ${lastEpic.num ?? "?"}.${r.id} looks appended to the last, finished epic (highest closed ID ${maxClosed}, gap over ${APPEND_GAP}): move it to the epic it belongs to by meaning, or a new numbered epic, and rewrite its references (see FORMAT.md, Adding rows)`);
   }
   for (const d of deps)
     for (const ref of d.value.split(",").map((x) => x.trim())) {
@@ -446,6 +466,27 @@ function epicEtaWarnings(text2, now = /* @__PURE__ */ new Date()) {
   }
   return out;
 }
+function catchAllWarnings(text2) {
+  const out = [];
+  let epic;
+  let col;
+  for (const { text: line, no } of joinRowsNumbered(text2.split("\n"))) {
+    const h = /^##\s+(.*\S)\s*$/.exec(line);
+    if (h) {
+      epic = { num: /^(\d+)\.\s/.exec(h[1])?.[1] ?? "?", name: h[1].replace(/^\d+\.\s+/, "") };
+      continue;
+    }
+    if (!line.startsWith("|")) {
+      col = void 0;
+      continue;
+    }
+    const c = cells(line);
+    if (/^(#|id)$/i.test(c[0] ?? "")) col = columnsOf(c);
+    else if (col && epic && CATCH_ALL_EPIC.test(epic.name) && ID.test(c[col.id] ?? "") && !CLOSED_STATUSES.includes(c[col.status] ?? ""))
+      out.push({ line: no, rule: "catch-all-epic", message: `open row ${epic.num}.${c[col.id]} sits in catch-all epic "${epic.name}": move it to the epic it belongs to by meaning, or a new numbered epic` });
+  }
+  return out;
+}
 var checkBoard = (text2, mode) => lintBoard(text2).findings.filter((f) => mode === "canonical" || f.rule === "duplicate-id" || f.rule === "padded-cell" || f.rule === "cell-count");
 var FIX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 
@@ -453,7 +494,9 @@ var FIX_WINDOW_MS = 24 * 60 * 60 * 1e3;
 function check(text2, format2 = "canonical") {
   const problems2 = checkBoard(text2, "canonical");
   const failing = checkBoard(text2, format2);
-  const warnings2 = epicEtaWarnings(text2);
+  const warnings2 = [...epicEtaWarnings(text2), ...catchAllWarnings(text2)].sort(
+    (a, b) => a.line - b.line
+  );
   return { problems: problems2, warnings: warnings2, tasks: parseBoard(text2).length, failed: failing.length > 0 };
 }
 

@@ -21,6 +21,14 @@ Statuses (full text in [FORMAT.md](../../../mods/tasks-board/FORMAT.md)):
 
 Old or free-text statuses (`cancelled`, `rejected`, `wontfix`, `deferred`, `on hold`, ...; `n/a` is never auto-mapped: decide from context and say why in Notes) map as in the Legacy statuses table in FORMAT.md; deferred work is `parked` only when the owner paused it, otherwise `todo` with Notes starting `Deferred: <reason>.`
 
+Adding a row (full text in FORMAT.md, Adding rows):
+
+- File it under the numbered epic whose topic it belongs to. Choose by meaning, never by position.
+- Never append it after the last row of the file, and never under a catch-all section ("Programme backlog", "Additional tracked work", anything named backlog, additional, misc or other).
+- If no epic fits, create a new numbered epic (highest number + 1): heading, one-paragraph intro, `ETA:` line, table header; then add the row there.
+- Depends references use the row's actual epic number. When moving a row, rewrite every `<oldEpic>.<id>` reference to it.
+- The check fails (`epic-placement`) on open rows appended to the board's last, otherwise finished epic with an ID more than 50 above its highest closed ID, and warns (`catch-all-epic`) on open rows under a catch-all epic.
+
 Epic headings are numbered `## <N>. <name>`; numbers are stable (never renumbered or reused). Reference a task as `<epic>.<task>` (for example `3.579` or `2.PZ-001`) everywhere you name it: Depends cells (comma-separated references), Notes, commit messages, PR titles and bodies, chat and reports.
 
 Update the row as work goes, the moment the state changes, not at the end of the session:

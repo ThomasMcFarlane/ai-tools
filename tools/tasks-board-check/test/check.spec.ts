@@ -137,6 +137,72 @@ describe('board quality rules', () => {
   });
 });
 
+describe('epic placement', () => {
+  const r = (id: number, status: string) =>
+    `| ${id} | t${id} | ${status} | | | | | ${status === 'dropped' ? 'Dropped: x.' : 'n'} |\n`;
+  const epic = (num: number, name: string, rows: string) => `## ${num}. ${name}\n\n${H}${rows}\n`;
+  const older = epic(1, 'Card parity', r(1, 'done') + r(2, 'done'));
+  const finished = r(100, 'done') + r(140, 'done');
+  const placement = (text: string) =>
+    check(text)
+      .problems.filter((p) => p.rule === 'epic-placement')
+      .map((p) => /^open row \S+/.exec(p.message)?.[0]);
+
+  it('fails on open rows appended after the last row of the file into the last finished epic', () => {
+    const text = older + epic(2, 'Source control', finished + r(191, 'todo') + r(192, 'parked'));
+    expect(check(text).failed).toBe(true);
+    expect(placement(text)).toEqual(['open row 2.191', 'open row 2.192']);
+  });
+
+  it('fails when the only other open row of the last epic is parked', () => {
+    const text =
+      older + epic(2, 'Source control', r(100, 'parked') + finished + r(300, 'in_progress'));
+    expect(placement(text)).toEqual(['open row 2.300']);
+  });
+
+  it('passes the same rows filed by meaning into an older epic', () => {
+    const text =
+      epic(1, 'Card parity', r(1, 'done') + r(191, 'todo')) + epic(2, 'Source control', finished);
+    expect(placement(text)).toEqual([]);
+    expect(check(text).failed).toBe(false);
+  });
+
+  it('passes a new last epic, a small gap, an active last epic and a row above the last closed row', () => {
+    expect(placement(older + epic(2, 'Calm UI', r(191, 'todo') + r(192, 'todo')))).toEqual([]);
+    expect(placement(older + epic(2, 'Source control', finished + r(190, 'todo')))).toEqual([]);
+    expect(
+      placement(older + epic(2, 'Source control', r(130, 'todo') + finished + r(300, 'todo'))),
+    ).toEqual([]);
+    expect(placement(older + epic(2, 'Source control', r(300, 'todo') + finished))).toEqual([]);
+    expect(placement(older + epic(2, 'Source control', finished + r(300, 'dropped')))).toEqual([]);
+  });
+
+  it('is a canonical rule only', () => {
+    const text = older + epic(2, 'Source control', finished + r(300, 'todo'));
+    expect(check(text, 'lenient').failed).toBe(false);
+  });
+});
+
+describe('catch-all epic warnings', () => {
+  const T = (name: string, status: string) =>
+    `## 3. ${name}\nETA: 2099-01-01 00:00 ICT\n\n${H}| 7 | t | ${status} | | | | | |\n`;
+  const rules = (name: string, status = 'todo') =>
+    check(T(name, status)).warnings.map((w) => w.rule);
+
+  it('warns on open rows under a catch-all epic without failing', () => {
+    for (const n of ['Programme backlog', 'Additional tracked work', 'Misc fixes', 'Other work'])
+      expect(rules(n), n).toEqual(['catch-all-epic']);
+    expect(check(T('Programme backlog', 'todo')).failed).toBe(false);
+    expect(check(T('Programme backlog', 'todo')).warnings[0]!.message).toContain('open row 3.7');
+  });
+
+  it('stays quiet for closed rows and focused names', () => {
+    expect(rules('Programme backlog', 'done')).toEqual([]);
+    for (const n of ['Card parity', 'Other-currency payouts', 'General Ledger export'])
+      expect(rules(n), n).toEqual([]);
+  });
+});
+
 describe('--fix', () => {
   it('rewrites the file in place and exits with the check result', () => {
     const dir = mkdtempSync(join(tmpdir(), 'board-'));

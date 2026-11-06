@@ -708,8 +708,37 @@ export const EPIC_NAME_DENY: RegExp[] = [
 export const isVagueEpicName = (name: string): boolean => EPIC_NAME_DENY.some(re => re.test(name.trim()))
 
 /**
+ * An open row whose ID exceeds the epic's highest closed ID by more than this was created well after the epic's
+ * work finished. IDs are board-wide and sequential; follow-ups to an epic's last task land within a few dozen IDs,
+ * and on a busy board 50 IDs is under a day of new rows.
+ */
+export const APPEND_GAP = 50
+const CLOSED_STATUSES = ['done', 'dropped', 'superseded']
+type EpicRow = { no: number; id: number; status: string }
+
+/**
+ * Open rows that look appended after the last row of the file into the board's last, already finished epic: the
+ * epic has closed rows, every other open row is parked or close to its closed IDs, and these rows sit after its last
+ * closed row with an ID more than APPEND_GAP above its highest closed ID. Rows filed by meaning into an older epic
+ * are never flagged: only the last epic is the target of a blind append.
+ */
+export function appendedRows(rows: EpicRow[]): EpicRow[] {
+  const closed = rows.filter(r => CLOSED_STATUSES.includes(r.status))
+  if (closed.length === 0) return []
+  const maxClosed = Math.max(...closed.map(r => r.id))
+  const lastClosedLine = Math.max(...closed.map(r => r.no))
+  const open = rows.filter(r => !CLOSED_STATUSES.includes(r.status))
+  const late = (r: EpicRow) => r.id > maxClosed + APPEND_GAP
+  if (open.some(r => !late(r) && r.status !== 'parked')) return []
+  return open.filter(r => late(r) && r.no > lastClosedLine)
+}
+
+/** Epic names that mark a catch-all section; new rows never go there. */
+export const CATCH_ALL_EPIC = /\b(?:backlog|additional|misc|miscellaneous|others?)\b(?!-)/i
+
+/**
  * Checks a board against the canonical "epic tables" format (see FORMAT.md). `findings` carry the line and the
- * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, dropped, superseded, duplicate-id, padded-cell, epic-number, epic-unique, depends, numeric-id (canonical table rows only).
+ * rule; `issues` are their distinct messages. Rules: header, status, eta, checklist, dropped, superseded, duplicate-id, padded-cell, epic-number, epic-unique, epic-placement, depends, numeric-id (canonical table rows only).
  */
 const cellCountMessage = (expected: number, actual: number) =>
   `row has ${actual} cells but the header has ${expected}; escape literal pipes in a cell as \\|`
@@ -724,7 +753,7 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   const seenIds = new Set<string>()
   let prev: string[] = []
   // `##` headings that hold a task table are epics; they need a unique `<N>. ` number.
-  const epics: { no: number; num?: string; name: string; hasTable: boolean; open: boolean; walls: number[] }[] = []
+  const epics: { no: number; num?: string; name: string; hasTable: boolean; open: boolean; walls: number[]; rows: EpicRow[] }[] = []
   let headerLen = 0
   const refs = new Set<string>()
   const deps: { no: number; value: string }[] = []
@@ -735,7 +764,7 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
   })
   for (const { text: line, no } of joinRowsNumbered(raw)) {
     const heading = /^##\s+(.*)$/.exec(line)
-    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1]!.trim())?.[1], name: heading[1]!.trim().replace(/^\d+\.\s+/, ''), hasTable: false, open: false, walls: [] })
+    if (heading) epics.push({ no, num: /^(\d+)\.\s+\S/.exec(heading[1]!.trim())?.[1], name: heading[1]!.trim().replace(/^\d+\.\s+/, ''), hasTable: false, open: false, walls: [], rows: [] })
     if (!heading && !line.startsWith('|') && !/^#{1,6}\s/.test(line) && line.length > PROSE_MAX) epics[epics.length - 1]?.walls.push(no)
     if (/^- \[( |x|X)\]/.test(line)) {
       items += 1
@@ -786,6 +815,7 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     }
     const epicNum = epics[epics.length - 1]?.num
     if (epicNum !== undefined) refs.add(`${epicNum}.${c[col.id]}`)
+    if (/^[1-9]\d*$/.test(c[col.id]!) && FORMAT_STATUSES.includes(c[col.status] ?? '')) epics[epics.length - 1]?.rows.push({ no, id: Number(c[col.id]), status: c[col.status]! })
     if (col.depends >= 0 && (c[col.depends] ?? '') !== '') deps.push({ no, value: c[col.depends]! })
     const eta = c[col.eta] ?? ''
     if (eta !== '' && !ETA_FORMAT.test(eta)) add(no, 'eta', `ETA not YYYY-MM-DD HH:MM <timezone>: "${eta}"`)
@@ -800,6 +830,12 @@ export function lintBoard(text: string): { canonical: boolean; issues: string[];
     if (isVagueEpicName(e.name))
       add(e.no, 'epic-name', `epic name "${e.name}" is not descriptive: name the outcome or area (for example "Sailfish card parity with mobile web"), not its position, status or date`)
     for (const w of e.walls) add(w, 'wall-of-text', `line over ${PROSE_MAX} characters under an epic with open rows: break it into a short list`)
+  }
+  const lastEpic = epics.filter(x => x.hasTable).pop()
+  if (lastEpic) {
+    const maxClosed = Math.max(...lastEpic.rows.filter(r => CLOSED_STATUSES.includes(r.status)).map(r => r.id))
+    for (const r of appendedRows(lastEpic.rows))
+      add(r.no, 'epic-placement', `open row ${lastEpic.num ?? '?'}.${r.id} looks appended to the last, finished epic (highest closed ID ${maxClosed}, gap over ${APPEND_GAP}): move it to the epic it belongs to by meaning, or a new numbered epic, and rewrite its references (see FORMAT.md, Adding rows)`)
   }
   for (const d of deps)
     for (const ref of d.value.split(',').map(x => x.trim())) {
@@ -953,6 +989,29 @@ export function epicEtaWarnings(text: string, now: Date = new Date()): LintIssue
     if (!ETA_FORMAT.test(e.eta)) out.push({ line: e.no, rule: 'epic-eta', message: `epic ETA not YYYY-MM-DD HH:MM <timezone>: "${e.eta}"` })
     else if (m && m[6]! in TZ_HOURS && e.open && Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]! - TZ_HOURS[m[6]!]!, +m[5]!) < now.getTime())
       out.push({ line: e.no, rule: 'epic-eta', message: `epic ETA is in the past while it has open rows: "${e.eta}"` })
+  }
+  return out
+}
+
+/** Warnings (never CI failures) for open rows filed under a catch-all epic such as "Programme backlog". */
+export function catchAllWarnings(text: string): LintIssue[] {
+  const out: LintIssue[] = []
+  let epic: { num: string; name: string } | undefined
+  let col: Cols | undefined
+  for (const { text: line, no } of joinRowsNumbered(text.split('\n'))) {
+    const h = /^##\s+(.*\S)\s*$/.exec(line)
+    if (h) {
+      epic = { num: /^(\d+)\.\s/.exec(h[1]!)?.[1] ?? '?', name: h[1]!.replace(/^\d+\.\s+/, '') }
+      continue
+    }
+    if (!line.startsWith('|')) {
+      col = undefined
+      continue
+    }
+    const c = cells(line)
+    if (/^(#|id)$/i.test(c[0] ?? '')) col = columnsOf(c)
+    else if (col && epic && CATCH_ALL_EPIC.test(epic.name) && ID.test(c[col.id] ?? '') && !CLOSED_STATUSES.includes(c[col.status] ?? ''))
+      out.push({ line: no, rule: 'catch-all-epic', message: `open row ${epic.num}.${c[col.id]} sits in catch-all epic "${epic.name}": move it to the epic it belongs to by meaning, or a new numbered epic` })
   }
   return out
 }
