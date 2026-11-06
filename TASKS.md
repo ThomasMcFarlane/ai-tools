@@ -59,3 +59,11 @@ ETA: 2026-11-05 22:00 ICT
 |---|---|---|---|---|---|---|---|
 | 17 | Watch PR events: draft/ready, merged, closed, opened, comments, reviews | done | claude | gh-watcher-pr-events | | 2026-11-05 21:00 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/80 (0e51843)<br>238 tests; event mode via relay /api/prs with poll fallback |
 | 18 | Release gh-watcher 0.4.0 and install it on hq0 | done | claude | | 7.17 | 2026-11-05 16:00 ICT | Released gh-watcher-v0.4.0 (run 41996787995); checksum OK<br>Installed on hq0; 0.3.0 kept as gh-watcher.v0.3.0<br>Live pr wait matched via relay events (source events) |
+
+## 8. gh-watcher tracks every check and status
+ETA: 2026-11-06 23:30 ICT
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| 19 | Track all check runs and commit statuses, not only Actions runs | in_progress | claude | gh-watcher-all-checks | | 2026-11-06 22:30 ICT | Trigger: nazare-platform PR 667 had only Terraform Cloud statuses; wait sat at none until timeout |
+| 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | todo | claude | | 8.19 | 2026-11-06 23:30 ICT | |

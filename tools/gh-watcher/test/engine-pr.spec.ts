@@ -68,6 +68,7 @@ function build(): { deps: EngineDeps; hookCalls: Record<string, unknown>[]; list
   const listRuns = vi.fn(async () => runs);
   const client = {
     listRuns,
+    listChecks: async () => ({ checks: [] }),
     collectFailures: async () => [],
     prSnapshot: async (_repo: string, number: number, reuse?: unknown) => {
       reuseArgs.push(reuse);
@@ -272,7 +273,9 @@ describe('back-compat without prEvents', () => {
       'targetKey',
       'state',
       'failedSteps',
+      'failedChecks',
       'runsCount',
+      'checksCount',
       'checkedAt',
     ]);
     expect((await loadState()).watchers[0]?.lastPr).toBeUndefined();

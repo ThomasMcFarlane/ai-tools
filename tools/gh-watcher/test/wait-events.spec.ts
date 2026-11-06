@@ -25,6 +25,9 @@ function fakeGh(runs: string[]): { client: GhClient; calls: string[][] } {
   const calls: string[][] = [];
   let index = 0;
   const exec: GhExec = async (args) => {
+    if (args[0] === 'api' && /\/commits\/[0-9a-f]{40}\/(check-runs|status)/.test(args[1] ?? '')) {
+      return { stdout: '', stderr: '', code: 0 }; // no external checks; not counted
+    }
     calls.push(args);
     if (args[0] === 'pr') {
       return { stdout: JSON.stringify({ headRefOid: SHA, headRefName: 'x' }), stderr: '', code: 0 };

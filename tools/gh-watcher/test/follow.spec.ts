@@ -38,6 +38,9 @@ function setup(rounds: { runs: Record<string, unknown>[]; jobs: unknown[] }[]) {
   const calls: string[][] = [];
   let index = 0;
   const exec: GhExec = async (args) => {
+    if (args[0] === 'api' && /\/commits\/[0-9a-f]{40}\/(check-runs|status)/.test(args[1] ?? '')) {
+      return { stdout: '', stderr: '', code: 0 };
+    }
     calls.push(args);
     const round = rounds[
       Math.min(Math.max(index - (args[1] === 'view' ? 1 : 0), 0), rounds.length - 1)

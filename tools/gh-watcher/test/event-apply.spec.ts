@@ -36,6 +36,9 @@ function fakeGh(lists: GhRunInfo[] | GhRunInfo[][], jobs: unknown[] = []): { cli
   const sequence = (Array.isArray(lists[0]) || lists.length === 0 ? lists : [lists]) as GhRunInfo[][];
   let index = 0;
   const exec: GhExec = async (args) => {
+    if (args[0] === 'api' && /\/commits\/[0-9a-f]{40}\/(check-runs|status)/.test(args[1] ?? '')) {
+      return { stdout: '', stderr: '', code: 0 }; // no external checks; not counted
+    }
     calls.push(args);
     if (args[0] === 'run' && args[1] === 'list') {
       const next = sequence[Math.min(index, sequence.length - 1)];
