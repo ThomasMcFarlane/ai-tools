@@ -1,6 +1,7 @@
 # @ai-tools/gh-watcher
 
-Watch GitHub Actions runs and checks via `gh`, fire hooks when a step fails or
+Watch every check on a commit via `gh` (GitHub Actions runs, third-party check runs and
+commit statuses such as Terraform Cloud), fire hooks when a step fails or
 everything succeeds, and watch pull request lifecycle events (draft, ready, merged, closed,
 comments, reviews, pushes).
 
@@ -43,7 +44,7 @@ The package also exports a library API (`exports["."]`).
 
 ### gh-watcher status
 
-Check the current state of runs for a target once.
+Check the current state of all checks for a target once.
 
 ```sh
 gh-watcher status [options]
@@ -59,7 +60,8 @@ gh-watcher status [options]
 | `--timeout <duration>` | `10m` | Longest wait for a GitHub rate limit to lift, see [Shared GitHub queue](#shared-github-queue-and-rate-limits). |
 | `--json` | off | Emit the check report as JSON. |
 
-Prints `repo target is <state>`, a table of runs, and any failed steps. Note that
+Prints `repo target is <state>`, a table of runs, a table of other checks (third-party check
+runs and commit statuses), the failed steps and the failed checks (name and URL). Note that
 `status` exits `0` even when the reported state is `failure`; it exits non-zero only for
 errors.
 
@@ -71,7 +73,7 @@ errors.
 
 ### gh-watcher wait
 
-Poll until runs for a target succeed or fail.
+Poll until all checks for a target succeed or fail.
 
 ```sh
 gh-watcher wait [options]
@@ -89,8 +91,9 @@ Takes the same target flags as `status`, plus:
 | `--json` | off | Emit the outcome as JSON. |
 
 Durations accept a bare number (seconds) or a unit suffix: `250ms`, `30s`, `5m`, `1h`.
-While polling, a `.` progress dot is written to stderr. On failure the outcome includes
-the collected failed steps. The JSON outcome carries `source` (`"events"` or `"poll"`), the
+While polling, a `.` progress dot is written to stderr, and a line `check 'NAME' is STATUS` whenever
+a non-Actions check appears or changes status. On failure the outcome includes
+the collected failed steps and `failedChecks`; `runsCount` and `checksCount` count each kind. The JSON outcome carries `source` (`"events"` or `"poll"`), the
 mode the wait finished in. Exit codes:
 
 | Code | Meaning |
@@ -118,6 +121,7 @@ Takes the target flags and the `--interval`, `--timeout`, `--source`, `--events-
 {"repo":"octo-org/hello-world","targetKey":"pr:17","state":"pending","runs":[{"databaseId":1,"workflowName":"CI","status":"in_progress","conclusion":null,"url":"https://example.com/run/1","startedAt":"2026-01-01T00:00:00Z","attempt":1,"jobs":[{"name":"build","status":"in_progress","conclusion":null,"url":"https://example.com/job/2","steps":[{"name":"Test","number":3,"status":"in_progress","conclusion":null}]}]}],"failedSteps":[],"source":"events","checkedAt":"2026-01-01T00:01:00.000Z","isFinal":false}
 ```
 
+Each line also carries `checks` (the non-Actions checks, see [Targets](#targets)) and `failedChecks`.
 Runs carry the fields of `status --json` plus `startedAt`, `updatedAt`, `attempt` and `jobs`. Jobs are
 fetched for non-terminal runs on every check and for a finished run once; they are not
 refetched afterwards. The last line has `isFinal: true` (and `timedOut: true` on timeout).
@@ -359,6 +363,14 @@ Exit codes, the JSON outcome and `--timeout` are unchanged. A typical successful
 one baseline `gh` call plus the head-commit resolution; events cost none. Runs created from
 events have an empty `displayTitle` until the next full `gh` check.
 
+The relay only delivers Actions `workflow_run` events, so it cannot announce check runs or commit
+statuses from other sources. While the latest report has a pending non-Actions check, or the state
+is `none` (statuses may not have started yet), the wait re-checks with `gh` every `--interval`
+(never longer than `--fallback-interval`) instead of waiting for the safety-net interval. The
+outcome `source` stays `"events"` while the relay is healthy, and is `"poll"` only when the wait actually fell back to polling. A purely Actions pending state
+keeps the event path. Each such re-check costs one head lookup (`pr view` or branch API, for
+`--pr`/`--branch`), one `run list`, one check-runs call and one status call.
+
 `watch run` (the daemon) does not use event mode: it remains poll-only, and so do `pr status` and
 `prEvents` watches. `pr wait` and `pr follow` have their own event mode, below.
 
@@ -530,16 +542,49 @@ result of the previous commit.
 Fetched run fields: `databaseId`, `workflowName`, `displayTitle`, `status`,
 `conclusion`, `url`, `headSha`, `createdAt`.
 
+### All checks, not only Actions
+
+For `--pr`, `--branch` and `--commit` the head sha is also queried for checks that are not
+Actions workflow runs (a `--run` target stays Actions-only). They are reported in `checks`:
+
+| Source | Call | Notes |
+| --- | --- | --- |
+| Check runs | `gh api repos/R/commits/<sha>/check-runs?per_page=100 --paginate` | Runs whose app is `github-actions` are skipped (workflow runs cover them). The latest run per app and name is kept (by `started_at`, then id). |
+| Commit statuses | `gh api repos/R/commits/<sha>/status?per_page=100 --paginate` | Combined status; one entry per context (the newest wins if a context repeats across pages). |
+
+Each entry is `{kind: "check_run" | "status", name, source, status, conclusion, url, updatedAt?}`.
+`source` is the app slug (check run) or the host of the status target URL, for example `app.terraform.io` (empty when there is none). `status` is `pending`,
+`success` or `failure`; `conclusion` keeps the raw check conclusion (`null` while running) or
+status state.
+
+| Raw | `status` |
+| --- | --- |
+| check run not `completed` | `pending` |
+| check run conclusion `success`, `neutral`, `skipped` | `success` |
+| any other completed conclusion (`failure`, `cancelled`, `timed_out`, `action_required`, ...) | `failure` |
+| check run conclusion `stale` | ignored (GitHub has superseded it; it still replaces older runs of the same check) |
+| status `pending` | `pending` |
+| status `success` | `success` |
+| status `failure`, `error` | `failure` |
+
+If the token cannot read check runs or statuses (HTTP 403), gh-watcher warns once on stderr,
+reports `checksUnavailable` (a short reason) in the report, `wait` outcome and `follow` lines, and
+aggregates from Actions runs only, as before 0.5.0. Other `gh` failures still fail the command.
+
+A commit with only statuses (for example Terraform Cloud) therefore reports `pending`, then
+`success` or `failure`, instead of `none`. Failed non-Actions checks are listed in
+`failedChecks` as `{kind, name, source, url}` so an agent can open the link.
+
 ## State semantics
 
-The aggregate state of a target is derived from its runs:
+The aggregate state of a target is derived from its Actions runs and its other checks:
 
 | State | Condition |
 | --- | --- |
-| `none` | No runs found for the target. |
-| `pending` | Any run has `status` other than `completed`. |
-| `failure` | All runs completed and at least one conclusion is failure-like. |
-| `success` | All runs completed and no conclusion is failure-like. |
+| `none` | No runs and no other checks found for the target. |
+| `pending` | Any run has `status` other than `completed`, or any other check is pending. |
+| `failure` | Nothing pending and at least one run conclusion or other check is a failure. |
+| `success` | Nothing pending and nothing failed. |
 
 Failure conclusions: `failure`, `cancelled`, `timed_out`, `startup_failure`,
 `action_required`.
@@ -565,7 +610,9 @@ Edge firing:
   state. Staying in that state does not refire; leaving and re-entering does.
 - Manual checks (`watch check`) always fire when the trigger condition holds.
 - The edge is keyed by the set of run IDs of the runs considered (head commit, latest
-  run per workflow). A new attempt (a new run, e.g. after a push or sync) produces a different key, which resets the previous state to
+  run per workflow) plus every other check with its status, so any status change of any check
+  resets the edge. A key saved by an older version (run ids only) counts as the same edge as
+  the new key when the run ids match, so an upgrade does not refire. A new attempt (a new run, e.g. after a push or sync) produces a different key, which resets the previous state to
   `none`, so the hook can fire again for the new attempt.
 
 Pull request events (`prEvents` watches):
@@ -609,11 +656,11 @@ there are no `GH_*` extras):
 | Variable | Value |
 | --- | --- |
 | `EVENT` | Full event JSON. |
-| `EVENT_SUMMARY` | Multi-line summary: state line plus up to three failed steps. |
+| `EVENT_SUMMARY` | Multi-line summary: state line plus up to three failed steps and up to three failed checks. |
 
 The event payload itself carries: `summary`, `watch`, `repo`, `targetKey`, `state`,
 `failedSteps` (each with `runId`, `workflowName`, `jobName`, `stepName`, `stepNumber`),
-`runsCount`, `checkedAt`. A watch with pull request kinds fires `summary`, `watch`, `repo`,
+`failedChecks`, `runsCount`, `checksCount`, `checkedAt`. A watch with pull request kinds fires `summary`, `watch`, `repo`,
 `targetKey`, `prEvents` (the matched events) and `pr` (`number`, `url`, `state`, `isDraft`,
 `headSha`, `reviewDecision`); when a CI trigger fires in the same check the CI fields are included
 too.

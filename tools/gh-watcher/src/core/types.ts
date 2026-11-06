@@ -49,13 +49,46 @@ export interface FailedStep {
 
 export type CheckState = 'pending' | 'success' | 'failure' | 'none';
 
+/** Normalised outcome of one check that is not a GitHub Actions workflow run. */
+export type ExternalCheckStatus = 'pending' | 'success' | 'failure';
+
+/**
+ * A check on a commit that Actions workflow runs do not cover: a third-party check run (a GitHub
+ * App other than github-actions) or a commit status (for example Terraform Cloud).
+ */
+export interface ExternalCheck {
+  kind: 'check_run' | 'status';
+  name: string;
+  /** App slug for a check run; host of the target URL for a commit status (empty when unknown). */
+  source: string;
+  status: ExternalCheckStatus;
+  /** Raw check run conclusion (null while running) or commit status state. */
+  conclusion: string | null;
+  url: string;
+  updatedAt?: string;
+}
+
+/** A failed non-Actions check, for agents to act on. */
+export interface FailedCheck {
+  kind: 'check_run' | 'status';
+  name: string;
+  source: string;
+  url: string;
+}
+
 export interface CheckReport {
   repo: string;
   target: WatchTarget;
   targetKey: string;
   state: CheckState;
   runs: GhRunInfo[];
+  /** Non-Actions checks (third-party check runs and commit statuses) on the same commit. */
+  checks: ExternalCheck[];
   failedSteps: FailedStep[];
+  /** Failed non-Actions checks; empty unless the state is `failure`. */
+  failedChecks: FailedCheck[];
+  /** Set when the token could not read check runs or statuses; the state then covers Actions runs only. */
+  checksUnavailable?: string;
   checkedAt: string;
 }
 
@@ -179,7 +212,10 @@ export interface GhEvent {
   targetKey: string;
   state: CheckState;
   failedSteps: FailedStep[];
+  failedChecks?: FailedCheck[];
   runsCount: number;
+  /** Number of non-Actions checks; absent in events recorded before 0.5.0. */
+  checksCount?: number;
   checkedAt: string;
   fired: boolean;
   error?: string;

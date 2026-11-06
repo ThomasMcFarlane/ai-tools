@@ -1,6 +1,6 @@
 import { GhClient } from './gh.js';
 import { waitForTerminal, type WaitDeps, type WaitOptions, type WaitSource } from './wait.js';
-import type { CheckReport, CheckState, FailedStep, GhJobInfo, GhRunInfo } from './types.js';
+import type { CheckReport, CheckState, ExternalCheck, FailedCheck, FailedStep, GhJobInfo, GhRunInfo } from './types.js';
 
 export interface FollowRun extends GhRunInfo {
   jobs: GhJobInfo[];
@@ -11,7 +11,10 @@ export interface FollowLine {
   targetKey: string;
   state: CheckState;
   runs: FollowRun[];
+  checks: ExternalCheck[];
   failedSteps: FailedStep[];
+  failedChecks: FailedCheck[];
+  checksUnavailable?: string;
   source: WaitSource;
   checkedAt: string;
   isFinal: boolean;
@@ -67,16 +70,22 @@ export async function followTarget(options: WaitOptions, deps: FollowDeps): Prom
       }
       runs.push({ ...run, jobs });
     }
-    return {
+    const line: FollowLine = {
       repo: report.repo,
       targetKey: report.targetKey,
       state: report.state,
       runs,
+      checks: report.checks,
       failedSteps: report.failedSteps,
+      failedChecks: report.failedChecks,
       source,
       checkedAt: report.checkedAt,
       isFinal,
     };
+    if (report.checksUnavailable !== undefined) {
+      line.checksUnavailable = report.checksUnavailable;
+    }
+    return line;
   };
 
   const send = (line: FollowLine): void => {
@@ -100,7 +109,9 @@ export async function followTarget(options: WaitOptions, deps: FollowDeps): Prom
     targetKey: '',
     state: 'pending',
     runs: [],
+    checks: [],
     failedSteps: [],
+    failedChecks: [],
     source: result.source,
     checkedAt: new Date().toISOString(),
     isFinal: false,

@@ -1,11 +1,12 @@
 import { fireHook, type HookEvent, type HookResult } from '@ai-tools/hooks';
-import { aggregateState, GhClient, runsKey } from './gh.js';
+import { aggregateState, failedChecksOf, GhClient, runsKey, sameRunsKey } from './gh.js';
 import { appendEvent, loadState, saveState } from './store.js';
 import { describePrEvent, diffPr, lastStateToBase, lastStateToReuse, summarisePr, toLastState } from './pr.js';
 import { targetKey } from './types.js';
 import type {
   CheckReport,
   CheckState,
+  FailedCheck,
   FailedStep,
   GhEvent,
   GhWatchSpec,
@@ -54,18 +55,27 @@ function syncSpec(target: GhWatchSpec, spec: GhWatchSpec): void {
   }
 }
 
-function summaryLines(repo: string, key: string, state: CheckState, failedSteps: FailedStep[]): string[] {
+function summaryLines(
+  repo: string,
+  key: string,
+  state: CheckState,
+  failedSteps: FailedStep[],
+  failedChecks: FailedCheck[],
+): string[] {
   const lines = [`gh-watcher: ${repo} ${key} is ${state}`];
   if (state === 'failure') {
     for (const step of failedSteps.slice(0, 3)) {
       lines.push(`step ${step.stepNumber} '${step.stepName}' failed in job '${step.jobName}' (run ${step.runId})`);
+    }
+    for (const check of failedChecks.slice(0, 3)) {
+      lines.push(`check '${check.name}' failed${check.url.length > 0 ? ` (${check.url})` : ''}`);
     }
   }
   return lines;
 }
 
 export function describeEvent(event: GhEvent): string {
-  const lines = summaryLines(event.repo, event.targetKey, event.state, event.failedSteps);
+  const lines = summaryLines(event.repo, event.targetKey, event.state, event.failedSteps, event.failedChecks ?? []);
   for (const prEvent of event.prEvents ?? []) {
     lines.push(`pr event: ${describePrEvent(prEvent)}`);
   }
@@ -107,18 +117,27 @@ export async function collectReport(spec: GhWatchSpec, deps?: EngineDeps): Promi
   const client = deps?.client ?? new GhClient();
   const now = deps?.now ?? (() => new Date());
   const checkedAt = now().toISOString();
-  const runs = await client.listRuns(spec.repo, spec.target);
-  const state = aggregateState(runs);
+  const resolved: { sha?: string } = {};
+  const runs = await client.listRuns(spec.repo, spec.target, resolved);
+  const { checks, unavailable } = await client.listChecks(spec.repo, spec.target, runs, resolved.sha);
+  const state = aggregateState(runs, checks);
   const failedSteps = state === 'failure' ? await client.collectFailures(spec.repo, runs) : [];
-  return {
+  const failedChecks = state === 'failure' ? failedChecksOf(checks) : [];
+  const report: CheckReport = {
     repo: spec.repo,
     target: spec.target,
     targetKey: targetKey(spec.target),
     state,
     runs,
+    checks,
     failedSteps,
+    failedChecks,
     checkedAt,
   };
+  if (unavailable !== undefined) {
+    report.checksUnavailable = unavailable;
+  }
+  return report;
 }
 
 async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual: boolean): Promise<GhEvent> {
@@ -141,12 +160,14 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
         targetKey: targetKey(spec.target),
         state: 'none',
         runs: [],
+        checks: [],
         failedSteps: [],
+        failedChecks: [],
         checkedAt: (deps?.now ?? (() => new Date()))().toISOString(),
       };
-  const key = runsKey(report.runs);
+  const key = runsKey(report.runs, report.checks);
   const last = state.lastFired[spec.name];
-  const edgeReset = last !== undefined && last.runsKey !== key;
+  const edgeReset = last !== undefined && !sameRunsKey(last.runsKey, key);
   const previousState: CheckState = last === undefined || edgeReset ? 'none' : last.state;
   const failureDue =
     wantsCi && report.state === 'failure' && spec.triggers.failure && (manual || previousState !== 'failure');
@@ -162,7 +183,9 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
     targetKey: report.targetKey,
     state: report.state,
     failedSteps: report.failedSteps,
+    failedChecks: report.failedChecks,
     runsCount: report.runs.length,
+    checksCount: report.checks.length,
     checkedAt: report.checkedAt,
     fired: false,
   };
@@ -171,7 +194,7 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
   }
   if (shouldFire) {
     const summary = [
-      ...(ciDue ? summaryLines(spec.repo, report.targetKey, report.state, report.failedSteps) : []),
+      ...(ciDue ? summaryLines(spec.repo, report.targetKey, report.state, report.failedSteps, report.failedChecks) : []),
       ...(pr?.snapshot !== undefined && prMatched.length > 0
         ? [
             `gh-watcher: ${spec.repo} ${report.targetKey} PR #${pr.snapshot.number} "${pr.snapshot.title}"`,
@@ -188,7 +211,9 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
     if (ciDue) {
       payload['state'] = report.state;
       payload['failedSteps'] = report.failedSteps;
+      payload['failedChecks'] = report.failedChecks;
       payload['runsCount'] = report.runs.length;
+      payload['checksCount'] = report.checks.length;
       payload['checkedAt'] = report.checkedAt;
     }
     if (pr?.snapshot !== undefined && prMatched.length > 0) {

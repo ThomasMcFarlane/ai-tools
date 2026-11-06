@@ -8,7 +8,7 @@ import { GhClient } from '../core/gh.js';
 import { RateLimitTimeoutError } from '../core/queue.js';
 import { followTarget } from '../core/follow.js';
 import { waitForTerminal, type WaitResult, type WaitSource } from '../core/wait.js';
-import type { CheckReport, CheckState, FailedStep, GhWatchSpec, WatchTarget } from '../core/types.js';
+import type { CheckReport, CheckState, FailedCheck, FailedStep, GhWatchSpec, WatchTarget } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
 import { printJson, printTable } from './output.js';
 import { parseNumberOption, parseTargetFlagsOrExit, type TargetFlags } from './target.js';
@@ -34,6 +34,9 @@ interface WaitFlags extends RepoTargetFlags {
 interface WaitOutcome {
   state: CheckState;
   runsCount: number;
+  checksCount: number;
+  failedChecks?: FailedCheck[];
+  checksUnavailable?: string;
   checkedAt: string;
   failedSteps?: FailedStep[];
   source?: WaitSource;
@@ -65,6 +68,12 @@ function describeFailedSteps(failedSteps: FailedStep[]): void {
   }
 }
 
+function describeFailedChecks(failedChecks: FailedCheck[]): void {
+  for (const check of failedChecks) {
+    console.log(`check '${check.name}' failed${check.url.length > 0 ? ` (${check.url})` : ''}`);
+  }
+}
+
 async function statusAction(flags: RepoTargetFlags): Promise<void> {
   const repo = resolveRepo(flags.repo);
   const target = parseTargetFlagsOrExit(flags);
@@ -90,7 +99,7 @@ async function statusAction(flags: RepoTargetFlags): Promise<void> {
   }
   console.log(`${report.repo} ${report.targetKey} is ${report.state} (checked ${report.checkedAt})`);
   if (report.runs.length === 0) {
-    console.log('no runs');
+    console.log(report.checks.length === 0 ? 'no runs or checks' : 'no runs');
   } else {
     printTable([
       ['id', 'workflow', 'title', 'status', 'conclusion'],
@@ -103,7 +112,21 @@ async function statusAction(flags: RepoTargetFlags): Promise<void> {
       ]),
     ]);
   }
+  if (report.checks.length > 0) {
+    printTable([
+      ['check', 'kind', 'source', 'status', 'result', 'url'],
+      ...report.checks.map((check) => [
+        check.name,
+        check.kind,
+        check.source === '' ? '-' : check.source,
+        check.status,
+        check.conclusion ?? '-',
+        check.url === '' ? '-' : check.url,
+      ]),
+    ]);
+  }
   describeFailedSteps(report.failedSteps);
+  describeFailedChecks(report.failedChecks);
 }
 
 function emitWaitOutcome(outcome: WaitOutcome, json: boolean | undefined): void {
@@ -112,8 +135,11 @@ function emitWaitOutcome(outcome: WaitOutcome, json: boolean | undefined): void 
     return;
   }
   process.stderr.write('\n');
-  console.log(`${outcome.state}: ${outcome.runsCount} run(s) checked at ${outcome.checkedAt}`);
+  console.log(
+    `${outcome.state}: ${outcome.runsCount} run(s) and ${outcome.checksCount} other check(s) checked at ${outcome.checkedAt}`,
+  );
   describeFailedSteps(outcome.failedSteps ?? []);
+  describeFailedChecks(outcome.failedChecks ?? []);
 }
 
 async function waitAction(flags: WaitFlags): Promise<void> {
@@ -128,12 +154,27 @@ async function waitAction(flags: WaitFlags): Promise<void> {
     throw new Error(`invalid --source "${source}": use auto, events or poll`);
   }
   let result: WaitResult;
+  let seen = new Map<string, string>();
   try {
     result = await waitForTerminal(
       { repo, target, intervalMs, timeoutMs, fallbackMs, source, eventsUrl: resolveEventsUrl(flags.eventsUrl) },
       {
-        onPending: () => {
-          if (!flags.json) {
+        onPending: (report) => {
+          if (flags.json) {
+            return;
+          }
+          // Report every status change of a non-Actions check; otherwise just show liveness.
+          const next = new Map(report.checks.map((check) => [`${check.kind}:${check.source}:${check.name}`, check.status]));
+          let changed = false;
+          for (const check of report.checks) {
+            const key = `${check.kind}:${check.source}:${check.name}`;
+            if (seen.get(key) !== check.status) {
+              process.stderr.write(`\ncheck '${check.name}' is ${check.status}\n`);
+              changed = true;
+            }
+          }
+          seen = next;
+          if (!changed) {
             process.stderr.write('.');
           }
         },
@@ -158,11 +199,16 @@ async function waitAction(flags: WaitFlags): Promise<void> {
   const outcome: WaitOutcome = {
     state: report.state,
     runsCount: report.runs.length,
+    checksCount: report.checks.length,
     checkedAt: report.checkedAt,
     source: result.source,
   };
+  if (report.checksUnavailable !== undefined) {
+    outcome.checksUnavailable = report.checksUnavailable;
+  }
   if (report.state === 'failure') {
     outcome.failedSteps = report.failedSteps;
+    outcome.failedChecks = report.failedChecks;
   }
   emitWaitOutcome(outcome, flags.json);
   process.exitCode = report.state === 'success' ? 0 : 1;
@@ -193,7 +239,7 @@ async function followAction(flags: WaitFlags): Promise<void> {
 
 function buildProgram(): Command {
   const p = new Command();
-  p.name('gh-watcher').description('Watch GitHub Actions runs and checks, fire hooks on step failure or full success');
+  p.name('gh-watcher').description('Watch every check on a commit (Actions runs, check runs, commit statuses), fire hooks on step failure or full success');
   p.command('status')
     .description('Check the current state of runs for a target once')
     .option('--repo <owner/name>', 'repository in OWNER/NAME form (defaults to GH_REPO)')

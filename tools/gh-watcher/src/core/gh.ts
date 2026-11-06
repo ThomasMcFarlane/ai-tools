@@ -2,6 +2,9 @@ import { spawn } from 'node:child_process';
 import { createQueuedExec, queueDisabled, RateLimitTimeoutError, type QueuedExec } from './queue.js';
 import type {
   CheckState,
+  ExternalCheck,
+  ExternalCheckStatus,
+  FailedCheck,
   FailedStep,
   GhJobInfo,
   GhRunInfo,
@@ -20,6 +23,13 @@ const PR_FIELDS =
   'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews,updatedAt';
 const REVIEW_COMMENT_JQ =
   '.[] | {id: .id, author: .user.login, createdAt: .created_at, path: .path, url: .html_url}';
+
+const CHECK_RUN_JQ =
+  '.check_runs[] | {id: .id, name: .name, status: .status, conclusion: .conclusion, url: .html_url, startedAt: .started_at, completedAt: .completed_at, app: .app.slug}';
+const STATUS_JQ =
+  '.statuses[] | {id: .id, context: .context, state: .state, url: .target_url, updatedAt: .updated_at}';
+/** Check runs created by Actions are already covered by workflow runs. */
+const ACTIONS_APP_SLUG = 'github-actions';
 
 export const FAILURE_CONCLUSIONS: readonly string[] = [
   'failure',
@@ -306,10 +316,135 @@ function newestCommitRuns(runs: GhRunInfo[]): GhRunInfo[] {
   return latestPerWorkflow(runs.filter((run) => run.headSha === newest.headSha));
 }
 
+/** Map a check run to a status; undefined for `stale` runs, which GitHub has superseded. */
+function checkRunStatus(status: string, conclusion: string | null): ExternalCheckStatus | undefined {
+  if (status !== 'completed') {
+    return 'pending';
+  }
+  if (conclusion === 'stale') {
+    return undefined;
+  }
+  if (conclusion !== null && SUCCESS_CONCLUSIONS.includes(conclusion)) {
+    return 'success';
+  }
+  // Failure-like and unrecognised conclusions both count as failures, so nothing passes silently.
+  return 'failure';
+}
+
+function statusState(state: string): ExternalCheckStatus {
+  if (state === 'success') {
+    return 'success';
+  }
+  return state === 'pending' ? 'pending' : 'failure';
+}
+
+/** Latest-per-(app, name) external check runs, skipping Actions check runs and stale ones. */
+function normaliseCheckRuns(items: unknown[]): ExternalCheck[] {
+  const latest = new Map<string, { check: ExternalCheck | undefined; at: string; id: number }>();
+  for (const item of items) {
+    const record = (item ?? {}) as Record<string, unknown>;
+    const source = text(record['app']);
+    if (source === ACTIONS_APP_SLUG) {
+      continue;
+    }
+    const name = text(record['name']);
+    const at = text(record['startedAt']);
+    const id = Number(record['id']);
+    const key = `${source}\u0000${name}`;
+    const current = latest.get(key);
+    if (current !== undefined && (at < current.at || (at === current.at && id <= current.id))) {
+      continue;
+    }
+    const conclusion = typeof record['conclusion'] === 'string' ? record['conclusion'] : null;
+    const status = checkRunStatus(text(record['status']), conclusion);
+    if (status === undefined) {
+      // A stale run still supersedes older runs of the same check but is not reported itself.
+      latest.set(key, { check: undefined, at, id });
+      continue;
+    }
+    const check: ExternalCheck = { kind: 'check_run', name, source, status, conclusion, url: text(record['url']) };
+    const updatedAt = text(record['completedAt']).length > 0 ? text(record['completedAt']) : at;
+    if (updatedAt.length > 0) {
+      check.updatedAt = updatedAt;
+    }
+    latest.set(key, { check, at, id });
+  }
+  const checks: ExternalCheck[] = [];
+  for (const entry of latest.values()) {
+    if (entry.check !== undefined) {
+      checks.push(entry.check);
+    }
+  }
+  return checks;
+}
+
+/** The combined-status endpoint has no creator, so the target URL's host names the source. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/** Result of a checks lookup; `unavailable` explains why the token could not read them. */
+export interface ChecksResult {
+  checks: ExternalCheck[];
+  unavailable?: string;
+}
+
+function isPermissionError(result: GhExecResult): boolean {
+  return result.code !== 0 && /\b403\b|forbidden|resource not accessible|insufficient|permission/i.test(result.stderr);
+}
+
+/** Commit statuses; the combined status lists the latest per context, duplicates across pages are collapsed. */
+function normaliseStatuses(items: unknown[]): ExternalCheck[] {
+  const latest = new Map<string, { check: ExternalCheck; at: string; id: number }>();
+  for (const item of items) {
+    const record = (item ?? {}) as Record<string, unknown>;
+    const name = text(record['context']);
+    const at = text(record['updatedAt']);
+    const id = Number(record['id']);
+    const current = latest.get(name);
+    if (current !== undefined && (at < current.at || (at === current.at && id <= current.id))) {
+      continue;
+    }
+    const state = text(record['state']);
+    const check: ExternalCheck = {
+      kind: 'status',
+      name,
+      source: hostOf(text(record['url'])),
+      status: statusState(state),
+      conclusion: state,
+      url: text(record['url']),
+    };
+    if (at.length > 0) {
+      check.updatedAt = at;
+    }
+    latest.set(name, { check, at, id });
+  }
+  return [...latest.values()].map((entry) => entry.check);
+}
+
+function setResolved(resolved: { sha?: string } | undefined, sha: string): void {
+  if (resolved !== undefined && /^[0-9a-f]{40}$/i.test(sha)) {
+    resolved.sha = sha.toLowerCase();
+  }
+}
+
+/** True when a saved change key is the same edge: equal, or an old-format (run ids only) key matching the ids of the new one. */
+export function sameRunsKey(saved: string, key: string): boolean {
+  if (saved === key) {
+    return true;
+  }
+  return !saved.includes('|') && key.includes('|') && key.slice(0, key.indexOf('|')) === saved;
+}
+
 export class GhClient {
   private readonly exec: GhExec;
   private readonly runFields: string;
   private readonly now: () => Date;
+  private warnedUnavailable = false;
 
   constructor(options?: GhClientOptions) {
     this.exec =
@@ -383,7 +518,7 @@ export class GhClient {
     return newest?.number;
   }
 
-  async listRuns(repo: string, target: WatchTarget): Promise<GhRunInfo[]> {
+  async listRuns(repo: string, target: WatchTarget, resolved?: { sha?: string }): Promise<GhRunInfo[]> {
     if (target.kind === 'run') {
       const result = await this.exec(['run', 'view', String(target.runId), '--repo', repo, '--json', this.runFields]);
       assertOk(result, `run view ${target.runId}`);
@@ -403,6 +538,7 @@ export class GhClient {
       const parsed = parseJson<{ headRefName?: string; headRefOid?: string }>(prResult.stdout);
       const headSha = parsed.headRefOid ?? '';
       if (headSha.length > 0) {
+        setResolved(resolved, headSha);
         return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', headSha), headSha));
       }
       // Older gh versions may omit headRefOid: fall back to the newest commit on the head branch.
@@ -411,11 +547,62 @@ export class GhClient {
     if (target.kind === 'branch') {
       const headSha = await this.branchHeadSha(repo, target.branch);
       if (headSha !== undefined) {
+        setResolved(resolved, headSha);
         return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', headSha), headSha));
       }
       return newestCommitRuns(await this.listRunsBy(repo, '--branch', target.branch));
     }
+    setResolved(resolved, target.sha);
     return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', target.sha), target.sha));
+  }
+
+  /**
+   * Checks on the target's head commit that Actions workflow runs do not cover: third-party check
+   * runs and commit statuses. A `run` target is Actions-only and has none. The sha comes from
+   * `knownSha`, else from `runs` (already limited to one commit), else one head lookup. A
+   * permission error (403) degrades to no checks with `unavailable` set; other failures throw.
+   */
+  async listChecks(
+    repo: string,
+    target: WatchTarget,
+    runs: GhRunInfo[] = [],
+    knownSha?: string,
+  ): Promise<ChecksResult> {
+    if (target.kind === 'run') {
+      return { checks: [] };
+    }
+    const isFull = (value: string | undefined): value is string => value !== undefined && /^[0-9a-f]{40}$/i.test(value);
+    const fromRuns = runs[0]?.headSha;
+    const sha = isFull(knownSha) ? knownSha : isFull(fromRuns) ? fromRuns : await this.resolveHeadSha(repo, target);
+    if (!isFull(sha)) {
+      return { checks: [] };
+    }
+    const checkRuns = await this.exec(['api', `repos/${repo}/commits/${sha}/check-runs?per_page=100`, '--paginate', '--jq', CHECK_RUN_JQ]);
+    if (isPermissionError(checkRuns)) {
+      return this.degraded(repo, 'check-runs', checkRuns);
+    }
+    assertOk(checkRuns, `api commits/${sha}/check-runs`);
+    const statuses = await this.exec(['api', `repos/${repo}/commits/${sha}/status?per_page=100`, '--paginate', '--jq', STATUS_JQ]);
+    if (isPermissionError(statuses)) {
+      return this.degraded(repo, 'status', statuses);
+    }
+    assertOk(statuses, `api commits/${sha}/status`);
+    return {
+      checks: [
+        ...normaliseCheckRuns(parseJsonLines(checkRuns.stdout, `api commits/${sha}/check-runs`)),
+        ...normaliseStatuses(parseJsonLines(statuses.stdout, `api commits/${sha}/status`)),
+      ],
+    };
+  }
+
+  private degraded(repo: string, what: string, result: GhExecResult): ChecksResult {
+    const detail = result.stderr.trim().split('\n')[0] ?? '';
+    const unavailable = `cannot read ${what} for ${repo} (${detail.slice(0, 120)})`;
+    if (!this.warnedUnavailable) {
+      this.warnedUnavailable = true;
+      process.stderr.write(`gh-watcher: warning: ${unavailable}; using Actions runs only\n`);
+    }
+    return { checks: [], unavailable };
   }
 
   /**
@@ -524,22 +711,37 @@ export class GhClient {
   }
 }
 
-export function aggregateState(runs: GhRunInfo[]): CheckState {
-  if (runs.length === 0) {
+export function aggregateState(runs: GhRunInfo[], checks: ExternalCheck[] = []): CheckState {
+  if (runs.length === 0 && checks.length === 0) {
     return 'none';
   }
-  if (runs.some((run) => run.status !== 'completed')) {
+  if (runs.some((run) => run.status !== 'completed') || checks.some((check) => check.status === 'pending')) {
     return 'pending';
   }
-  if (runs.some((run) => isFailureish(run.conclusion))) {
+  if (runs.some((run) => isFailureish(run.conclusion)) || checks.some((check) => check.status === 'failure')) {
     return 'failure';
   }
   return 'success';
 }
 
-export function runsKey(runs: GhRunInfo[]): string {
-  return runs
+export function failedChecksOf(checks: ExternalCheck[]): FailedCheck[] {
+  return checks
+    .filter((check) => check.status === 'failure')
+    .map((check) => ({ kind: check.kind, name: check.name, source: check.source, url: check.url }));
+}
+
+/**
+ * Change-detection key: the run ids, then (when there are external checks) each check with its
+ * status, so any status change of any check changes the key.
+ */
+export function runsKey(runs: GhRunInfo[], checks: ExternalCheck[] = []): string {
+  const ids = runs
     .map((run) => run.databaseId)
     .sort((left, right) => left - right)
     .join(',');
+  if (checks.length === 0) {
+    return ids;
+  }
+  const parts = checks.map((check) => `${check.kind}:${check.source}:${check.name}=${check.status}`).sort();
+  return `${ids}|${parts.join(',')}`;
 }

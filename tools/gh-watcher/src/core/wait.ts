@@ -47,6 +47,14 @@ function isTerminal(report: CheckReport): boolean {
   return report.state === 'success' || report.state === 'failure';
 }
 
+/**
+ * The relay only delivers Actions `workflow_run` events, so a pending non-Actions check (or no
+ * checks seen yet, which may be statuses that have not started) can only be noticed by polling.
+ */
+function needsPolling(report: CheckReport): boolean {
+  return report.state === 'none' || report.checks.some((check) => check.status === 'pending');
+}
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -165,7 +173,9 @@ async function waitWithEvents(
     if (now >= deadline) {
       return { kind: 'timeout', source: 'events' };
     }
-    const untilFallback = Math.max(0, options.fallbackMs - (now - lastCheck));
+    const polling = needsPolling(report);
+    const recheckMs = polling ? Math.min(options.fallbackMs, options.intervalMs) : options.fallbackMs;
+    const untilFallback = Math.max(0, recheckMs - (now - lastCheck));
     const waitSeconds = Math.min(MAX_EVENT_WAIT_SECONDS, Math.ceil(Math.min(deadline - now, untilFallback) / 1000));
     let response: RunsResponse;
     try {
@@ -198,7 +208,7 @@ async function waitWithEvents(
         }
       }
     }
-    const fallbackDue = Date.now() - lastCheck >= options.fallbackMs;
+    const fallbackDue = Date.now() - lastCheck >= recheckMs;
     full = full || confirm;
     if (!full && !fallbackDue) {
       continue;
@@ -221,7 +231,7 @@ async function waitWithEvents(
 
 /** Recompute the state locally from updated runs; failed steps are only fetched by a confirming check. */
 function localReport(previous: CheckReport, runs: GhRunInfo[]): CheckReport {
-  return { ...previous, state: aggregateState(runs), runs, failedSteps: [], checkedAt: new Date().toISOString() };
+  return { ...previous, state: aggregateState(runs, previous.checks), runs, failedSteps: [], failedChecks: [], checkedAt: new Date().toISOString() };
 }
 
 function describe(error: unknown): string {

@@ -59,6 +59,7 @@ function runRun(databaseId: number, status: string, conclusion: string | null): 
 function fakeClient(): GhClient {
   return {
     listRuns: async () => currentRuns,
+    listChecks: async () => ({ checks: [] }),
     runJobs: async () => [],
     collectFailures: async () => currentFailures,
   } as unknown as GhClient;
