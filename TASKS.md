@@ -61,9 +61,9 @@ ETA: 2026-11-05 22:00 ICT
 | 18 | Release gh-watcher 0.4.0 and install it on hq0 | done | claude | | 7.17 | 2026-11-05 16:00 ICT | Released gh-watcher-v0.4.0 (run 41996787995); checksum OK<br>Installed on hq0; 0.3.0 kept as gh-watcher.v0.3.0<br>Live pr wait matched via relay events (source events) |
 
 ## 8. gh-watcher tracks every check and status
-ETA: 2026-11-06 23:30 ICT
+ETA: 2026-11-06 18:30 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 19 | Track all check runs and commit statuses, not only Actions runs | in_progress | claude | gh-watcher-all-checks | | 2026-11-06 22:30 ICT | Trigger: nazare-platform PR 667 had only Terraform Cloud statuses; wait sat at none until timeout |
-| 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | todo | claude | | 8.19 | 2026-11-06 23:30 ICT | |
+| 19 | Track all check runs and commit statuses, not only Actions runs | done | claude | gh-watcher-all-checks | | 2026-11-06 18:20 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/83 (8bcac13)<br>262 tests; live wait on a Terraform-Cloud-only PR returned success |
+| 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | done | claude | | 8.19 | 2026-11-06 18:30 ICT | Released gh-watcher-v0.5.0 (run 42209707033); checksum OK<br>Installed on hq0; 0.4.0 kept as gh-watcher.v0.4.0<br>Skill doc updated in ThomasMcFarlane/.ais |
