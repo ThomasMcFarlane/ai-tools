@@ -69,6 +69,18 @@ Do not write "Previous status: <old>." in Notes: the "Dropped:", "Superseded by"
   under its own heading. Prose sections and closed rows (done, dropped, superseded) are never deleted. When
   condensing open rows, keep the facts and evidence links; narrative history may be cut because git history keeps it.
 
+Adding rows:
+- File every new row under the numbered epic whose topic it belongs to. Choose the epic by meaning, never by position.
+- Never append a row after the last row of the file. The last epic is not a default.
+- Never file new rows under a catch-all section ("Programme backlog", "Additional tracked work", or any epic named
+  backlog, additional, misc or other).
+- If no epic fits, create a new numbered epic (highest number + 1): the "## <N>. <name>" heading, a one-paragraph
+  intro (one line, at most 400 characters), the "ETA:" line and the table header, then add the row there.
+- Depends references use the row's actual epic number. When moving a row to another epic, rewrite every
+  <oldEpic>.<id> reference to it (Depends, "Superseded by", Notes) to <newEpic>.<id>.
+- The check fails on an open row after the last closed row of the board's last epic when that epic is otherwise
+  finished (other open rows parked) and the row's ID is more than 50 above the epic's highest closed ID.
+
 Writing rows (the check fails on these; length limits apply only to open rows, the epic-name rule only to epics with open rows):
 - Epic names are descriptive and focused: name the outcome or area of work, never its position, status or date.
   Bad: "Active", "Backlog", "Follow-ups 1.140 to 1.155", "Task 443 onwards", "Additional tracked work", "Open: Follow-ups",

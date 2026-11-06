@@ -55,6 +55,21 @@
   under its own heading. Prose sections and closed rows (`done`, `dropped`, `superseded`) are never deleted. When
   condensing open rows, keep the facts and evidence links; narrative history may be cut because git history keeps it.
 
+## Adding rows
+
+- File every new row under the numbered epic whose topic it belongs to. Choose the epic by meaning, never by position.
+- Never append a row after the last row of the file. The last epic is not a default.
+- Never file new rows under a catch-all section ("Programme backlog", "Additional tracked work", or any epic named
+  backlog, additional, misc or other).
+- If no epic fits, create a new numbered epic (highest number + 1): the `## <N>. <name>` heading, a one-paragraph
+  intro (one line, at most 400 characters), the `ETA:` line and the table header, then add the row there.
+- Depends references use the row's actual epic number. When moving a row to another epic, rewrite every
+  `<oldEpic>.<id>` reference to it (Depends, `Superseded by`, Notes) to `<newEpic>.<id>`.
+- The check fails (rule `epic-placement`) on an open row that sits after the last closed row of the board's last
+  epic when that epic is otherwise finished (its other open rows are parked) and the row's ID is more than 50 above
+  the epic's highest closed ID: the signature of a row appended after the last row of the file. It warns (rule
+  `catch-all-epic`) on every open row under a catch-all epic.
+
 ## Writing rows
 
 The check fails on all of these. The length limits apply only to open rows (status not `done`, `dropped` or
