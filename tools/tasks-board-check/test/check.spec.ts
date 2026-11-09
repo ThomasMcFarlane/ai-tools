@@ -114,6 +114,20 @@ describe('epicEtaWarnings', () => {
     expect(epicEtaWarnings(T('ETA: 2026-10-14 18:00 ICT', 'done'), now)).toEqual([]);
     expect(epicEtaWarnings(T('', 'done'), now)).toEqual([]);
   });
+  const M = (eta: string, ...statuses: string[]) =>
+    `## 1. E\n${eta}\n\n${H}${statuses.map((s, i) => `| ${i + 1} | t | ${s} | | | | | |\n`).join('')}`;
+  it('does not warn when every open row is blocked or blocked_on_owner and there is no ETA', () => {
+    expect(epicEtaWarnings(M('', 'blocked', 'blocked_on_owner', 'done'), now)).toEqual([]);
+  });
+  it('does not warn when every open row is blocked or blocked_on_owner and the ETA is past', () => {
+    expect(epicEtaWarnings(M('ETA: 2026-10-14 18:00 ICT', 'blocked', 'blocked_on_owner'), now)).toEqual([]);
+  });
+  it('still warns on a past ETA when a blocked row sits beside an in_progress row', () => {
+    expect(epicEtaWarnings(M('ETA: 2026-10-14 18:00 ICT', 'blocked', 'in_progress'), now)[0]!.message).toContain('past');
+  });
+  it('still warns on a missing ETA when a blocked row sits beside an in_progress row', () => {
+    expect(epicEtaWarnings(M('', 'blocked_on_owner', 'in_progress'), now)[0]!.message).toContain('no "ETA');
+  });
 });
 
 describe('board quality rules', () => {

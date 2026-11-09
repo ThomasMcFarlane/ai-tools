@@ -958,14 +958,16 @@ const TZ_HOURS: Record<string, number> = { ICT: 7, UTC: 0, GMT: 0, BST: 1 }
 /**
  * Warnings (never CI failures) for epics: each epic that holds a task table needs an `ETA: YYYY-MM-DD HH:MM <TZ>`
  * line under its heading, and while it has open rows that ETA must not be in the past. A time zone this does not
- * know (anything but ICT, UTC, GMT, BST) is not checked for being past.
+ * know (anything but ICT, UTC, GMT, BST) is not checked for being past. An epic whose open rows are all `blocked` or
+ * `blocked_on_owner` is exempt from the missing and past checks (any date would be invented); a malformed ETA there
+ * still warns.
  */
 export function epicEtaWarnings(text: string, now: Date = new Date()): LintIssue[] {
   const out: LintIssue[] = []
-  const epics: { no: number; eta?: string; open: boolean; table: boolean }[] = []
+  const epics: { no: number; eta?: string; open: boolean; active: boolean; table: boolean }[] = []
   let col: Cols | undefined
   for (const { text: line, no } of joinRowsNumbered(text.split('\n'))) {
-    if (/^##\s/.test(line)) epics.push({ no, open: false, table: false })
+    if (/^##\s/.test(line)) epics.push({ no, open: false, active: false, table: false })
     const e = epics[epics.length - 1]
     if (!e) continue
     const eta = /^ETA:\s*(.*\S)\s*$/.exec(line)
@@ -978,16 +980,19 @@ export function epicEtaWarnings(text: string, now: Date = new Date()): LintIssue
     if (/^(#|id)$/i.test(c[0] ?? '')) {
       col = columnsOf(c)
       if (col) e.table = true
-    } else if (col && ID.test(c[col.id] ?? '') && !['done', 'dropped', 'superseded', 'parked'].includes(c[col.status] ?? '')) e.open = true
+    } else if (col && ID.test(c[col.id] ?? '') && !['done', 'dropped', 'superseded', 'parked'].includes(c[col.status] ?? '')) {
+      e.open = true
+      if (!['blocked', 'blocked_on_owner'].includes(c[col.status] ?? '')) e.active = true
+    }
   }
   for (const e of epics.filter(x => x.table)) {
     if (e.eta === undefined) {
-      if (e.open) out.push({ line: e.no, rule: 'epic-eta', message: 'epic has no "ETA: YYYY-MM-DD HH:MM <timezone>" line under its heading' })
+      if (e.active) out.push({ line: e.no, rule: 'epic-eta', message: 'epic has no "ETA: YYYY-MM-DD HH:MM <timezone>" line under its heading' })
       continue
     }
     const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}) ([A-Z]{2,5})$/.exec(e.eta)
     if (!ETA_FORMAT.test(e.eta)) out.push({ line: e.no, rule: 'epic-eta', message: `epic ETA not YYYY-MM-DD HH:MM <timezone>: "${e.eta}"` })
-    else if (m && m[6]! in TZ_HOURS && e.open && Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]! - TZ_HOURS[m[6]!]!, +m[5]!) < now.getTime())
+    else if (m && m[6]! in TZ_HOURS && e.active && Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!, +m[4]! - TZ_HOURS[m[6]!]!, +m[5]!) < now.getTime())
       out.push({ line: e.no, rule: 'epic-eta', message: `epic ETA is in the past while it has open rows: "${e.eta}"` })
   }
   return out
