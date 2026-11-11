@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { stateDir } from './store.js';
 
 export interface GitFacts {
   toplevel(cwd: string): Promise<string | null>;
@@ -82,21 +81,6 @@ export function realGit(): GitFacts {
       return lines(await git(root, ['ls-files', '-z']), '\0');
     },
   };
-}
-
-function stateDir(): string {
-  const override = process.env.AI_TOOLS_REPO_READY_STATE_DIR;
-  if (override !== undefined && override.length > 0) {
-    return override;
-  }
-  const xdg = process.env.XDG_STATE_HOME;
-  const base =
-    xdg !== undefined && xdg.length > 0
-      ? xdg
-      : process.platform === 'win32'
-        ? (process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'))
-        : join(homedir(), '.local', 'state');
-  return join(base, 'ai-tools', 'repo-ready');
 }
 
 async function readStdin(): Promise<string> {
