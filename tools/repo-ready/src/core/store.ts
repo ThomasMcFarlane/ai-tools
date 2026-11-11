@@ -2,6 +2,7 @@ import {
   appendFile,
   copyFile,
   mkdir,
+  open,
   readFile,
   rename,
   rm,
@@ -53,8 +54,16 @@ async function readOptional(path: string): Promise<string | null> {
 }
 
 export async function readMap(dir: string): Promise<StoredMap | null> {
-  const raw = await readOptional(join(dir, MAP_FILE));
-  return raw === null ? null : (JSON.parse(raw) as StoredMap);
+  const file = join(dir, MAP_FILE);
+  const raw = await readOptional(file);
+  if (raw === null) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as StoredMap;
+  } catch (error) {
+    throw new Error(`${file} is damaged: ${(error as Error).message}`);
+  }
 }
 
 export async function writeMap(dir: string, map: StoredMap, repo: RepoState): Promise<void> {
@@ -82,9 +91,34 @@ export async function writeMap(dir: string, map: StoredMap, repo: RepoState): Pr
   await rename(temporary, join(dir, MAP_FILE));
 }
 
+async function endsCut(file: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await open(file, 'r');
+  } catch (error) {
+    if (isMissing(error)) {
+      return false;
+    }
+    throw error;
+  }
+  try {
+    const { size } = await handle.stat();
+    if (size === 0) {
+      return false;
+    }
+    const last = Buffer.alloc(1);
+    await handle.read(last, 0, 1, size - 1);
+    return last[0] !== 0x0a;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function appendEvent(dir: string, event: LogEvent): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await appendFile(join(dir, EVENTS_FILE), `${JSON.stringify(event)}\n`);
+  const file = join(dir, EVENTS_FILE);
+  const lead = (await endsCut(file)) ? '\n' : '';
+  await appendFile(file, `${lead}${JSON.stringify(event)}\n`);
 }
 
 export async function readEvents(dir: string): Promise<LogEvent[]> {

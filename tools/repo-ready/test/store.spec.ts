@@ -98,6 +98,21 @@ describe('store', () => {
     expect(String(warn.mock.calls[0]?.[0])).toContain('events.jsonl');
   });
 
+  it('appendEvent starts a new line after a crash-cut last line', async () => {
+    await appendEvent(dir, askEvent({}));
+    await appendFile(join(dir, 'events.jsonl'), '{"type":"ask","prom');
+    await appendEvent(dir, askEvent({ questionId: 'q2' }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const events = await readEvents(dir);
+    expect(events.map((e) => (e.type === 'ask' ? e.questionId : e.type))).toEqual(['q1', 'q2']);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('readMap names the file when map.json is damaged', async () => {
+    await writeFile(join(dir, 'map.json'), '{"areas": [');
+    await expect(readMap(dir)).rejects.toThrow(join(dir, 'map.json'));
+  });
+
   it('readEvents treats blank lines as harmless', async () => {
     await appendEvent(dir, askEvent({}));
     await appendFile(join(dir, 'events.jsonl'), '\n\n');
