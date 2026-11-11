@@ -11,7 +11,7 @@ Use these instructions when a person asks to learn a repository, to be quizzed o
 
 Requires `repo-ready` on `PATH`, or `<repo>/tools/repo-ready/dist/cli.js` from a built `ai-tools` checkout (`<repo>` is that checkout, not the repository being studied); call it with `node` wherever these instructions say `repo-ready`. Run every command from the root of the studied repository, or add `--repo <path>`.
 
-Exit codes: `0` success; `1` not found (no map yet, no open session, no history); `2` error, with the reason on standard error. On `2`, read the message and fix the call; never work around it.
+Exit codes: `0` success; `1` not found (no map yet, no history, or `session end` with no open session); `2` error, with the reason on standard error (this includes `ask` and `teach` with no open session). On `2`, read the message and fix the call; never work around it.
 
 ## Rules
 
@@ -48,7 +48,7 @@ Read, in this order: the README and any design docs; agent and contributor guide
 
 Find principles by asking what a newcomer would most likely break, what looks odd until you know why, and what the tests guard. Two to four per area is typical.
 
-**How many areas:** a normal repository has 4 to 10; a small one may have fewer. Never pad the map to reach a number. **Key areas** (`"key": true`) are the ones nobody can work on the repository without: the core flows, the state, the public interface. They alone set the overall verdict, so leave peripheral tooling and examples out of them. At least one area must be key. `paths` are globs relative to the root. `revision` starts at 1. Area and principle ids are lower-case letters, digits and hyphens, and every evidence file must exist in the repository, or `map set` exits `2`.
+**How many areas:** a normal repository has 4 to 10; a small one may have fewer. Never pad the map to reach a number. **Key areas** (`"key": true`) are the ones nobody can work on the repository without: the core flows, the state, the public interface. They alone set the overall verdict, so leave peripheral tooling and examples out of them. At least one area must be key. `paths` are globs relative to the repository root; each area's paths must match at least one tracked file, and a folder needs `/**` (`src/queue/**`, not `src/queue`). `revision` starts at 1. Area and principle ids are lower-case letters, digits and hyphens, and every evidence file must exist in the repository, or `map set` exits `2`.
 
 ```json
 {
