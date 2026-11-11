@@ -1,6 +1,7 @@
+import { join } from 'node:path';
 import type { Command } from 'commander';
 import type { Deps } from '../core/deps.js';
-import { EVIDENCE } from '../core/map.js';
+import { evidencePath, evidenceProblem } from '../core/map.js';
 import { buildModel } from '../core/model.js';
 import { readEvents } from '../core/store.js';
 import {
@@ -162,11 +163,13 @@ async function ask(deps: Deps, command: Command, opts: AskOptions): Promise<void
   if (opts.evidence.length === 0) {
     throw new Error('ask needs at least one --evidence <path:line>');
   }
-  const badEvidence = opts.evidence.filter((e) => !EVIDENCE.test(e));
-  if (badEvidence.length > 0) {
-    throw new Error(
-      `evidence must be in path:line or path:line-line form: ${badEvidence.join(', ')}`,
-    );
+  const badEvidence = opts.evidence.flatMap((e) => evidenceProblem(e) ?? []);
+  if (badEvidence.length > 0) throw new Error(badEvidence.join('; '));
+  for (const item of opts.evidence) {
+    const path = evidencePath(item);
+    if (!(await deps.fileExists(join(ctx.repo.root, path)))) {
+      throw new Error(`evidence "${item}" points at ${path}, which does not exist`);
+    }
   }
   const principleIds = splitList(opts.principles);
   const unknown = principleIds.filter((id) => !area.principles.some((p) => p.id === id));

@@ -1,6 +1,7 @@
 import { median } from './stats.js';
 import { levelRank } from './model.js';
 import {
+  LEVEL_PASSES,
   LEVELS,
   QTYPES,
   RECENT_PROMPTS,
@@ -95,7 +96,7 @@ export function nextTargets(
       ? 'stale'
       : area.level === 'rebuild'
         ? 'keep_fresh'
-        : area.perLevel[level].valid < 2
+        : area.perLevel[level].valid < LEVEL_PASSES
           ? 'untested'
           : 'not_held';
     return {

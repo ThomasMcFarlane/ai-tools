@@ -130,17 +130,28 @@ describe('chartData', () => {
     expect(timeline.maps[0]).toMatchObject({ commit: 'c1', raised: ['a'] });
   });
 
-  it('levels data covers non-retired areas with their summary', () => {
+  it('levels data lists live areas with their summary, then retired areas marked retired', () => {
     const log = new LogBuilder().session();
     log.q('gone', 'read', 4);
+    log.q('gone', 'read', 4);
+    log.q('a', 'read', 1);
     const map = sampleMap();
-    const data = chartData('levels', map, buildModel(map, log.events), log.events);
+    const model = buildModel(map, log.events);
+    const data = chartData('levels', map, model, log.events);
     if (data.kind !== 'levels') throw new Error('kind');
-    expect(data.areas.map((a) => [a.id, a.summary])).toEqual([
-      ['a', 'What area a does.'],
-      ['b', 'What area b does.'],
-      ['c', 'What area c does.'],
+    expect(data.areas.map((a) => [a.id, a.summary, a.retired])).toEqual([
+      ['a', 'What area a does.', false],
+      ['b', 'What area b does.', false],
+      ['c', 'What area c does.', false],
+      ['gone', '', true],
     ]);
+    expect(data.verdict).toEqual(model.verdict);
+    expect(data.verdict.kind).toBe('not_enough_evidence');
+    const text = renderText(data);
+    expect(text.split('\n').find((l) => l.startsWith('gone'))).toContain('retired');
+    expect(renderHtml([data], 'example.com/octo-org/hello-world')).toContain(
+      '<td>gone</td><td>gone</td><td>Ready to be interviewed on it</td><td></td><td>retired</td>',
+    );
   });
 });
 

@@ -64,7 +64,7 @@ function standing(questions: QuestionRecord[]): Standing {
     if (!perLevel[candidate].held) break;
     level = candidate;
   }
-  return { level, untested: perLevel.read.valid < 2, perLevel };
+  return { level, untested: perLevel.read.valid < LEVEL_PASSES, perLevel };
 }
 
 function track(

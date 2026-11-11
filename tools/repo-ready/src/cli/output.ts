@@ -1,8 +1,8 @@
 import { areaMarks, formatTable, verdictText } from '../core/format.js';
-
-export { formatTable, verdictText };
 import type { SessionSummary } from '../core/stats.js';
 import { LEVEL_LABELS, type AreaState } from '../core/types.js';
+
+export { formatTable, verdictText };
 
 export function printJson(print: (text: string) => void, data: unknown): void {
   print(JSON.stringify(data, null, 2));

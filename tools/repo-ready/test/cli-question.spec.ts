@@ -163,6 +163,17 @@ describe('question lifecycle', () => {
     expect(await eventCount(world)).toBe(before);
   });
 
+  it('ask refuses evidence in a missing file or outside the path rules, and writes nothing', async () => {
+    const world = await worldWithMap();
+    const before = await eventCount(world);
+    for (const evidence of ['src/a/missing.ts:1', './src/a/x.ts:1', '../x.ts:1', 'src\\a.ts:1']) {
+      const r = await runCli(askArgs(['--evidence', evidence]), world);
+      expect(r.code).toBe(2);
+      expect(r.error?.message).toContain(evidence);
+    }
+    expect(await eventCount(world)).toBe(before);
+  });
+
   it('recorded prompt, answer and notes lose trailing whitespace only', async () => {
     const world = await makeWorld({
       files: {

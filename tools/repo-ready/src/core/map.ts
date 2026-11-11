@@ -39,10 +39,10 @@ export function evidencePath(evidence: string): string {
 
 export function evidenceProblem(evidence: string): string | null {
   if (!EVIDENCE.test(evidence)) {
-    return `evidence ${JSON.stringify(evidence)} must look like path:line or path:line-line`;
+    return `evidence "${evidence}" must look like path:line or path:line-line`;
   }
   const problem = pathProblem(evidencePath(evidence));
-  return problem === null ? null : `evidence ${JSON.stringify(evidence)} ${problem}; ${PATH_RULE}`;
+  return problem === null ? null : `evidence "${evidence}" ${problem}; ${PATH_RULE}`;
 }
 
 function validatePrinciple(
@@ -91,15 +91,15 @@ function validateArea(
   problems: string[],
 ): Area | null {
   if (!isRecord(raw)) {
-    problems.push(`area ${index + 1}: must be an object`);
+    problems.push(`area #${index + 1}: must be an object`);
     return null;
   }
   const before = problems.length;
   const id = typeof raw['id'] === 'string' ? raw['id'] : '';
-  const where = `area "${id}"`;
+  const where = SLUG.test(id) ? `area "${id}"` : `area #${index + 1}`;
   if (!SLUG.test(id)) {
     problems.push(
-      `area ${index + 1}: id "${id}" must be a slug (lower-case letters, digits, hyphens)`,
+      `area #${index + 1}: id "${id}" must be a slug (lower-case letters, digits, hyphens)`,
     );
   } else if (seen.has(id)) {
     problems.push(`duplicate area id "${id}"`);

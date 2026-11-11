@@ -148,7 +148,10 @@ export function chartData(
       return {
         kind,
         verdict: model.verdict,
-        areas: live.map((a) => ({ ...a, summary: summaries.get(a.id) ?? '' })),
+        areas: [...live, ...model.areas.filter((a) => a.retired)].map((a) => ({
+          ...a,
+          summary: summaries.get(a.id) ?? '',
+        })),
       };
     }
     case 'accuracy':

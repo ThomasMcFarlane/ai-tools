@@ -188,6 +188,17 @@ describe('validateMap', () => {
     expect(problemsOf(map).join(' ')).toMatch(/relative to the repository root/);
   });
 
+  it('names an area with an invalid id by its position', () => {
+    const map = clone();
+    const second = map.areas[1] as Area;
+    second.id = '';
+    second.title = '';
+    const problems = problemsOf(map);
+    expect(problems).toContain('area #2: title must not be empty');
+    expect(problems.some((p) => p.startsWith('area #2: id ""'))).toBe(true);
+    expect(problems.join(' ')).not.toContain('area ""');
+  });
+
   it('reports every problem at once', () => {
     const map = clone();
     first(map).title = '';
@@ -443,6 +454,19 @@ describe('mapChanges', () => {
     const r = await mapChanges(overlapping, await readRepoState('/w', git), git);
     expect(r.areas.map((a) => a.id)).toEqual(['a', 'b']);
     expect(r.unmapped).toEqual([]);
+  });
+
+  it('cannot compare when the repository has no commits but the map has one', async () => {
+    const git = fakeGit({ head: null, branch: null, rootCommit: null, commits: [] });
+    const r = await mapChanges(stored('c1'), await readRepoState('/w', git), git);
+    expect(r).toMatchObject({
+      comparable: false,
+      reason: 'The repository has no commits yet, so there is nothing to compare.',
+      from: 'c1',
+      to: null,
+      areas: [],
+      unmapped: [],
+    });
   });
 
   it('cannot compare when the map commit is gone, the map has no commit, or the folder is not a repository', async () => {
