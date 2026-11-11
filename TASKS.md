@@ -69,7 +69,7 @@ ETA: 2026-11-06 18:30 ICT
 | 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | done | claude | | 8.19 | 2026-11-06 18:30 ICT | Released gh-watcher-v0.5.0 (run 42209707033); checksum OK<br>Installed on hq0; 0.4.0 kept as gh-watcher.v0.4.0<br>Skill doc updated in ThomasMcFarlane/.ais |
 
 ## 9. repo-ready readiness quiz tool and skills
-ETA: 2026-11-12 06:00 ICT
+ETA: 2026-11-12 12:00 ICT
 
 A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person on a repository's design, track every answer, and report a readiness level per design area.
 
