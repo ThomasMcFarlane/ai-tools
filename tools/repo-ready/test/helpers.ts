@@ -1,6 +1,6 @@
 import type { GitFacts } from '../src/core/deps.js';
 import type { RepoState } from '../src/core/identity.js';
-import type { LogEvent, StoredMap } from '../src/core/types.js';
+import type { Area, LogEvent, MapInput, StoredMap } from '../src/core/types.js';
 
 export interface FakeGitState {
   toplevel: string | null;
@@ -91,4 +91,30 @@ export function askEvent(overrides: Record<string, unknown> = {}): LogEvent {
     followUpOf: null,
     ...overrides,
   } as LogEvent;
+}
+
+export function sampleMap(): MapInput {
+  const area = (id: string, key: boolean, paths: string[], evidence: string): Area => ({
+    id,
+    title: `Area ${id}`,
+    summary: `What area ${id} does.`,
+    key,
+    paths,
+    revision: 1,
+    principles: [
+      {
+        id: `${id}-p1`,
+        statement: `Principle of area ${id}.`,
+        reason: `Why area ${id} works this way.`,
+        evidence: [evidence],
+      },
+    ],
+  });
+  return {
+    areas: [
+      area('a', true, ['src/a/**'], 'src/a/x.ts:1'),
+      area('b', true, ['src/b/**'], 'src/b/x.ts:1'),
+      area('c', false, ['docs/*.md'], 'docs/a.md:1'),
+    ],
+  };
 }
