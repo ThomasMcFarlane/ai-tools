@@ -69,12 +69,12 @@ ETA: 2026-11-06 18:30 ICT
 | 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | done | claude | | 8.19 | 2026-11-06 18:30 ICT | Released gh-watcher-v0.5.0 (run 42209707033); checksum OK<br>Installed on hq0; 0.4.0 kept as gh-watcher.v0.4.0<br>Skill doc updated in ThomasMcFarlane/.ais |
 
 ## 9. repo-ready readiness quiz tool and skills
-ETA: 2026-11-12 12:00 ICT
+ETA: 2026-11-19 18:00 ICT
 
 A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person on a repository's design, track every answer, and report a readiness level per design area.
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | in_review | claude | repo-ready | | 2026-11-12 12:00 ICT | Design and plan in docs/superpowers (specs, plans)<br>PR https://github.com/ThomasMcFarlane/ai-tools/pull/89<br>CLI (20 commands, charts, report), three skills, docs, release wiring; 262 tests<br>Whole-branch review and a fresh-agent acceptance run done; waits on owner merge |
-| 22 | Release repo-ready 0.1.0 | todo | claude | | 9.21 | | Blocked on 9.21 |
+| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | done | claude | repo-ready | | 2026-11-12 12:00 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/89 (cf946bc)<br>262 tests; whole-branch review; a fresh agent ran three sessions from the skill alone<br>Design and plan in docs/superpowers (specs, plans) |
+| 22 | Release repo-ready 0.1.0 | done | claude | | 9.21 | 2026-11-12 01:00 ICT | Released repo-ready-v0.1.0 (run 43072568860); checksum OK<br>Installed on hq0 at ~/.local/bin/repo-ready<br>Skill added to shared-skills in ThomasMcFarlane/.ais#95 |
 | 23 | Close the remaining map-edit and identity gaps in repo-ready | todo | | | 9.21 | | From the final review; each needs a deliberate map edit or a rare setup<br>Paths moved onto an active folder let an area be dropped later<br>"Files gone" reads the git index, not committed files<br>An older-key history is hidden once another checkout starts a higher-priority one<br>State-folder guard does not follow symlinks |
