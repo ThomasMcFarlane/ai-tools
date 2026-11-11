@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { appendEvent } from '../src/core/store.js';
+import type { LogEvent } from '../src/core/types.js';
 import { makeWorld, removeWorlds, runCli } from './helpers.js';
 
 afterEach(removeWorlds);
@@ -117,5 +119,43 @@ describe('session and teach', () => {
       commit: 'c9',
       mapCommit: 'c1',
     });
+  });
+
+  it('session end text labels the level on each per-area line', async () => {
+    const world = await withMap();
+    await runCli(['session', 'start', '--mode', 'interview'], world);
+    const status = (await runCli(['status', '--json'], world)).json() as { stateDir: string };
+    const base = {
+      sessionId: 's1',
+      mode: 'interview',
+      branch: 'main',
+      commit: 'c1',
+      dirty: false,
+      mapCommit: 'c1',
+    };
+    const at = (n: number): string => new Date(Date.UTC(2026, 0, 5, 9, 1 + n)).toISOString();
+    const events = [
+      {
+        at: at(0),
+        type: 'ask',
+        questionId: 'q1',
+        areaId: 'a',
+        revision: 1,
+        level: 'read',
+        qtype: 'explain',
+        principleIds: [],
+        prompt: 'What does it do?',
+        evidence: [],
+        followUpOf: null,
+      },
+      { at: at(1), type: 'answer', questionId: 'q1', text: 'It does.', durationMs: 5000 },
+      { at: at(2), type: 'grade', questionId: 'q1', score: 4, notes: '', gaps: [] },
+    ].map((e) => ({ ...base, ...e }) as LogEvent);
+    for (const event of events) await appendEvent(status.stateDir, event);
+    const r = await runCli(['session', 'end'], world);
+    const line = r.out.split('\n').find((l) => l.includes('a at '));
+    expect(line).toContain('read');
+    expect(line).toContain('Ready to be interviewed on it');
+    expect(line).toContain('1 of 1 passed');
   });
 });

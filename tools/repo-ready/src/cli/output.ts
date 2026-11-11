@@ -1,5 +1,5 @@
 import type { SessionSummary } from '../core/stats.js';
-import type { AreaState, Verdict } from '../core/types.js';
+import { LEVEL_LABELS, type AreaState, type Verdict } from '../core/types.js';
 
 export function formatTable(rows: string[][]): string {
   const widths: number[] = [];
@@ -32,7 +32,9 @@ export function areasText(areas: AreaState[]): string {
       a.key ? 'key' : '',
       [
         a.retired ? 'retired' : '',
-        a.stale ? `stale${a.staleFrom === null ? '' : ` (was ${a.staleFrom})`}` : '',
+        a.stale
+          ? `stale${a.staleFrom === null ? '' : ` (was ${a.staleFrom}: ${LEVEL_LABELS[a.staleFrom]})`}`
+          : '',
         a.untested ? 'untested' : '',
       ]
         .filter((n) => n.length > 0)
@@ -71,7 +73,9 @@ export function summaryText(summary: SessionSummary): string {
     ]),
   ];
   for (const e of summary.byArea) {
-    lines.push(`  ${e.areaId} at ${e.level}: ${e.passed} of ${e.asked} passed`);
+    lines.push(
+      `  ${e.areaId} at ${e.level} (${LEVEL_LABELS[e.level]}): ${e.passed} of ${e.asked} passed`,
+    );
   }
   return lines.join('\n');
 }

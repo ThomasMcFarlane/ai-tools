@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { defaultDeps, type Deps } from '../core/deps.js';
 import { NotFoundError } from '../core/types.js';
 import { VERSION } from '../version.js';
@@ -10,6 +10,10 @@ import { registerSessionCommands } from './session-commands.js';
 
 function buildProgram(deps: Deps): Command {
   const p = new Command();
+  p.exitOverride().configureOutput({
+    writeOut: (text) => deps.print(text.replace(/\n$/, '')),
+    writeErr: () => undefined,
+  });
   p.name('repo-ready')
     .description('Repository readiness quiz engine for AI agents')
     .version(VERSION, '-V, --version', 'print the version')
@@ -21,7 +25,13 @@ function buildProgram(deps: Deps): Command {
 
 export async function run(argv: string[], overrides: Partial<Deps> = {}): Promise<void> {
   const deps: Deps = { ...defaultDeps(), ...overrides };
-  await buildProgram(deps).parseAsync(argv);
+  try {
+    await buildProgram(deps).parseAsync(argv);
+  } catch (error) {
+    if (!(error instanceof CommanderError)) throw error;
+    if (error.exitCode === 0) return;
+    throw new Error(error.message.replace(/^error: /, ''));
+  }
 }
 
 export function isEntryModule(moduleUrl: string): boolean {
