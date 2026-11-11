@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Command } from 'commander';
 import type { Deps } from '../core/deps.js';
 import { renderHtml } from '../core/charts/html.js';
@@ -139,7 +139,7 @@ async function chart(
 
 function insideRoot(root: string, path: string): boolean {
   const rel = relative(resolve(root), path);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 async function report(
@@ -162,8 +162,9 @@ async function report(
   const events = await readEvents(ctx.dir);
   const model = buildModel(map, events);
   const charts = CHART_KINDS.map((kind) => chartData(kind, map, model, events));
-  const text =
-    format === 'html'
+  const text = ctx.json
+    ? JSON.stringify({ charts }, null, 2)
+    : format === 'html'
       ? renderHtml(charts, ctx.repo.key)
       : charts.map((c) => renderText(c)).join('\n\n');
   if (out === null) {
@@ -223,6 +224,7 @@ export function registerReadCommands(p: Command, deps: Deps): void {
     .description('Show all charts as text, or as one self-contained HTML page')
     .option('--format <format>', 'text or html (default text)')
     .option('--out <path>', 'write the report to a file outside the repository')
+    .option('--json', 'print (or write) all charts as JSON')
     .action(async (opts: { format?: string; out?: string }, command: Command) =>
       report(deps, command, opts),
     );

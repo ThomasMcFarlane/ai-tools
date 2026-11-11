@@ -1,4 +1,5 @@
-import { areaMarks } from '../../cli/output.js';
+import { areaMarks } from '../format.js';
+import { levelRank } from '../model.js';
 import type { ChartData } from '../stats.js';
 import { CHART_TITLES, formatDuration, percent, shortCommit, shortTime } from './text.js';
 
@@ -58,7 +59,6 @@ function table(head: string[], rows: string[][]): string {
   return `<table><thead>${cells('th', head)}</thead><tbody>${rows.map((r) => cells('td', r)).join('')}</tbody></table>`;
 }
 
-const RANK = { none: 0, read: 1, maintain: 2, rebuild: 3 } as const;
 const NO_SESSIONS = '<p>No sessions yet.</p>';
 
 function chartBody(data: ChartData): string {
@@ -68,7 +68,7 @@ function chartBody(data: ChartData): string {
       const marks = (a: (typeof data.areas)[number]): string => areaMarks(a);
       const rows = data.areas.map((a) => ({
         label: `${a.id} (${a.title})`,
-        fraction: RANK[a.level] / 3,
+        fraction: levelRank(a.level) / 3,
         value: [a.label, marks(a)].filter((v) => v.length > 0).join(', '),
         flagged: a.stale || a.untested,
       }));

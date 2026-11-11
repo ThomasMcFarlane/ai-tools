@@ -233,4 +233,33 @@ describe('read commands', () => {
     }
     expect(Object.keys(world.written ?? {})).toEqual([]);
   });
+
+  it('report --out treats a name starting with two dots inside the root as inside', async () => {
+    const world = await worldWithMap();
+    const r = await runCli(['report', '--format', 'html', '--out', '/w/..report.html'], world);
+    expect(r.code).toBe(2);
+    expect(r.error?.message).toContain('must not be written into the studied repository');
+    expect(Object.keys(world.written ?? {})).toEqual([]);
+    const ok = await runCli(['report', '--out', '/elsewhere/..report.html'], world);
+    expect(ok.code).toBe(0);
+    expect(Object.keys(world.written ?? {})).toEqual(['/elsewhere/..report.html']);
+  });
+
+  it('report --json returns all five charts in order, or writes them with --out', async () => {
+    const world = await worldWithMap();
+    const r = await runCli(['report', '--json'], world);
+    expect(r.code).toBe(0);
+    const json = r.json() as { charts: { kind: string }[] };
+    expect(json.charts.map((c) => c.kind)).toEqual([
+      'levels',
+      'accuracy',
+      'speed',
+      'types',
+      'timeline',
+    ]);
+    expect((await runCli(['report', '--format', 'json'], world)).code).toBe(2);
+    await runCli(['report', '--json', '--out', '/elsewhere/r.json'], world);
+    const written = JSON.parse(world.written?.['/elsewhere/r.json'] ?? '') as { charts: unknown[] };
+    expect(written.charts).toHaveLength(5);
+  });
 });

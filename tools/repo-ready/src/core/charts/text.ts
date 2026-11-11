@@ -1,4 +1,5 @@
-import { areaMarks, formatTable, verdictText } from '../../cli/output.js';
+import { areaMarks, formatTable, verdictText } from '../format.js';
+import { levelRank } from '../model.js';
 import type { ChartData, ChartKind } from '../stats.js';
 
 const BLOCKS = '▁▂▃▄▅▆▇█';
@@ -51,15 +52,13 @@ export function shortCommit(commit: string | null): string {
   return commit === null ? 'no commit' : commit.slice(0, 7);
 }
 
-const LEVEL_RANK = { none: 0, read: 1, maintain: 2, rebuild: 3 } as const;
-
 export function renderText(data: ChartData): string {
   const title = CHART_TITLES[data.kind];
   switch (data.kind) {
     case 'levels': {
       const rows = data.areas.map((a) => [
         `${a.id} (${a.title})`,
-        bar(LEVEL_RANK[a.level] / 3, 6),
+        bar(levelRank(a.level) / 3, 6),
         a.label,
         a.key ? 'key' : '',
         areaMarks(a),
