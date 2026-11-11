@@ -75,6 +75,6 @@ A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person o
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | in_progress | claude | repo-ready | | 2026-11-12 05:30 ICT | Design and plan in docs/superpowers (specs, plans)<br>All build tasks and the whole-branch review done: CLI (20 commands, charts, report), three skills, docs, release wiring; 257 tests<br>Left: acceptance run and pull request |
+| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | in_review | claude | repo-ready | | 2026-11-12 12:00 ICT | Design and plan in docs/superpowers (specs, plans)<br>PR https://github.com/ThomasMcFarlane/ai-tools/pull/89<br>CLI (20 commands, charts, report), three skills, docs, release wiring; 262 tests<br>Whole-branch review and a fresh-agent acceptance run done; waits on owner merge |
 | 22 | Release repo-ready 0.1.0 | todo | claude | | 9.21 | | Blocked on 9.21 |
 | 23 | Close the remaining map-edit and identity gaps in repo-ready | todo | | | 9.21 | | From the final review; each needs a deliberate map edit or a rare setup<br>Paths moved onto an active folder let an area be dropped later<br>"Files gone" reads the git index, not committed files<br>An older-key history is hidden once another checkout starts a higher-priority one<br>State-folder guard does not follow symlinks |
