@@ -75,5 +75,5 @@ A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person o
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
-| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | in_progress | claude | repo-ready | | 2026-11-12 04:00 ICT | Design and plan in docs/superpowers (specs, plans)<br>Tasks 1 to 7 of 13 built and reviewed: engine plus status, map and session commands; 129 tests |
+| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | in_progress | claude | repo-ready | | 2026-11-12 04:30 ICT | Design and plan in docs/superpowers (specs, plans)<br>Tasks 1 to 11 of 13 built and reviewed: CLI (20 commands, charts, report) and the three skills; 198 tests |
 | 22 | Release repo-ready 0.1.0 | todo | claude | | 9.21 | | Blocked on 9.21 |
