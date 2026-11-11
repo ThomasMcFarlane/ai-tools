@@ -74,10 +74,12 @@ Follow `tools/gh-watcher` for anything not stated here (config files, entry modu
 ### Task 1: Package scaffold, shared types, board row
 
 **Files:**
+
 - Create: `tools/repo-ready/{package.json,tsconfig.json,tsconfig.build.json,vitest.config.ts,.gitignore}`, `src/cli.ts`, `src/index.ts`, `src/version.ts`, `src/core/types.ts`, `src/cli/index.ts`, `src/cli/output.ts`, `test/cli-version.spec.ts`
 - Modify: `TASKS.md`, `package-lock.json` (by `npm install`)
 
 **Interfaces:**
+
 - Produces: everything in `src/core/types.ts` below; `run(argv: string[], overrides?: Partial<Deps>): Promise<void>` (the `overrides` parameter arrives in Task 2; here `run(argv)`).
 
 - [ ] **Step 1: Add the board row.** In `TASKS.md` add epic `## 9. repo-ready readiness quiz tool and skills` after epic 8, with a one-line intro, an `ETA:` line and the table header. Rows: `21` "repo-ready CLI and skills for Claude Code, Codex and OpenCode" (`in_progress`, owner `claude`, branch `repo-ready`); `22` "Release repo-ready 0.1.0" (`todo`, Depends `9.21`). Set the ETA of 9.21 with the tasks-board `eta` tool. Commit: `chore(tasks): add 9.21 and 9.22 for repo-ready`.
@@ -92,11 +94,21 @@ it('VERSION matches package.json', async () => {
 });
 it('exposes the constants the spec pins', () => {
   expect([PASS_SCORE, LEVEL_PASSES, LEVEL_WINDOW, STALE_CLEAR_AFTER]).toEqual([3, 2, 3, 3]);
-  expect([SESSION_QUESTIONS, SESSION_AREA_CAP, MIN_AREAS, MAX_AREAS, RECENT_PROMPTS]).toEqual([8, 3, 1, 10, 5]);
-  expect(LEVEL_LABELS).toEqual({ none: 'Not yet ready', read: 'Ready to be interviewed on it',
-    maintain: 'Ready to work on it', rebuild: 'Ready to own it' });
+  expect([SESSION_QUESTIONS, SESSION_AREA_CAP, MIN_AREAS, MAX_AREAS, RECENT_PROMPTS]).toEqual([
+    8, 3, 1, 10, 5,
+  ]);
+  expect(LEVEL_LABELS).toEqual({
+    none: 'Not yet ready',
+    read: 'Ready to be interviewed on it',
+    maintain: 'Ready to work on it',
+    rebuild: 'Ready to own it',
+  });
   expect(NOT_ENOUGH_LABEL).toBe('Not enough evidence yet');
-  expect(QTYPES).toEqual({ read: ['explain', 'trace'], maintain: ['predict', 'debug', 'change'], rebuild: ['rebuild'] });
+  expect(QTYPES).toEqual({
+    read: ['explain', 'trace'],
+    maintain: ['predict', 'debug', 'change'],
+    rebuild: ['rebuild'],
+  });
 });
 ```
 
@@ -111,46 +123,142 @@ export type HeldLevel = Level | 'none';
 export type QType = 'explain' | 'trace' | 'predict' | 'debug' | 'change' | 'rebuild';
 export type Mode = 'learn' | 'interview';
 
-export interface Principle { id: string; statement: string; reason: string; evidence: string[] }
-export interface Area { id: string; title: string; summary: string; key: boolean; paths: string[];
-  revision: number; principles: Principle[] }
-export interface MapInput { areas: Area[] }
-export interface StoredMap extends MapInput { version: 1; repoKey: string; branch: string | null;
-  commit: string | null; setAt: string }
-export interface MapChange { kind: 'added' | 'removed' | 'key_set' | 'key_cleared' | 'revision_raised';
-  areaId: string; from?: number; to?: number }
+export interface Principle {
+  id: string;
+  statement: string;
+  reason: string;
+  evidence: string[];
+}
+export interface Area {
+  id: string;
+  title: string;
+  summary: string;
+  key: boolean;
+  paths: string[];
+  revision: number;
+  principles: Principle[];
+}
+export interface MapInput {
+  areas: Area[];
+}
+export interface StoredMap extends MapInput {
+  version: 1;
+  repoKey: string;
+  branch: string | null;
+  commit: string | null;
+  setAt: string;
+}
+export interface MapChange {
+  kind: 'added' | 'removed' | 'key_set' | 'key_cleared' | 'revision_raised';
+  areaId: string;
+  from?: number;
+  to?: number;
+}
 
-export interface EventBase { at: string; sessionId: string | null; mode: Mode | null;
-  branch: string | null; commit: string | null; dirty: boolean; mapCommit: string | null }
-export type LogEvent = EventBase & (
-  | { type: 'session_start' }
-  | { type: 'session_end'; auto: boolean }
-  | { type: 'map_set'; changes: MapChange[]; forced: string | null }
-  | { type: 'lesson'; areaId: string; principleIds: string[] }
-  | { type: 'ask'; questionId: string; areaId: string; revision: number; level: Level; qtype: QType;
-      principleIds: string[]; prompt: string; evidence: string[]; followUpOf: string | null }
-  | { type: 'hint'; questionId: string }
-  | { type: 'answer'; questionId: string; text: string; durationMs: number }
-  | { type: 'grade'; questionId: string; score: number; notes: string; gaps: string[] }
-  | { type: 'skip'; questionId: string });
+export interface EventBase {
+  at: string;
+  sessionId: string | null;
+  mode: Mode | null;
+  branch: string | null;
+  commit: string | null;
+  dirty: boolean;
+  mapCommit: string | null;
+}
+export type LogEvent = EventBase &
+  (
+    | { type: 'session_start' }
+    | { type: 'session_end'; auto: boolean }
+    | { type: 'map_set'; changes: MapChange[]; forced: string | null }
+    | { type: 'lesson'; areaId: string; principleIds: string[] }
+    | {
+        type: 'ask';
+        questionId: string;
+        areaId: string;
+        revision: number;
+        level: Level;
+        qtype: QType;
+        principleIds: string[];
+        prompt: string;
+        evidence: string[];
+        followUpOf: string | null;
+      }
+    | { type: 'hint'; questionId: string }
+    | { type: 'answer'; questionId: string; text: string; durationMs: number }
+    | { type: 'grade'; questionId: string; score: number; notes: string; gaps: string[] }
+    | { type: 'skip'; questionId: string }
+  );
 
-export interface QuestionRecord { id: string; sessionId: string; mode: Mode; areaId: string; revision: number;
-  level: Level; qtype: QType; principleIds: string[]; prompt: string; evidence: string[];
-  followUpOf: string | null; askedAt: string; branch: string | null; commit: string | null;
-  answer: string | null; answeredAt: string | null; durationMs: number | null; hints: number;
-  score: number | null; notes: string; gaps: string[];
-  status: 'open' | 'answered' | 'graded' | 'skipped'; passed: boolean; voided: boolean }
-export interface LevelTally { valid: number; passedInWindow: number; held: boolean }
-export interface AreaState { id: string; title: string; key: boolean; revision: number; retired: boolean;
-  level: HeldLevel; label: string; stale: boolean; staleFrom: Level | null; untested: boolean;
-  lastTestedAt: string | null; perLevel: Record<Level, LevelTally> }
-export interface Verdict { kind: 'level' | 'not_enough_evidence' | 'not_yet_ready'; level: HeldLevel;
-  label: string; untestedKeyAreas: string[]; holdingBack: string[]; weakestTypes: QType[];
-  recurringGaps: string[] }
-export interface SessionRecord { id: string; mode: Mode; startedAt: string; endedAt: string | null;
-  auto: boolean; branch: string | null; commit: string | null; dirty: boolean; questionIds: string[] }
-export interface Model { areas: AreaState[]; questions: QuestionRecord[]; sessions: SessionRecord[];
-  verdict: Verdict }
+export interface QuestionRecord {
+  id: string;
+  sessionId: string;
+  mode: Mode;
+  areaId: string;
+  revision: number;
+  level: Level;
+  qtype: QType;
+  principleIds: string[];
+  prompt: string;
+  evidence: string[];
+  followUpOf: string | null;
+  askedAt: string;
+  branch: string | null;
+  commit: string | null;
+  answer: string | null;
+  answeredAt: string | null;
+  durationMs: number | null;
+  hints: number;
+  score: number | null;
+  notes: string;
+  gaps: string[];
+  status: 'open' | 'answered' | 'graded' | 'skipped';
+  passed: boolean;
+  voided: boolean;
+}
+export interface LevelTally {
+  valid: number;
+  passedInWindow: number;
+  held: boolean;
+}
+export interface AreaState {
+  id: string;
+  title: string;
+  key: boolean;
+  revision: number;
+  retired: boolean;
+  level: HeldLevel;
+  label: string;
+  stale: boolean;
+  staleFrom: Level | null;
+  untested: boolean;
+  lastTestedAt: string | null;
+  perLevel: Record<Level, LevelTally>;
+}
+export interface Verdict {
+  kind: 'level' | 'not_enough_evidence' | 'not_yet_ready';
+  level: HeldLevel;
+  label: string;
+  untestedKeyAreas: string[];
+  holdingBack: string[];
+  weakestTypes: QType[];
+  recurringGaps: string[];
+}
+export interface SessionRecord {
+  id: string;
+  mode: Mode;
+  startedAt: string;
+  endedAt: string | null;
+  auto: boolean;
+  branch: string | null;
+  commit: string | null;
+  dirty: boolean;
+  questionIds: string[];
+}
+export interface Model {
+  areas: AreaState[];
+  questions: QuestionRecord[];
+  sessions: SessionRecord[];
+  verdict: Verdict;
+}
 ```
 
 - [ ] **Step 5: Write `src/cli/index.ts`** with `buildProgram()` (name `repo-ready`, `.version(VERSION, '-V, --version', 'print the version')`, global option `--repo <path>`), `run`, `main` and `isEntryModule`, as in gh-watcher. `main` maps a thrown `NotFoundError` to exit code `1` and any other error to `2`, printing `error: <message>` on stderr. Export `class NotFoundError extends Error` from `src/core/types.ts`.
@@ -164,30 +272,45 @@ export interface Model { areas: AreaState[]; questions: QuestionRecord[]; sessio
 ### Task 2: Repository identity and git facts
 
 **Files:**
+
 - Create: `src/core/deps.ts`, `src/core/identity.ts`, `test/helpers.ts`, `test/identity.spec.ts`, `test/git-real.spec.ts`
 
 **Interfaces:**
+
 - Produces:
 
 ```ts
 export interface GitFacts {
-  toplevel(cwd: string): Promise<string | null>;      // null when not a repository
-  branch(root: string): Promise<string | null>;       // null when detached or no commits
-  head(root: string): Promise<string | null>;         // null when no commits
+  toplevel(cwd: string): Promise<string | null>; // null when not a repository
+  branch(root: string): Promise<string | null>; // null when detached or no commits
+  head(root: string): Promise<string | null>; // null when no commits
   dirty(root: string): Promise<boolean>;
   originUrl(root: string): Promise<string | null>;
-  rootCommit(root: string): Promise<string | null>;   // lexically first root commit
+  rootCommit(root: string): Promise<string | null>; // lexically first root commit
   hasCommit(root: string, sha: string): Promise<boolean>;
   changedFiles(root: string, from: string, to: string): Promise<string[]>;
   trackedFiles(root: string): Promise<string[]>;
 }
-export interface Deps { now(): Date; git: GitFacts; stateRoot(): string; newId(prefix: 's' | 'q'): string;
-  fileExists(absPath: string): Promise<boolean>; readText(source: string): Promise<string>;  // '-' = stdin
-  print(text: string): void }
+export interface Deps {
+  now(): Date;
+  git: GitFacts;
+  stateRoot(): string;
+  newId(prefix: 's' | 'q'): string;
+  fileExists(absPath: string): Promise<boolean>;
+  readText(source: string): Promise<string>; // '-' = stdin
+  print(text: string): void;
+}
 export function realGit(): GitFacts;
 export function defaultDeps(): Deps;
-export interface RepoState { root: string; isGit: boolean; branch: string | null; commit: string | null;
-  dirty: boolean; key: string; dirName: string }
+export interface RepoState {
+  root: string;
+  isGit: boolean;
+  branch: string | null;
+  commit: string | null;
+  dirty: boolean;
+  key: string;
+  dirName: string;
+}
 export function normaliseRemote(url: string): string;
 export function dirNameFor(key: string): string;
 export function readRepoState(path: string, git: GitFacts): Promise<RepoState>;
@@ -209,21 +332,42 @@ it.each([
 ])('normaliseRemote(%s)', (url, key) => expect(normaliseRemote(url)).toBe(key));
 
 it('dirNameFor is a safe slug plus 8 hex characters', () => {
-  expect(dirNameFor('github.com/octo-org/hello-world')).toMatch(/^github\.com-octo-org-hello-world-[0-9a-f]{8}$/);
+  expect(dirNameFor('github.com/octo-org/hello-world')).toMatch(
+    /^github\.com-octo-org-hello-world-[0-9a-f]{8}$/,
+  );
 });
 it('two clones and a subfolder share one key', async () => {
-  const a = await readRepoState('/work/a/src', fakeGit({ toplevel: '/work/a', origin: 'git@github.com:octo-org/hello-world.git' }));
-  const b = await readRepoState('/work/b', fakeGit({ toplevel: '/work/b', origin: 'https://github.com/octo-org/hello-world' }));
+  const a = await readRepoState(
+    '/work/a/src',
+    fakeGit({ toplevel: '/work/a', origin: 'git@github.com:octo-org/hello-world.git' }),
+  );
+  const b = await readRepoState(
+    '/work/b',
+    fakeGit({ toplevel: '/work/b', origin: 'https://github.com/octo-org/hello-world' }),
+  );
   expect(a.root).toBe('/work/a');
   expect(a.dirName).toBe(b.dirName);
 });
 it('falls back to the root commit, then to the path', async () => {
-  expect((await readRepoState('/w', fakeGit({ toplevel: '/w', origin: null, rootCommit: 'abc123' }))).key).toBe('root:abc123');
+  expect(
+    (await readRepoState('/w', fakeGit({ toplevel: '/w', origin: null, rootCommit: 'abc123' })))
+      .key,
+  ).toBe('root:abc123');
   const plain = await readRepoState('/plain', fakeGit({ toplevel: null }));
-  expect(plain).toMatchObject({ isGit: false, root: '/plain', branch: null, commit: null, dirty: false, key: 'path:/plain' });
+  expect(plain).toMatchObject({
+    isGit: false,
+    root: '/plain',
+    branch: null,
+    commit: null,
+    dirty: false,
+    key: 'path:/plain',
+  });
 });
 it('records null branch and commit when there are no commits or HEAD is detached', async () => {
-  const s = await readRepoState('/w', fakeGit({ toplevel: '/w', head: null, branch: null, origin: null, rootCommit: null }));
+  const s = await readRepoState(
+    '/w',
+    fakeGit({ toplevel: '/w', head: null, branch: null, origin: null, rootCommit: null }),
+  );
   expect(s).toMatchObject({ isGit: true, branch: null, commit: null, key: 'path:/w' });
 });
 ```
@@ -243,20 +387,22 @@ it('records null branch and commit when there are no commits or HEAD is detached
 ### Task 3: State store
 
 **Files:**
+
 - Create: `src/core/store.ts`, `test/store.spec.ts`
 
 **Interfaces:**
+
 - Consumes: `StoredMap`, `LogEvent`, `RepoState`.
 - Produces:
 
 ```ts
-export function stateDir(): string;                               // env override, XDG, platform default
-export function repoDir(stateRoot: string, dirName: string): string;   // <stateRoot>/repos/<dirName>
+export function stateDir(): string; // env override, XDG, platform default
+export function repoDir(stateRoot: string, dirName: string): string; // <stateRoot>/repos/<dirName>
 export function readMap(dir: string): Promise<StoredMap | null>;
 export function writeMap(dir: string, map: StoredMap, repo: RepoState): Promise<void>;
 export function appendEvent(dir: string, event: LogEvent): Promise<void>;
 export function readEvents(dir: string): Promise<LogEvent[]>;
-export function resetRepo(dir: string): Promise<boolean>;          // false when nothing existed
+export function resetRepo(dir: string): Promise<boolean>; // false when nothing existed
 ```
 
 Files in a repository folder: `map.json`, `maps/<setAt with ":" replaced by "-">.json` (earlier maps), `events.jsonl`, `repo.json` (`{ key, root, firstSeenAt }`, written once, so a person can tell the folders apart).
@@ -303,26 +449,49 @@ it('resetRepo removes the folder and reports whether it existed');
 ### Task 4: Map validation, update rules, change detection
 
 **Files:**
+
 - Create: `src/core/glob.ts`, `src/core/map.ts`, `test/glob.spec.ts`, `test/map.spec.ts`
 - Modify: `test/helpers.ts` (add `sampleMap`)
 
 **Interfaces:**
+
 - Produces:
 
 ```ts
 export function globToRegExp(glob: string): RegExp;
 export function matchesAny(path: string, globs: string[]): boolean;
-export class MapError extends Error { problems: string[] }
-export function validateMap(input: unknown): MapInput;             // throws MapError listing every problem
+export class MapError extends Error {
+  problems: string[];
+}
+export function validateMap(input: unknown): MapInput; // throws MapError listing every problem
 export function diffMaps(prev: MapInput | null, next: MapInput): MapChange[];
-export interface UpdateContext { comparable: boolean; changedFiles: string[]; trackedFiles: string[] | null }
-export function checkUpdate(prev: MapInput, next: MapInput, ctx: UpdateContext): { blocking: string[]; forceable: string[] };
-export interface MapChangesResult { comparable: boolean; reason: string | null; from: string | null;
-  to: string | null; dirty: boolean; areas: { id: string; title: string; files: string[] }[]; unmapped: string[] }
-export function mapChanges(map: StoredMap, repo: RepoState, git: GitFacts): Promise<MapChangesResult>;
+export interface UpdateContext {
+  comparable: boolean;
+  changedFiles: string[];
+  trackedFiles: string[] | null;
+}
+export function checkUpdate(
+  prev: MapInput,
+  next: MapInput,
+  ctx: UpdateContext,
+): { blocking: string[]; forceable: string[] };
+export interface MapChangesResult {
+  comparable: boolean;
+  reason: string | null;
+  from: string | null;
+  to: string | null;
+  dirty: boolean;
+  areas: { id: string; title: string; files: string[] }[];
+  unmapped: string[];
+}
+export function mapChanges(
+  map: StoredMap,
+  repo: RepoState,
+  git: GitFacts,
+): Promise<MapChangesResult>;
 // test/helpers.ts
-export function sampleMap(): MapInput;   // areas: a (key, paths ['src/a/**']), b (key, ['src/b/**']), c (not key, ['docs/*.md']);
-                                          // evidence 'src/a/x.ts:1', 'src/b/x.ts:1', 'docs/a.md:1'; every revision 1
+export function sampleMap(): MapInput; // areas: a (key, paths ['src/a/**']), b (key, ['src/b/**']), c (not key, ['docs/*.md']);
+// evidence 'src/a/x.ts:1', 'src/b/x.ts:1', 'docs/a.md:1'; every revision 1
 ```
 
 Glob rules: paths are POSIX, relative to the repository root. `*` matches within one segment, `?` one character within a segment, `**` any number of segments including none, a pattern ending in `/` matches everything below it.
@@ -332,42 +501,76 @@ Glob rules: paths are POSIX, relative to the repository root. `*` matches within
 ```ts
 // glob.spec.ts
 it.each([
-  ['src/a/**', 'src/a/x/y.ts', true], ['src/a/**', 'src/ab/x.ts', false],
-  ['docs/*.md', 'docs/a.md', true], ['docs/*.md', 'docs/sub/a.md', false],
-  ['**/store.ts', 'store.ts', true], ['**/store.ts', 'tools/x/src/store.ts', true],
-  ['tools/', 'tools/x/y.ts', true], ['a?.ts', 'ab.ts', true], ['a?.ts', 'a/.ts', false],
+  ['src/a/**', 'src/a/x/y.ts', true],
+  ['src/a/**', 'src/ab/x.ts', false],
+  ['docs/*.md', 'docs/a.md', true],
+  ['docs/*.md', 'docs/sub/a.md', false],
+  ['**/store.ts', 'store.ts', true],
+  ['**/store.ts', 'tools/x/src/store.ts', true],
+  ['tools/', 'tools/x/y.ts', true],
+  ['a?.ts', 'ab.ts', true],
+  ['a?.ts', 'a/.ts', false],
 ])('%s vs %s', (glob, path, want) => expect(matchesAny(path, [glob])).toBe(want));
 
 // map.spec.ts — validateMap
 it('accepts the sample map', () => expect(validateMap(sampleMap()).areas).toHaveLength(3));
 it('accepts one area and rejects none or eleven');
 it.each([
-  ['duplicate area id', /duplicate area id/], ['id "Not A Slug"', /slug/], ['no key area', /at least one key area/],
-  ['empty paths', /paths/], ['no principles', /principle/], ['evidence "src/a.ts"', /path:line/],
-  ['revision 0', /revision/], ['revision 1.5', /revision/], ['empty title', /title/],
-])('rejects %s', (_case, pattern) => { /* build the bad map, expect MapError matching pattern */ });
-it('reports every problem at once', () => { /* two faults → error.problems has length 2 */ });
+  ['duplicate area id', /duplicate area id/],
+  ['id "Not A Slug"', /slug/],
+  ['no key area', /at least one key area/],
+  ['empty paths', /paths/],
+  ['no principles', /principle/],
+  ['evidence "src/a.ts"', /path:line/],
+  ['revision 0', /revision/],
+  ['revision 1.5', /revision/],
+  ['empty title', /title/],
+])('rejects %s', (_case, pattern) => {
+  /* build the bad map, expect MapError matching pattern */
+});
+it('reports every problem at once', () => {
+  /* two faults → error.problems has length 2 */
+});
 
 // diffMaps and checkUpdate
 it('diffMaps reports added, removed, key_set, key_cleared and revision_raised with from and to');
-it('adding an area is always allowed', () => expect(checkUpdate(prev, withAreaD, quiet)).toEqual({ blocking: [], forceable: [] }));
-it('removing an untouched area needs force', () => expect(checkUpdate(prev, withoutB, quiet).forceable).toHaveLength(1));
+it('adding an area is always allowed', () =>
+  expect(checkUpdate(prev, withAreaD, quiet)).toEqual({ blocking: [], forceable: [] }));
+it('removing an untouched area needs force', () =>
+  expect(checkUpdate(prev, withoutB, quiet).forceable).toHaveLength(1));
 it('removing an area whose files changed is allowed', () =>
-  expect(checkUpdate(prev, withoutB, { ...quiet, changedFiles: ['src/b/x.ts'] }).forceable).toEqual([]));
+  expect(checkUpdate(prev, withoutB, { ...quiet, changedFiles: ['src/b/x.ts'] }).forceable).toEqual(
+    [],
+  ));
 it('removing an area whose paths match no tracked file is allowed', () =>
-  expect(checkUpdate(prev, withoutB, { ...quiet, trackedFiles: ['src/a/x.ts'] }).forceable).toEqual([]));
+  expect(checkUpdate(prev, withoutB, { ...quiet, trackedFiles: ['src/a/x.ts'] }).forceable).toEqual(
+    [],
+  ));
 it('clearing key follows the same rule as removal');
 it('raising a revision needs a changed file in that area, or force');
 it('lowering a revision is blocking and cannot be forced', () =>
   expect(checkUpdate(prevWithA2, sampleMap(), quiet).blocking).toHaveLength(1));
 it('everything is allowed when the commits cannot be compared', () =>
-  expect(checkUpdate(prev, withoutB, { comparable: false, changedFiles: [], trackedFiles: null })).toEqual({ blocking: [], forceable: [] }));
+  expect(
+    checkUpdate(prev, withoutB, { comparable: false, changedFiles: [], trackedFiles: null }),
+  ).toEqual({ blocking: [], forceable: [] }));
 
 // mapChanges
 it('groups changed files by area and lists the rest as unmapped', async () => {
-  const git = fakeGit({ toplevel: '/w', head: 'c2', commits: ['c1', 'c2'], diffs: { 'c1..c2': ['src/a/x.ts', 'README.md'] } });
+  const git = fakeGit({
+    toplevel: '/w',
+    head: 'c2',
+    commits: ['c1', 'c2'],
+    diffs: { 'c1..c2': ['src/a/x.ts', 'README.md'] },
+  });
   const r = await mapChanges(stored('c1'), await readRepoState('/w', git), git);
-  expect(r).toMatchObject({ comparable: true, from: 'c1', to: 'c2', areas: [{ id: 'a', files: ['src/a/x.ts'] }], unmapped: ['README.md'] });
+  expect(r).toMatchObject({
+    comparable: true,
+    from: 'c1',
+    to: 'c2',
+    areas: [{ id: 'a', files: ['src/a/x.ts'] }],
+    unmapped: ['README.md'],
+  });
 });
 it('cannot compare when the map commit is gone, the map has no commit, or the folder is not a repository', async () => {
   /* each case: comparable false, reason is a non-empty sentence, areas [] */
@@ -386,24 +589,37 @@ it('cannot compare when the map commit is gone, the map has no commit, or the fo
 ### Task 5: The model: questions, levels, staleness, verdict
 
 **Files:**
+
 - Create: `src/core/model.ts`, `test/model.spec.ts`
 - Modify: `test/helpers.ts` (add `LogBuilder`)
 
 **Interfaces:**
+
 - Consumes: types from Task 1, `sampleMap`, `clock`.
 - Produces:
 
 ```ts
 export function buildModel(map: MapInput, events: LogEvent[]): Model;
-export function levelRank(level: HeldLevel): number;   // none 0, read 1, maintain 2, rebuild 3
+export function levelRank(level: HeldLevel): number; // none 0, read 1, maintain 2, rebuild 3
 // test/helpers.ts
 export class LogBuilder {
   events: LogEvent[];
-  session(mode?: Mode): this;                           // default 'learn'
+  session(mode?: Mode): this; // default 'learn'
   endSession(): this;
-  q(areaId: string, level: Level, score: number | 'skip' | 'open',
-    opts?: { qtype?: QType; hints?: number; durationMs?: number; gaps?: string[]; followUpOf?: string; prompt?: string }): string;
-  raise(areaId: string): this;                          // map_set with one revision_raised change
+  q(
+    areaId: string,
+    level: Level,
+    score: number | 'skip' | 'open',
+    opts?: {
+      qtype?: QType;
+      hints?: number;
+      durationMs?: number;
+      gaps?: string[];
+      followUpOf?: string;
+      prompt?: string;
+    },
+  ): string;
+  raise(areaId: string): this; // map_set with one revision_raised change
 }
 ```
 
@@ -422,41 +638,127 @@ export class LogBuilder {
 - [ ] **Step 1: Write the failing tests** `test/model.spec.ts`. `area(m, id)` finds an `AreaState`; `L` is a `LogBuilder` with a session open.
 
 ```ts
-it('holds read after 2 passes in the last 3', () => { L.q('a','read',4); L.q('a','read',1); L.q('a','read',3);
-  expect(area(m(),'a')).toMatchObject({ level: 'read', label: 'Ready to be interviewed on it', untested: false }); });
-it('one pass is not enough', () => { L.q('a','read',4); L.q('a','read',1); expect(area(m(),'a').level).toBe('none'); });
-it('only the last 3 count', () => { for (const s of [4,4,1,1]) L.q('a','read',s); expect(area(m(),'a').level).toBe('none'); });
-it('a hinted answer does not pass', () => { L.q('a','read',4,{hints:1}); L.q('a','read',4);
-  expect(area(m(),'a').perLevel.read).toEqual({ valid: 2, passedInWindow: 1, held: false }); });
-it('a skip counts as a fail and an open question does not count', () => { L.q('a','read','skip'); L.q('a','read','open');
-  expect(area(m(),'a').perLevel.read.valid).toBe(1); });
-it('maintain does not count without read', () => { L.q('a','maintain',4); L.q('a','maintain',4);
-  expect(area(m(),'a')).toMatchObject({ level: 'none', untested: true }); });
-it('verdict is the lowest key level', () => { hold('a','read'); hold('b','maintain');
-  expect(m().verdict).toMatchObject({ kind: 'level', level: 'read', label: 'Ready to be interviewed on it', holdingBack: ['a'] }); });
-it('a non-key area never lowers the verdict', () => { hold('a','read'); hold('b','read'); expect(m().verdict.level).toBe('read'); });
-it('says not enough evidence when a key area is untested', () => { hold('a','read');
-  expect(m().verdict).toMatchObject({ kind: 'not_enough_evidence', label: 'Not enough evidence yet', untestedKeyAreas: ['b'] }); });
-it('says not yet ready when every key area was tested and one failed', () => { hold('a','read'); L.q('b','read',1); L.q('b','read',0);
-  expect(m().verdict).toMatchObject({ kind: 'not_yet_ready', label: 'Not yet ready', level: 'none' }); });
-it('a revision rise costs one level and marks the area stale', () => { hold('a','maintain'); L.raise('a');
-  expect(area(m(),'a')).toMatchObject({ level: 'read', stale: true, staleFrom: 'maintain' });
-  expect(m().questions.filter((q) => q.voided).every((q) => q.level === 'maintain')).toBe(true); });
-it('two passes at the old level bring it back', () => { hold('a','maintain'); L.raise('a'); L.q('a','maintain',4); L.q('a','maintain',4);
-  expect(area(m(),'a')).toMatchObject({ level: 'maintain', stale: false, staleFrom: null }); });
-it('the mark clears after 3 graded questions without the level', () => { hold('a','maintain'); L.raise('a');
-  for (let i = 0; i < 3; i++) L.q('a','maintain',1);
-  expect(area(m(),'a')).toMatchObject({ level: 'read', stale: false }); });
-it('lower-level passes during a re-test change nothing', () => { hold('a','maintain'); L.raise('a'); L.q('a','read',4);
-  expect(area(m(),'a')).toMatchObject({ level: 'read', stale: true }); });
-it('a second rise while stale costs another level', () => { hold('a','maintain'); L.raise('a'); L.raise('a');
-  expect(area(m(),'a')).toMatchObject({ level: 'none', stale: true, staleFrom: 'read' }); });
-it('a rise on an area with no level voids its questions without a stale mark', () => { L.q('a','read',4); L.raise('a');
-  expect(area(m(),'a')).toMatchObject({ level: 'none', stale: false, untested: true }); });
-it('an area missing from the map is retired and outside the verdict', () => { hold('a','read'); hold('b','read'); L.q('z','read',0);
-  expect(area(m(),'z').retired).toBe(true); expect(m().verdict.level).toBe('read'); });
-it('lists recurring gaps and weakest types', () => { L.q('a','read',1,{gaps:['locking'],qtype:'trace'}); L.q('a','read',1,{gaps:['locking']}); L.q('a','read',4,{gaps:['naming']});
-  expect(m().verdict.recurringGaps).toEqual(['locking']); expect(m().verdict.weakestTypes[0]).toBe('trace'); });
+it('holds read after 2 passes in the last 3', () => {
+  L.q('a', 'read', 4);
+  L.q('a', 'read', 1);
+  L.q('a', 'read', 3);
+  expect(area(m(), 'a')).toMatchObject({
+    level: 'read',
+    label: 'Ready to be interviewed on it',
+    untested: false,
+  });
+});
+it('one pass is not enough', () => {
+  L.q('a', 'read', 4);
+  L.q('a', 'read', 1);
+  expect(area(m(), 'a').level).toBe('none');
+});
+it('only the last 3 count', () => {
+  for (const s of [4, 4, 1, 1]) L.q('a', 'read', s);
+  expect(area(m(), 'a').level).toBe('none');
+});
+it('a hinted answer does not pass', () => {
+  L.q('a', 'read', 4, { hints: 1 });
+  L.q('a', 'read', 4);
+  expect(area(m(), 'a').perLevel.read).toEqual({ valid: 2, passedInWindow: 1, held: false });
+});
+it('a skip counts as a fail and an open question does not count', () => {
+  L.q('a', 'read', 'skip');
+  L.q('a', 'read', 'open');
+  expect(area(m(), 'a').perLevel.read.valid).toBe(1);
+});
+it('maintain does not count without read', () => {
+  L.q('a', 'maintain', 4);
+  L.q('a', 'maintain', 4);
+  expect(area(m(), 'a')).toMatchObject({ level: 'none', untested: true });
+});
+it('verdict is the lowest key level', () => {
+  hold('a', 'read');
+  hold('b', 'maintain');
+  expect(m().verdict).toMatchObject({
+    kind: 'level',
+    level: 'read',
+    label: 'Ready to be interviewed on it',
+    holdingBack: ['a'],
+  });
+});
+it('a non-key area never lowers the verdict', () => {
+  hold('a', 'read');
+  hold('b', 'read');
+  expect(m().verdict.level).toBe('read');
+});
+it('says not enough evidence when a key area is untested', () => {
+  hold('a', 'read');
+  expect(m().verdict).toMatchObject({
+    kind: 'not_enough_evidence',
+    label: 'Not enough evidence yet',
+    untestedKeyAreas: ['b'],
+  });
+});
+it('says not yet ready when every key area was tested and one failed', () => {
+  hold('a', 'read');
+  L.q('b', 'read', 1);
+  L.q('b', 'read', 0);
+  expect(m().verdict).toMatchObject({
+    kind: 'not_yet_ready',
+    label: 'Not yet ready',
+    level: 'none',
+  });
+});
+it('a revision rise costs one level and marks the area stale', () => {
+  hold('a', 'maintain');
+  L.raise('a');
+  expect(area(m(), 'a')).toMatchObject({ level: 'read', stale: true, staleFrom: 'maintain' });
+  expect(
+    m()
+      .questions.filter((q) => q.voided)
+      .every((q) => q.level === 'maintain'),
+  ).toBe(true);
+});
+it('two passes at the old level bring it back', () => {
+  hold('a', 'maintain');
+  L.raise('a');
+  L.q('a', 'maintain', 4);
+  L.q('a', 'maintain', 4);
+  expect(area(m(), 'a')).toMatchObject({ level: 'maintain', stale: false, staleFrom: null });
+});
+it('the mark clears after 3 graded questions without the level', () => {
+  hold('a', 'maintain');
+  L.raise('a');
+  for (let i = 0; i < 3; i++) L.q('a', 'maintain', 1);
+  expect(area(m(), 'a')).toMatchObject({ level: 'read', stale: false });
+});
+it('lower-level passes during a re-test change nothing', () => {
+  hold('a', 'maintain');
+  L.raise('a');
+  L.q('a', 'read', 4);
+  expect(area(m(), 'a')).toMatchObject({ level: 'read', stale: true });
+});
+it('a second rise while stale costs another level', () => {
+  hold('a', 'maintain');
+  L.raise('a');
+  L.raise('a');
+  expect(area(m(), 'a')).toMatchObject({ level: 'none', stale: true, staleFrom: 'read' });
+});
+it('a rise on an area with no level voids its questions without a stale mark', () => {
+  L.q('a', 'read', 4);
+  L.raise('a');
+  expect(area(m(), 'a')).toMatchObject({ level: 'none', stale: false, untested: true });
+});
+it('an area missing from the map is retired and outside the verdict', () => {
+  hold('a', 'read');
+  hold('b', 'read');
+  L.q('z', 'read', 0);
+  expect(area(m(), 'z').retired).toBe(true);
+  expect(m().verdict.level).toBe('read');
+});
+it('lists recurring gaps and weakest types', () => {
+  L.q('a', 'read', 1, { gaps: ['locking'], qtype: 'trace' });
+  L.q('a', 'read', 1, { gaps: ['locking'] });
+  L.q('a', 'read', 4, { gaps: ['naming'] });
+  expect(m().verdict.recurringGaps).toEqual(['locking']);
+  expect(m().verdict.weakestTypes[0]).toBe('trace');
+});
 it('records sessions with their questions, and duration and hints on each question');
 ```
 
@@ -472,20 +774,46 @@ it('records sessions with their questions, and duration and hints on each questi
 ### Task 6: What to test next, and session summaries
 
 **Files:**
+
 - Create: `src/core/next.ts`, `src/core/stats.ts`, `test/next.spec.ts`, `test/stats.spec.ts`
 
 **Interfaces:**
+
 - Consumes: `buildModel`, `Model`, `MapInput`.
 - Produces:
 
 ```ts
-export interface NextTarget { areaId: string; title: string; level: Level; qtype: QType;
-  reason: 'stale' | 'untested' | 'not_held' | 'keep_fresh'; recentPrompts: string[] }
-export interface NextResult { targets: NextTarget[]; session: { id: string | null; asked: number; limit: number; done: boolean } }
-export function nextTargets(map: MapInput, model: Model, opts: { areas?: string[]; count: number; sessionId: string | null }): NextResult;
-export interface SessionSummary { sessionId: string; mode: Mode; startedAt: string; endedAt: string | null;
-  asked: number; graded: number; passed: number; passRate: number | null; medianMs: number | null;
-  hints: number; skips: number; byArea: { areaId: string; level: Level; asked: number; passed: number }[] }
+export interface NextTarget {
+  areaId: string;
+  title: string;
+  level: Level;
+  qtype: QType;
+  reason: 'stale' | 'untested' | 'not_held' | 'keep_fresh';
+  recentPrompts: string[];
+}
+export interface NextResult {
+  targets: NextTarget[];
+  session: { id: string | null; asked: number; limit: number; done: boolean };
+}
+export function nextTargets(
+  map: MapInput,
+  model: Model,
+  opts: { areas?: string[]; count: number; sessionId: string | null },
+): NextResult;
+export interface SessionSummary {
+  sessionId: string;
+  mode: Mode;
+  startedAt: string;
+  endedAt: string | null;
+  asked: number;
+  graded: number;
+  passed: number;
+  passRate: number | null;
+  medianMs: number | null;
+  hints: number;
+  skips: number;
+  byArea: { areaId: string; level: Level; asked: number; passed: number }[];
+}
 export function sessionSummary(model: Model, sessionId: string): SessionSummary;
 export function median(values: number[]): number | null;
 ```
@@ -504,29 +832,64 @@ export function median(values: number[]): number | null;
 
 ```ts
 // next.spec.ts — ids(r) maps targets to areaId
-it('puts a stale area first, at the level it held', () => { hold('a','maintain'); hold('b','read'); L.raise('a');
-  expect(next().targets[0]).toMatchObject({ areaId: 'a', level: 'maintain', reason: 'stale' }); });
-it('then key areas lowest first, then other areas', () => { hold('a','read'); expect(ids(next({ count: 3 }))).toEqual(['b','a','c']);
-  expect(next({ count: 3 }).targets.map((t) => t.level)).toEqual(['read','maintain','read']); });
+it('puts a stale area first, at the level it held', () => {
+  hold('a', 'maintain');
+  hold('b', 'read');
+  L.raise('a');
+  expect(next().targets[0]).toMatchObject({ areaId: 'a', level: 'maintain', reason: 'stale' });
+});
+it('then key areas lowest first, then other areas', () => {
+  hold('a', 'read');
+  expect(ids(next({ count: 3 }))).toEqual(['b', 'a', 'c']);
+  expect(next({ count: 3 }).targets.map((t) => t.level)).toEqual(['read', 'maintain', 'read']);
+});
 it('picks an untried type, then the weakest', () => {
-  L.q('a','read',4,{qtype:'explain'}); expect(next({ areas: ['a'] }).targets[0]?.qtype).toBe('trace');
-  L.q('a','read',1,{qtype:'trace'}); expect(next({ areas: ['a'] }).targets[0]?.qtype).toBe('trace'); });
+  L.q('a', 'read', 4, { qtype: 'explain' });
+  expect(next({ areas: ['a'] }).targets[0]?.qtype).toBe('trace');
+  L.q('a', 'read', 1, { qtype: 'trace' });
+  expect(next({ areas: ['a'] }).targets[0]?.qtype).toBe('trace');
+});
 it('picks the slower type when pass rates are equal', () => {
-  L.q('c','read',1,{qtype:'explain',durationMs:30_000}); L.q('c','read',1,{qtype:'trace',durationMs:90_000});
-  expect(next({ areas: ['c'] }).targets[0]?.qtype).toBe('trace'); });
-it('moves an area back after 3 questions in this session', () => { for (let i = 0; i < 3; i++) L.q('b','read',1);
-  expect(ids(next({ count: 3 }))).toEqual(['a','c','b']); });
-it('filters by area and rejects an unknown id', () => { expect(ids(next({ areas: ['c'], count: 3 }))).toEqual(['c']);
-  expect(() => next({ areas: ['nope'] })).toThrow(/unknown area/); });
-it('reports untested, not_held and keep_fresh', () => { /* a: no questions → untested; a: two fails → not_held; a holds rebuild → keep_fresh at rebuild */ });
+  L.q('c', 'read', 1, { qtype: 'explain', durationMs: 30_000 });
+  L.q('c', 'read', 1, { qtype: 'trace', durationMs: 90_000 });
+  expect(next({ areas: ['c'] }).targets[0]?.qtype).toBe('trace');
+});
+it('moves an area back after 3 questions in this session', () => {
+  for (let i = 0; i < 3; i++) L.q('b', 'read', 1);
+  expect(ids(next({ count: 3 }))).toEqual(['a', 'c', 'b']);
+});
+it('filters by area and rejects an unknown id', () => {
+  expect(ids(next({ areas: ['c'], count: 3 }))).toEqual(['c']);
+  expect(() => next({ areas: ['nope'] })).toThrow(/unknown area/);
+});
+it('reports untested, not_held and keep_fresh', () => {
+  /* a: no questions → untested; a: two fails → not_held; a holds rebuild → keep_fresh at rebuild */
+});
 it('returns the last 5 prompts newest first');
-it('is done after 8 questions, follow-ups included', () => { for (let i = 0; i < 8; i++) L.q('a','read',4);
-  expect(next().session).toMatchObject({ asked: 8, limit: 8, done: true }); });
+it('is done after 8 questions, follow-ups included', () => {
+  for (let i = 0; i < 8; i++) L.q('a', 'read', 4);
+  expect(next().session).toMatchObject({ asked: 8, limit: 8, done: true });
+});
 
 // stats.spec.ts
-it('summarises one session', () => { L.q('a','read',4,{durationMs:40_000}); L.q('a','read',1,{durationMs:60_000,hints:1}); L.q('b','maintain','skip');
-  expect(sessionSummary(m(), sid)).toMatchObject({ asked: 3, graded: 2, passed: 1, passRate: 1/3, medianMs: 50_000, hints: 1, skips: 1,
-    byArea: [{ areaId: 'a', level: 'read', asked: 2, passed: 1 }, { areaId: 'b', level: 'maintain', asked: 1, passed: 0 }] }); });
+it('summarises one session', () => {
+  L.q('a', 'read', 4, { durationMs: 40_000 });
+  L.q('a', 'read', 1, { durationMs: 60_000, hints: 1 });
+  L.q('b', 'maintain', 'skip');
+  expect(sessionSummary(m(), sid)).toMatchObject({
+    asked: 3,
+    graded: 2,
+    passed: 1,
+    passRate: 1 / 3,
+    medianMs: 50_000,
+    hints: 1,
+    skips: 1,
+    byArea: [
+      { areaId: 'a', level: 'read', asked: 2, passed: 1 },
+      { areaId: 'b', level: 'maintain', asked: 1, passed: 0 },
+    ],
+  });
+});
 it('pass rate is null for a session with no counted question');
 ```
 
@@ -542,10 +905,12 @@ it('pass rate is null for a session with no counted question');
 ### Task 7: CLI: status, map, session, teach
 
 **Files:**
+
 - Create: `src/cli/context.ts`, `src/cli/map-commands.ts`, `src/cli/session-commands.ts`, `test/cli-map.spec.ts`, `test/cli-session.spec.ts`
 - Modify: `src/cli/index.ts`, `test/helpers.ts` (add `runCli`)
 
 **Interfaces:**
+
 - Consumes: Tasks 2 to 6.
 - Produces:
 
@@ -567,16 +932,16 @@ export function runCli(args: string[], world: { git: GitFacts; clock: { now(): D
 
 **Commands.**
 
-| Command | Behaviour |
-| --- | --- |
-| `status` | Prints repository (`root`, `key`, `branch`, `commit`, `dirty`), the state folder, the map (`commit`, `setAt`, area count, `behind`: the map commit differs from HEAD), each area's level with label and stale mark, the verdict, the open session and the last ended session. With no map it prints the repository part, then throws `NotFoundError`. |
+| Command                                           | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status`                                          | Prints repository (`root`, `key`, `branch`, `commit`, `dirty`), the state folder, the map (`commit`, `setAt`, area count, `behind`: the map commit differs from HEAD), each area's level with label and stale mark, the verdict, the open session and the last ended session. With no map it prints the repository part, then throws `NotFoundError`.                                                                         |
 | `map set --file <path> [--force --reason <text>]` | `validateMap`; every evidence path must exist under the repository root (`fileExists`), else error. With an earlier map: build `UpdateContext` from `mapChanges` and `trackedFiles`, run `checkUpdate`; any `blocking` problem fails; any `forceable` problem fails unless `--force`, which requires `--reason`. Stores the map stamped with branch, commit and time, appends a `map_set` event, prints the `MapChange` list. |
-| `map show` | Prints the stored map. |
-| `map changes` | Prints `MapChangesResult`. |
-| `session start --mode learn\|interview` | Ends an open session first with `session_end` `auto: true`. Appends `session_start`, prints the session id. Needs a map. |
-| `session end` | No open session: `NotFoundError`. Appends `session_end`, prints the session summary, the areas and the verdict. Text output leads with the session summary in interview mode and with the verdict in learn mode. `--json`: `{ summary, areas, verdict }`. |
-| `session list` | Past sessions, newest first, each with its summary. No sessions: `NotFoundError`. |
-| `teach --area <id> [--principles <id,id>]` | Needs an open session and a known area and principles. Appends `lesson`. |
+| `map show`                                        | Prints the stored map.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `map changes`                                     | Prints `MapChangesResult`.                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `session start --mode learn\|interview`           | Ends an open session first with `session_end` `auto: true`. Appends `session_start`, prints the session id. Needs a map.                                                                                                                                                                                                                                                                                                      |
+| `session end`                                     | No open session: `NotFoundError`. Appends `session_end`, prints the session summary, the areas and the verdict. Text output leads with the session summary in interview mode and with the verdict in learn mode. `--json`: `{ summary, areas, verdict }`.                                                                                                                                                                     |
+| `session list`                                    | Past sessions, newest first, each with its summary. No sessions: `NotFoundError`.                                                                                                                                                                                                                                                                                                                                             |
+| `teach --area <id> [--principles <id,id>]`        | Needs an open session and a known area and principles. Appends `lesson`.                                                                                                                                                                                                                                                                                                                                                      |
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -584,32 +949,68 @@ export function runCli(args: string[], world: { git: GitFacts; clock: { now(): D
 // cli-map.spec.ts
 it('status with no map exits 1 and still prints the repository', async () => {
   const r = await runCli(['status', '--json'], world);
-  expect(r.code).toBe(1); expect(r.json()).toMatchObject({ repo: { key: 'github.com/octo-org/hello-world' }, map: null }); });
+  expect(r.code).toBe(1);
+  expect(r.json()).toMatchObject({ repo: { key: 'github.com/octo-org/hello-world' }, map: null });
+});
 it('map set stores the map and stamps the commit', async () => {
   expect((await runCli(['map', 'set', '--file', 'map.json', '--json'], world)).code).toBe(0);
-  expect((await runCli(['map', 'show', '--json'], world)).json()).toMatchObject({ commit: 'c1', branch: 'main', areas: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] }); });
+  expect((await runCli(['map', 'show', '--json'], world)).json()).toMatchObject({
+    commit: 'c1',
+    branch: 'main',
+    areas: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+  });
+});
 it('map set rejects a bad map with exit 2 and names every problem');
-it('map set rejects evidence that points at a missing file', async () => { /* files lacks src/a/x.ts → code 2, message names the path */ });
+it('map set rejects evidence that points at a missing file', async () => {
+  /* files lacks src/a/x.ts → code 2, message names the path */
+});
 it('map set refuses to drop an untouched key area, and accepts it with --force --reason', async () => {
   expect((await runCli(['map', 'set', '--file', 'without-b.json'], world)).code).toBe(2);
   expect((await runCli(['map', 'set', '--file', 'without-b.json', '--force'], world)).code).toBe(2);
-  const r = await runCli(['map', 'set', '--file', 'without-b.json', '--force', '--reason', 'person asked for a redraw', '--json'], world);
-  expect(r.json()).toMatchObject({ changes: [{ kind: 'removed', areaId: 'b' }], forced: 'person asked for a redraw' }); });
+  const r = await runCli(
+    [
+      'map',
+      'set',
+      '--file',
+      'without-b.json',
+      '--force',
+      '--reason',
+      'person asked for a redraw',
+      '--json',
+    ],
+    world,
+  );
+  expect(r.json()).toMatchObject({
+    changes: [{ kind: 'removed', areaId: 'b' }],
+    forced: 'person asked for a redraw',
+  });
+});
 it('map set prints revision_raised when files in the area changed');
 it('map changes groups files after the repository moves to c2');
-it('works in a folder that is not a git repository', async () => { /* fakeGit({ toplevel: null }): map set code 0; map show commit null; map changes comparable false */ });
+it('works in a folder that is not a git repository', async () => {
+  /* fakeGit({ toplevel: null }): map set code 0; map show commit null; map changes comparable false */
+});
 
 // cli-session.spec.ts
 it('session start needs a map (exit 1) and a valid mode (exit 2)');
 it('a second session start closes the first one', async () => {
-  const first = (await runCli(['session', 'start', '--mode', 'learn', '--json'], world)).json() as { sessionId: string };
+  const first = (await runCli(['session', 'start', '--mode', 'learn', '--json'], world)).json() as {
+    sessionId: string;
+  };
   await runCli(['session', 'start', '--mode', 'interview'], world);
-  const list = (await runCli(['session', 'list', '--json'], world)).json() as { id: string; endedAt: string | null; auto: boolean }[];
+  const list = (await runCli(['session', 'list', '--json'], world)).json() as {
+    id: string;
+    endedAt: string | null;
+    auto: boolean;
+  }[];
   expect(list.find((s) => s.id === first.sessionId)).toMatchObject({ auto: true });
-  expect(list.filter((s) => s.endedAt === null)).toHaveLength(1); });
+  expect(list.filter((s) => s.endedAt === null)).toHaveLength(1);
+});
 it('session end with no open session exits 1');
 it('session end prints summary, areas and verdict as JSON');
-it('teach needs an open session and a known area (exit 2 otherwise) and records the branch and commit');
+it(
+  'teach needs an open session and a known area (exit 2 otherwise) and records the branch and commit',
+);
 ```
 
 - [ ] **Step 2: Run.** Expected: FAIL.
@@ -622,27 +1023,29 @@ it('teach needs an open session and a known area (exit 2 otherwise) and records 
 ### Task 8: CLI: question lifecycle and read commands
 
 **Files:**
+
 - Create: `src/cli/question-commands.ts`, `src/cli/read-commands.ts`, `test/cli-question.spec.ts`, `test/cli-read.spec.ts`
 - Modify: `src/cli/index.ts`
 
 **Interfaces:**
+
 - Consumes: `Ctx`, `record`, `requireMap`, `openSession`, `buildModel`, `nextTargets`, `sessionSummary`.
 - Produces: `registerQuestionCommands(p, deps)`, `registerReadCommands(p, deps)` (chart and report are added to the second in Task 9).
 
 **Commands.** Text comes from `--file <path>`; `--file -` reads standard input.
 
-| Command | Rules (each broken rule: exit 2, no event written) |
-| --- | --- |
+| Command                                                                                                                                            | Rules (each broken rule: exit 2, no event written)                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ask --area <id> --level <level> --type <type> --file <path> --evidence <path:line> [--evidence ...] [--principles <id,id>] [--follow-up-of <id>]` | Open session; known area; the type belongs to the level; non-empty prompt; at least one evidence value in `path:line` form. Follow-up: the parent is in this session, in the same area, has an answer, is not itself a follow-up, has no follow-up yet, and the new level is the parent's or one above. Appends `ask` with the area's current revision. Prints the question id. |
-| `hint <id>` | The question is open (asked, no answer, not skipped); the session mode is `learn`. |
-| `answer <id> --file <path>` | The question is open. `durationMs` is now minus the ask time, never below 0. |
-| `grade <id> --score <0-4> [--file <path>] [--gaps <tag,tag>]` | The question is answered and not graded; the score is a whole number 0 to 4. `--file` holds the notes. |
-| `skip <id>` | The question is open. |
-| `next [--area <id>...] [--count <n>]` | Default count 3. Prints `NextResult`. |
-| `levels` | Areas with level, label, stale mark (`stale (was <level>)`), untested mark and last tested time; then the verdict with its label and gaps. |
-| `history [--area <id>] [--session <id>] [--limit <n>]` | Question records, newest first; a retired area is marked. Nothing to show: `NotFoundError`. |
-| `export` | `{ repo, map, events }` as JSON. |
-| `reset --yes` | Without `--yes`: exit 2. Deletes the repository's state folder. |
+| `hint <id>`                                                                                                                                        | The question is open (asked, no answer, not skipped); the session mode is `learn`.                                                                                                                                                                                                                                                                                              |
+| `answer <id> --file <path>`                                                                                                                        | The question is open. `durationMs` is now minus the ask time, never below 0.                                                                                                                                                                                                                                                                                                    |
+| `grade <id> --score <0-4> [--file <path>] [--gaps <tag,tag>]`                                                                                      | The question is answered and not graded; the score is a whole number 0 to 4. `--file` holds the notes.                                                                                                                                                                                                                                                                          |
+| `skip <id>`                                                                                                                                        | The question is open.                                                                                                                                                                                                                                                                                                                                                           |
+| `next [--area <id>...] [--count <n>]`                                                                                                              | Default count 3. Prints `NextResult`.                                                                                                                                                                                                                                                                                                                                           |
+| `levels`                                                                                                                                           | Areas with level, label, stale mark (`stale (was <level>)`), untested mark and last tested time; then the verdict with its label and gaps.                                                                                                                                                                                                                                      |
+| `history [--area <id>] [--session <id>] [--limit <n>]`                                                                                             | Question records, newest first; a retired area is marked. Nothing to show: `NotFoundError`.                                                                                                                                                                                                                                                                                     |
+| `export`                                                                                                                                           | `{ repo, map, events }` as JSON.                                                                                                                                                                                                                                                                                                                                                |
+| `reset --yes`                                                                                                                                      | Without `--yes`: exit 2. Deletes the repository's state folder.                                                                                                                                                                                                                                                                                                                 |
 
 An unknown question id, area id or session id is exit 2 with the id in the message.
 
@@ -656,34 +1059,92 @@ it('ask, answer and grade record a timed, graded question', async () => {
   await ok(['answer', id, '--file', 'answer.txt']);
   await ok(['grade', id, '--score', '4', '--gaps', 'locking,naming']);
   const q = (await history())[0];
-  expect(q).toMatchObject({ id, status: 'graded', durationMs: 45_000, score: 4, passed: true, gaps: ['locking', 'naming'], branch: 'main', commit: 'c1' }); });
+  expect(q).toMatchObject({
+    id,
+    status: 'graded',
+    durationMs: 45_000,
+    score: 4,
+    passed: true,
+    gaps: ['locking', 'naming'],
+    branch: 'main',
+    commit: 'c1',
+  });
+});
 it('reads the prompt from standard input with --file -');
-it('ask needs an open session', async () => expect((await runCli(askArgs, noSession)).code).toBe(2));
+it('ask needs an open session', async () =>
+  expect((await runCli(askArgs, noSession)).code).toBe(2));
 it.each([
   [['--level', 'read', '--type', 'debug'], /debug.*maintain/],
   [['--area', 'nope'], /unknown area/],
   [['--evidence', 'src/a/x.ts'], /path:line/],
-])('ask rejects %j', async (extra, pattern) => { /* code 2, message matches, event count unchanged */ });
+])('ask rejects %j', async (extra, pattern) => {
+  /* code 2, message matches, event count unchanged */
+});
 it.each([
-  ['answer twice', /already answered/], ['grade before answer', /not answered/], ['grade twice', /already graded/],
-  ['hint after answer', /already answered/], ['skip after answer', /already answered/],
-  ['answer an unknown id', /unknown question/], ['grade with score 5', /0 to 4/], ['grade with score 2.5', /0 to 4/],
-])('%s exits 2 and writes nothing', async (name, pattern) => { /* run the sequence; last call: code 2, message matches, event count unchanged */ });
+  ['answer twice', /already answered/],
+  ['grade before answer', /not answered/],
+  ['grade twice', /already graded/],
+  ['hint after answer', /already answered/],
+  ['skip after answer', /already answered/],
+  ['answer an unknown id', /unknown question/],
+  ['grade with score 5', /0 to 4/],
+  ['grade with score 2.5', /0 to 4/],
+])('%s exits 2 and writes nothing', async (name, pattern) => {
+  /* run the sequence; last call: code 2, message matches, event count unchanged */
+});
 it('hint is recorded in learn mode and refused in interview mode');
 it('a hinted answer is graded but does not pass');
 it('a follow-up may be the same level or one above, in the same area, once per question', async () => {
   const parent = await askAnswerGrade('a', 'read', 4);
-  expect(await askCode(['--area', 'b', '--level', 'read', '--type', 'trace', '--follow-up-of', parent])).toBe(2);
-  expect(await askCode(['--area', 'a', '--level', 'rebuild', '--type', 'rebuild', '--follow-up-of', parent])).toBe(2);
-  const child = await ask(['--area', 'a', '--level', 'maintain', '--type', 'predict', '--follow-up-of', parent]);
-  expect(await askCode(['--area', 'a', '--level', 'read', '--type', 'trace', '--follow-up-of', parent])).toBe(2);
-  expect(await askCode(['--area', 'a', '--level', 'maintain', '--type', 'debug', '--follow-up-of', child])).toBe(2); });
+  expect(
+    await askCode(['--area', 'b', '--level', 'read', '--type', 'trace', '--follow-up-of', parent]),
+  ).toBe(2);
+  expect(
+    await askCode([
+      '--area',
+      'a',
+      '--level',
+      'rebuild',
+      '--type',
+      'rebuild',
+      '--follow-up-of',
+      parent,
+    ]),
+  ).toBe(2);
+  const child = await ask([
+    '--area',
+    'a',
+    '--level',
+    'maintain',
+    '--type',
+    'predict',
+    '--follow-up-of',
+    parent,
+  ]);
+  expect(
+    await askCode(['--area', 'a', '--level', 'read', '--type', 'trace', '--follow-up-of', parent]),
+  ).toBe(2);
+  expect(
+    await askCode([
+      '--area',
+      'a',
+      '--level',
+      'maintain',
+      '--type',
+      'debug',
+      '--follow-up-of',
+      child,
+    ]),
+  ).toBe(2);
+});
 it('a follow-up of an unanswered question is refused');
 it('duration is never negative when the clock goes back');
 
 // cli-read.spec.ts
 it('next returns targets and session progress as JSON');
-it('levels prints every label and the stale mark', async () => { /* hold a at maintain, raise a → out contains 'Ready to be interviewed on it' and 'stale (was maintain)' */ });
+it('levels prints every label and the stale mark', async () => {
+  /* hold a at maintain, raise a → out contains 'Ready to be interviewed on it' and 'stale (was maintain)' */
+});
 it('history filters by area and session and exits 1 when empty');
 it('export prints repo, map and events; reset needs --yes and then status exits 1');
 ```
@@ -698,10 +1159,12 @@ it('export prints repo, map and events; reset needs --yes and then status exits 
 ### Task 9: Charts and report
 
 **Files:**
+
 - Create: `src/core/charts/text.ts`, `src/core/charts/html.ts`, `test/charts.spec.ts`
 - Modify: `src/core/stats.ts`, `src/cli/read-commands.ts`, `test/cli-read.spec.ts`
 
 **Interfaces:**
+
 - Produces:
 
 ```ts
@@ -709,13 +1172,64 @@ export const CHART_KINDS = ['levels', 'accuracy', 'speed', 'types', 'timeline'] 
 export type ChartKind = (typeof CHART_KINDS)[number];
 export type ChartData =
   | { kind: 'levels'; verdict: Verdict; areas: (AreaState & { summary: string })[] }
-  | { kind: 'accuracy'; sessions: { sessionId: string; startedAt: string; mode: Mode; counted: number; passed: number; passRate: number | null }[];
-      byArea: { areaId: string; title: string; points: { sessionId: string; passRate: number | null }[] }[] }
-  | { kind: 'speed'; sessions: { sessionId: string; startedAt: string; count: number; medianMs: number | null; meanMs: number | null }[] }
-  | { kind: 'types'; types: { qtype: QType; level: Level; counted: number; passed: number; passRate: number | null; medianMs: number | null }[] }
-  | { kind: 'timeline'; sessions: { sessionId: string; startedAt: string; endedAt: string | null; mode: Mode; branch: string | null;
-      commit: string | null; dirty: boolean; asked: number; passed: number }[]; maps: { at: string; commit: string | null; raised: string[] }[] };
-export function chartData(kind: ChartKind, map: MapInput, model: Model, events: LogEvent[]): ChartData;   // stats.ts
+  | {
+      kind: 'accuracy';
+      sessions: {
+        sessionId: string;
+        startedAt: string;
+        mode: Mode;
+        counted: number;
+        passed: number;
+        passRate: number | null;
+      }[];
+      byArea: {
+        areaId: string;
+        title: string;
+        points: { sessionId: string; passRate: number | null }[];
+      }[];
+    }
+  | {
+      kind: 'speed';
+      sessions: {
+        sessionId: string;
+        startedAt: string;
+        count: number;
+        medianMs: number | null;
+        meanMs: number | null;
+      }[];
+    }
+  | {
+      kind: 'types';
+      types: {
+        qtype: QType;
+        level: Level;
+        counted: number;
+        passed: number;
+        passRate: number | null;
+        medianMs: number | null;
+      }[];
+    }
+  | {
+      kind: 'timeline';
+      sessions: {
+        sessionId: string;
+        startedAt: string;
+        endedAt: string | null;
+        mode: Mode;
+        branch: string | null;
+        commit: string | null;
+        dirty: boolean;
+        asked: number;
+        passed: number;
+      }[];
+      maps: { at: string; commit: string | null; raised: string[] }[];
+    };
+export function chartData(
+  kind: ChartKind,
+  map: MapInput,
+  model: Model,
+  events: LogEvent[],
+): ChartData; // stats.ts
 export function bar(fraction: number, width: number): string;
 export function sparkline(values: (number | null)[]): string;
 export function formatDuration(ms: number): string;
@@ -731,19 +1245,38 @@ Format rules from the spec: text uses Unicode bars and sparklines; HTML is one s
 - [ ] **Step 1: Write the failing tests** `test/charts.spec.ts`
 
 ```ts
-it('bar fills in proportion', () => { expect(bar(0.5, 10)).toBe('█████░░░░░'); expect(bar(0, 4)).toBe('░░░░'); expect(bar(1.2, 4)).toBe('████'); });
+it('bar fills in proportion', () => {
+  expect(bar(0.5, 10)).toBe('█████░░░░░');
+  expect(bar(0, 4)).toBe('░░░░');
+  expect(bar(1.2, 4)).toBe('████');
+});
 it('sparkline scales to its range and shows a gap for null', () => {
-  expect(sparkline([0, 0.5, 1])).toBe('▁▄█'); expect(sparkline([1, null, 1])).toBe('█ █'); expect(sparkline([])).toBe(''); });
-it('formatDuration', () => { expect(formatDuration(45_000)).toBe('45s'); expect(formatDuration(125_000)).toBe('2m 05s'); });
-it('levels text names every area, level label and mark', () => { /* hold a maintain, raise a, b untested →
-  text contains each title, 'Ready to be interviewed on it', 'stale (was maintain)', 'untested', and the verdict label */ });
-it('accuracy, speed, types and timeline data match a two-session log', () => { /* exact numbers for passRate, medianMs, counted per type, branch and commit per session, raised areas per map event */ });
+  expect(sparkline([0, 0.5, 1])).toBe('▁▄█');
+  expect(sparkline([1, null, 1])).toBe('█ █');
+  expect(sparkline([])).toBe('');
+});
+it('formatDuration', () => {
+  expect(formatDuration(45_000)).toBe('45s');
+  expect(formatDuration(125_000)).toBe('2m 05s');
+});
+it('levels text names every area, level label and mark', () => {
+  /* hold a maintain, raise a, b untested →
+  text contains each title, 'Ready to be interviewed on it', 'stale (was maintain)', 'untested', and the verdict label */
+});
+it('accuracy, speed, types and timeline data match a two-session log', () => {
+  /* exact numbers for passRate, medianMs, counted per type, branch and commit per session, raised areas per map event */
+});
 it('every kind renders text for an empty history without throwing');
 it('html is self-contained and escapes text', () => {
-  const html = renderHtml(allCharts(mapWithTitle('<script>alert(1)</script>')), 'octo-org/hello-world');
-  expect(html).toContain('<svg'); expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  const html = renderHtml(
+    allCharts(mapWithTitle('<script>alert(1)</script>')),
+    'octo-org/hello-world',
+  );
+  expect(html).toContain('<svg');
+  expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
   expect(html).not.toMatch(/<script|src=|href=|@import|url\(/i);
-  expect(html).toContain('prefers-color-scheme: dark'); });
+  expect(html).toContain('prefers-color-scheme: dark');
+});
 ```
 
 Add to `test/cli-read.spec.ts`: `chart levels --format json` returns `kind: 'levels'`; `chart nope` exits 2; `report --format html --out <temp path>` writes a file that starts with `<!doctype html>`; `report --out <path inside the repository root>` exits 2.
@@ -758,9 +1291,11 @@ Add to `test/cli-read.spec.ts`: `chart levels --format json` returns `kind: 'lev
 ### Task 10: End-to-end session test
 
 **Files:**
+
 - Create: `test/e2e.spec.ts`
 
 **Interfaces:**
+
 - Consumes: `runCli`, `fakeGit`, `clock`, the whole CLI.
 
 - [ ] **Step 1: Write the test.** One test, one state folder, a fake repository at `/w` with origin `git@github.com:octo-org/hello-world.git`, branch `main`, head `c1`, clock from `2026-01-05T09:00:00.000Z`:
@@ -781,10 +1316,12 @@ Add to `test/cli-read.spec.ts`: `chart levels --format json` returns `kind: 'lev
 ### Task 11: Skills for Claude Code, Codex and OpenCode
 
 **Files:**
+
 - Create: `skills/claude-code/repo-ready/SKILL.md`, `skills/codex/repo-ready.md`, `skills/opencode/repo-ready.md`, `tools/repo-ready/test/skills.spec.ts`
 - Modify: `skills/generic/AGENTS.md.snippet.md`, `skills/README.md`
 
 **Interfaces:**
+
 - Consumes: the CLI surface of Tasks 7 to 9. Verify every flag against `node tools/repo-ready/dist/cli.js <command> --help`; do not write a flag from memory.
 
 Each file has the header its platform uses (copy from the `gh-watcher` file beside it). Claude Code frontmatter: `name: repo-ready`, `description: Teach and quiz a person on a repository's design, track every answer, and report whether they are ready to be interviewed on it, work on it or own it. Use when someone asks to learn a codebase, be quizzed on it, or check their readiness.` The body is the same in all three, except the chart section. Sections, in this order:
@@ -803,11 +1340,37 @@ Each file has the header its platform uses (copy from the `gh-watcher` file besi
 
 - [ ] **Step 1: Write the failing test** `tools/repo-ready/test/skills.spec.ts`
 
-```ts
+````ts
 const FILES = ['claude-code/repo-ready/SKILL.md', 'codex/repo-ready.md', 'opencode/repo-ready.md'];
-const COMMANDS = ['status', 'map set', 'map show', 'map changes', 'session start', 'session end', 'session list', 'teach',
-  'ask', 'hint', 'answer', 'grade', 'skip', 'next', 'levels', 'history', 'chart', 'report', 'export', 'reset'];
-const LABELS = ['Ready to be interviewed on it', 'Ready to work on it', 'Ready to own it', 'Not yet ready', 'Not enough evidence yet'];
+const COMMANDS = [
+  'status',
+  'map set',
+  'map show',
+  'map changes',
+  'session start',
+  'session end',
+  'session list',
+  'teach',
+  'ask',
+  'hint',
+  'answer',
+  'grade',
+  'skip',
+  'next',
+  'levels',
+  'history',
+  'chart',
+  'report',
+  'export',
+  'reset',
+];
+const LABELS = [
+  'Ready to be interviewed on it',
+  'Ready to work on it',
+  'Ready to own it',
+  'Not yet ready',
+  'Not enough evidence yet',
+];
 it.each(FILES)('%s names every command and label', async (file) => {
   const text = await readFile(new URL(`../../../skills/${file}`, import.meta.url), 'utf8');
   for (const c of COMMANDS) expect(text).toContain(`repo-ready ${c}`);
@@ -820,7 +1383,7 @@ it('the three bodies differ only in header and chart section', async () => {
 it('the JSON example in the skill is a valid map', async () => {
   /* extract the first ```json block from the Claude Code file and pass it to validateMap */
 });
-```
+````
 
 - [ ] **Step 2: Run.** Expected: FAIL, files missing.
 - [ ] **Step 3: Write the three skill files**, then add a `### repo-ready` section to `skills/generic/AGENTS.md.snippet.md` (purpose in one sentence, the session loop as a command list, the rules of section 2 in short form) and add the three files to the install matrix and install examples in `skills/README.md`.
@@ -832,6 +1395,7 @@ it('the JSON example in the skill is a valid map', async () => {
 ### Task 12: Documentation, release wiring, full checks
 
 **Files:**
+
 - Create: `tools/repo-ready/README.md`
 - Modify: `README.md`, `AGENTS.md`, `.github/workflows/release.yml`
 

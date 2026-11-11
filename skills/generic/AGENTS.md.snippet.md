@@ -1,6 +1,6 @@
-## External state tools (dns-checker, gh-watcher)
+## External state tools (dns-checker, gh-watcher, repo-ready)
 
-Two CLIs let you check external state, wait for changes, and resume work. Build them once with `npm install && npm run build -w @ai-tools/dns-checker -w @ai-tools/gh-watcher`; the binaries are then at `<repo>/tools/dns-checker/dist/cli.js` and `<repo>/tools/gh-watcher/dist/cli.js`.
+Three CLIs let you check external state, wait for changes, resume work, and quiz a person on a repository. Build them once with `npm install && npm run build -w @ai-tools/dns-checker -w @ai-tools/gh-watcher -w @ai-tools/repo-ready`; the binaries are then at `<repo>/tools/dns-checker/dist/cli.js`, `<repo>/tools/gh-watcher/dist/cli.js` and `<repo>/tools/repo-ready/dist/cli.js`.
 
 ### dns-checker (DNS)
 
@@ -53,4 +53,4 @@ gh-watcher wait --repo octo-org/hello-world --pr 17 --json
 | 2    | Error                 |
 | 124  | Timeout               |
 
-Both CLIs support `--json` on every result-printing command. Prefer `--json` when an agent consumes the output.
+All three CLIs support `--json` on every result-printing command. Prefer `--json` when an agent consumes the output.

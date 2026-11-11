@@ -9,6 +9,7 @@ ai-tools/
 ├── tools/
 │   ├── dns-checker/   # @ai-tools/dns-checker: DNS lookup/check/wait/watch CLI
 │   ├── gh-watcher/    # @ai-tools/gh-watcher: GitHub Actions status/wait/watch CLI
+│   ├── repo-ready/    # @ai-tools/repo-ready: repository readiness quiz engine CLI (map, sessions, levels, charts)
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check: TASKS.md format check CLI
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin (docked TASKS.md pane); checked with `claude plugin validate`, excluded from eslint/tsc/vitest
@@ -27,7 +28,7 @@ ai-tools/
 └── .github/           # CI workflows
 ```
 
-Tool source layout (both tools): `src/core/` (engine and stores) and `src/cli/` (commander program). Tests live in `test/` and run offline with injected dependencies.
+Tool source layout (dns-checker, gh-watcher and repo-ready): `src/core/` (engine and stores) and `src/cli/` (commander program). Tests live in `test/` and run offline with injected dependencies.
 
 ## Commands
 
@@ -55,4 +56,4 @@ npm run format                                # prettier --write .
 - Exit code conventions for both CLIs: `0` success or match, `1` no match or not found, `2` error, `124` timeout.
 - Every result-printing command supports `--json`.
 - Watcher state belongs under `ai-tools/<name>` in the XDG state directory, overridable via `AI_TOOLS_<NAME>_STATE_DIR`.
-- Before touching a tool, read that tool's documentation: `tools/dns-checker/` and `tools/gh-watcher/` follow the patterns described in the root README ("Adding a tool"), and the CLI surface is the contract. Verify flags against `node tools/<tool>/dist/cli.js <command> --help` rather than guessing.
+- Before touching a tool, read that tool's documentation: `tools/dns-checker/`, `tools/gh-watcher/` and `tools/repo-ready/` follow the patterns described in the root README ("Adding a tool"), and the CLI surface is the contract. Verify flags against `node tools/<tool>/dist/cli.js <command> --help` rather than guessing.

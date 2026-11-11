@@ -63,15 +63,15 @@ These would make the tool a failure even if it runs. **(designer's call)**
 
 ## The parts
 
-| Part | Path | What it is |
-| --- | --- | --- |
-| CLI | `tools/repo-ready/` | `@ai-tools/repo-ready`, bin `repo-ready`. Holds state, clock, git facts, rules and charts. |
-| Claude Code skill | `skills/claude-code/repo-ready/SKILL.md` | The session procedure for Claude Code. |
-| Codex prompt | `skills/codex/repo-ready.md` | The same procedure for Codex. |
-| OpenCode command | `skills/opencode/repo-ready.md` | The same procedure for OpenCode. |
-| Generic snippet | `skills/generic/AGENTS.md.snippet.md` | A short `repo-ready` section, as for the other tools. |
-| Docs | `tools/repo-ready/README.md`, root `README.md`, `AGENTS.md`, `skills/README.md` | Tool reference, repo map entry, install matrix rows. |
-| Release | `.github/workflows/release.yml` and related scripts | `repo-ready` joins the per-tool release on a `repo-ready-v<version>` tag. First version `0.1.0`. |
+| Part              | Path                                                                            | What it is                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| CLI               | `tools/repo-ready/`                                                             | `@ai-tools/repo-ready`, bin `repo-ready`. Holds state, clock, git facts, rules and charts.       |
+| Claude Code skill | `skills/claude-code/repo-ready/SKILL.md`                                        | The session procedure for Claude Code.                                                           |
+| Codex prompt      | `skills/codex/repo-ready.md`                                                    | The same procedure for Codex.                                                                    |
+| OpenCode command  | `skills/opencode/repo-ready.md`                                                 | The same procedure for OpenCode.                                                                 |
+| Generic snippet   | `skills/generic/AGENTS.md.snippet.md`                                           | A short `repo-ready` section, as for the other tools.                                            |
+| Docs              | `tools/repo-ready/README.md`, root `README.md`, `AGENTS.md`, `skills/README.md` | Tool reference, repo map entry, install matrix rows.                                             |
+| Release           | `.github/workflows/release.yml` and related scripts                             | `repo-ready` joins the per-tool release on a `repo-ready-v<version>` tag. First version `0.1.0`. |
 
 ### Who does what
 
@@ -135,13 +135,13 @@ The person can ask for progress, history or charts at any time, in or out of a s
 
 ### Modes
 
-| | Learn | Interview |
-| --- | --- | --- |
-| Lessons | Yes, short, before questions on weak areas | No |
-| Hints | Yes, on request; each is recorded with `repo-ready hint <id>` | No |
-| Feedback | After each answer | Only in the debrief at the end |
-| Looking at the code | Allowed | The person is asked not to; this is on trust |
-| Follow-up questions | Gentle | Probing, as an interviewer would |
+|                     | Learn                                                         | Interview                                    |
+| ------------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| Lessons             | Yes, short, before questions on weak areas                    | No                                           |
+| Hints               | Yes, on request; each is recorded with `repo-ready hint <id>` | No                                           |
+| Feedback            | After each answer                                             | Only in the debrief at the end               |
+| Looking at the code | Allowed                                                       | The person is asked not to; this is on trust |
+| Follow-up questions | Gentle                                                        | Probing, as an interviewer would             |
 
 ### Follow-up questions
 
@@ -155,11 +155,11 @@ The person can ask for progress, history or charts at any time, in or out of a s
 
 The levels and their plain labels are the owner's decision. The question types for each level are the designer's call.
 
-| Level | Meaning | Label in the verdict | Question types |
-| --- | --- | --- | --- |
-| read | Can explain what the area does and why it is designed so | Ready to be interviewed on it | `explain`, `trace` |
-| maintain | Can change and repair it without breaking the design | Ready to work on it | `predict` (what breaks if this changes), `debug` (given this symptom, where is the cause), `change` (how to add this within the design) |
-| rebuild | Can design the area again from nothing | Ready to own it | `rebuild` |
+| Level    | Meaning                                                  | Label in the verdict          | Question types                                                                                                                          |
+| -------- | -------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| read     | Can explain what the area does and why it is designed so | Ready to be interviewed on it | `explain`, `trace`                                                                                                                      |
+| maintain | Can change and repair it without breaking the design     | Ready to work on it           | `predict` (what breaks if this changes), `debug` (given this symptom, where is the cause), `change` (how to add this within the design) |
+| rebuild  | Can design the area again from nothing                   | Ready to own it               | `rebuild`                                                                                                                               |
 
 Every place that prints a level or the verdict prints the label with it: `status`, `levels`, `session end`, the `levels` chart and the report.
 
@@ -269,28 +269,28 @@ How the skills use them: each skill shows the `text` chart in chat by default. T
 
 All commands take `--repo <path>` (default: the current directory) and `--json` wherever a result is printed. Exit codes follow the repository convention: `0` success, `1` not found (for example no map or no history yet), `2` error.
 
-| Command | Purpose |
-| --- | --- |
-| `status` | Repository identity, map state, levels, stale areas, last session |
-| `map set --file <path> [--force --reason <text>]` | Validate and store a map; print structural changes |
-| `map show` | Print the current map |
-| `map changes` | Files changed since the map's commit, grouped by area |
-| `session start --mode learn\|interview` | Open a session |
-| `session end` | Close it and print levels and verdict |
-| `session list` | Past sessions |
-| `teach --area <id>` | Record a lesson |
-| `ask --area <id> --level <level> --type <type> [--follow-up-of <id>]` | Record a question, stamp the start time, return its id |
-| `hint <id>` | Record a hint |
-| `answer <id>` | Record the reply and stamp the end time |
-| `grade <id> --score <0-4>` | Record the grade |
-| `skip <id>` | Record a skip |
-| `next` | What to test next |
-| `levels` | Levels and verdict now |
-| `history` | Past questions and answers, filterable by area and session |
-| `chart <kind>` | One chart |
-| `report` | All charts |
-| `export` | History as JSON |
-| `reset --yes` | Delete this repository's history |
+| Command                                                               | Purpose                                                           |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `status`                                                              | Repository identity, map state, levels, stale areas, last session |
+| `map set --file <path> [--force --reason <text>]`                     | Validate and store a map; print structural changes                |
+| `map show`                                                            | Print the current map                                             |
+| `map changes`                                                         | Files changed since the map's commit, grouped by area             |
+| `session start --mode learn\|interview`                               | Open a session                                                    |
+| `session end`                                                         | Close it and print levels and verdict                             |
+| `session list`                                                        | Past sessions                                                     |
+| `teach --area <id>`                                                   | Record a lesson                                                   |
+| `ask --area <id> --level <level> --type <type> [--follow-up-of <id>]` | Record a question, stamp the start time, return its id            |
+| `hint <id>`                                                           | Record a hint                                                     |
+| `answer <id>`                                                         | Record the reply and stamp the end time                           |
+| `grade <id> --score <0-4>`                                            | Record the grade                                                  |
+| `skip <id>`                                                           | Record a skip                                                     |
+| `next`                                                                | What to test next                                                 |
+| `levels`                                                              | Levels and verdict now                                            |
+| `history`                                                             | Past questions and answers, filterable by area and session        |
+| `chart <kind>`                                                        | One chart                                                         |
+| `report`                                                              | All charts                                                        |
+| `export`                                                              | History as JSON                                                   |
+| `reset --yes`                                                         | Delete this repository's history                                  |
 
 Long text (question, answer, notes, evidence) is passed by file or standard input, so shell quoting cannot damage it.
 

@@ -2,7 +2,7 @@
 
 Copy-paste skills and prompt files that teach AI platforms how to use the CLIs in this repo.
 
-Both tools work from any agent that can run shell commands. The files here add platform-specific entry points on top. The CLI commands the skills invoke work the same whether the tools are installed as release binaries or run from a source checkout.
+The tools work from any agent that can run shell commands. The files here add platform-specific entry points on top. The CLI commands the skills invoke work the same whether the tools are installed as release binaries or run from a source checkout.
 
 ## Install matrix
 
