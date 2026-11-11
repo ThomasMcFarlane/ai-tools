@@ -1,0 +1,127 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, realpath, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { realGit } from '../src/core/deps.js';
+
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
+
+const saved = { global: process.env.GIT_CONFIG_GLOBAL, system: process.env.GIT_CONFIG_NOSYSTEM };
+let dir: string;
+
+function git(...args: string[]): void {
+  execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], {
+    cwd: dir,
+    stdio: 'ignore',
+  });
+}
+
+beforeAll(async () => {
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+  process.env.GIT_CONFIG_NOSYSTEM = '1';
+  dir = await realpath(await mkdtemp(join(tmpdir(), 'repo-ready-git-')));
+});
+
+afterAll(async () => {
+  for (const [key, value] of [
+    ['GIT_CONFIG_GLOBAL', saved.global],
+    ['GIT_CONFIG_NOSYSTEM', saved.system],
+  ] as const) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe('realGit', () => {
+  const g = realGit();
+
+  it('walks through the repository states in order', async () => {
+    expect(await g.toplevel(dir)).toBeNull();
+
+    git('init', '-q', '-b', 'main');
+    expect(await g.toplevel(dir)).toBe(dir);
+    expect(await g.head(dir)).toBeNull();
+    expect(await g.branch(dir)).toBeNull();
+    expect(await g.dirty(dir)).toBe(false);
+    expect(await g.rootCommit(dir)).toBeNull();
+    expect(await g.originUrl(dir)).toBeNull();
+
+    await writeFile(join(dir, 'a.txt'), 'one\n');
+    git('add', 'a.txt');
+    git('commit', '-q', '-m', 'first');
+    const first = await g.head(dir);
+    expect(first).toMatch(/^[0-9a-f]{40}$/);
+    expect(await g.branch(dir)).toBe('main');
+    expect(await g.hasCommit(dir, first as string)).toBe(true);
+    expect(await g.hasCommit(dir, '0'.repeat(40))).toBe(false);
+    expect(await g.trackedFiles(dir)).toEqual(['a.txt']);
+    expect(await g.rootCommit(dir)).toBe(first);
+    expect(await g.dirty(dir)).toBe(false);
+
+    git('checkout', '-q', '--detach');
+    expect(await g.branch(dir)).toBeNull();
+
+    await writeFile(join(dir, 'b.txt'), 'two\n');
+    expect(await g.dirty(dir)).toBe(true);
+    git('add', 'b.txt');
+    git('commit', '-q', '-m', 'second');
+    const second = await g.head(dir);
+    expect(await g.changedFiles(dir, first as string, second as string)).toEqual(['b.txt']);
+  });
+
+  it('returns special file names unquoted and exact', async () => {
+    const before = await g.head(dir);
+    await writeFile(join(dir, 'café.ts'), 'x\n');
+    await writeFile(join(dir, 'with space.txt'), 'y\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'special names');
+    const after = await g.head(dir);
+    const expected = ['café.ts', 'with space.txt'];
+    expect(await g.changedFiles(dir, before as string, after as string)).toEqual(expected);
+    expect(await g.trackedFiles(dir)).toEqual(expect.arrayContaining(expected));
+  });
+
+  it('leaves .git/index untouched when it checks for uncommitted changes', async () => {
+    const index = join(dir, '.git', 'index');
+    const future = new Date(Date.now() + 120_000);
+    await utimes(join(dir, 'a.txt'), future, future);
+    const before = { mtimeMs: (await stat(index)).mtimeMs, bytes: await readFile(index) };
+    expect(await g.dirty(dir)).toBe(false);
+    expect((await stat(index)).mtimeMs).toBe(before.mtimeMs);
+    expect((await readFile(index)).equals(before.bytes)).toBe(true);
+  });
+
+  it('lists both the old and the new path of a renamed file', async () => {
+    const before = await g.head(dir);
+    await rename(join(dir, 'a.txt'), join(dir, 'moved.txt'));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'move a.txt');
+    const after = await g.head(dir);
+    expect((await g.changedFiles(dir, before as string, after as string)).sort()).toEqual([
+      'a.txt',
+      'moved.txt',
+    ]);
+  });
+
+  it('ignores GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE from the environment', async () => {
+    const names = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'] as const;
+    const kept = names.map((name) => [name, process.env[name]] as const);
+    process.env.GIT_DIR = join(dir, 'no-such-git-dir');
+    process.env.GIT_WORK_TREE = join(dir, 'no-such-tree');
+    process.env.GIT_INDEX_FILE = join(dir, 'no-such-index');
+    try {
+      expect(await g.toplevel(dir)).toBe(dir);
+      expect(await g.head(dir)).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      for (const [name, value] of kept) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+});

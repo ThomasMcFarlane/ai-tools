@@ -67,3 +67,14 @@ ETA: 2026-11-06 18:30 ICT
 |---|---|---|---|---|---|---|---|
 | 19 | Track all check runs and commit statuses, not only Actions runs | done | claude | gh-watcher-all-checks | | 2026-11-06 18:20 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/83 (8bcac13)<br>262 tests; live wait on a Terraform-Cloud-only PR returned success |
 | 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | done | claude | | 8.19 | 2026-11-06 18:30 ICT | Released gh-watcher-v0.5.0 (run 42209707033); checksum OK<br>Installed on hq0; 0.4.0 kept as gh-watcher.v0.4.0<br>Skill doc updated in ThomasMcFarlane/.ais |
+
+## 9. repo-ready readiness quiz tool and skills
+ETA: 2026-11-12 12:00 ICT
+
+A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person on a repository's design, track every answer, and report a readiness level per design area.
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | in_review | claude | repo-ready | | 2026-11-12 12:00 ICT | Design and plan in docs/superpowers (specs, plans)<br>PR https://github.com/ThomasMcFarlane/ai-tools/pull/89<br>CLI (20 commands, charts, report), three skills, docs, release wiring; 262 tests<br>Whole-branch review and a fresh-agent acceptance run done; waits on owner merge |
+| 22 | Release repo-ready 0.1.0 | todo | claude | | 9.21 | | Blocked on 9.21 |
+| 23 | Close the remaining map-edit and identity gaps in repo-ready | todo | | | 9.21 | | From the final review; each needs a deliberate map edit or a rare setup<br>Paths moved onto an active folder let an area be dropped later<br>"Files gone" reads the git index, not committed files<br>An older-key history is hidden once another checkout starts a higher-priority one<br>State-folder guard does not follow symlinks |

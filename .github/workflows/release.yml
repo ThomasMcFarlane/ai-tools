@@ -15,6 +15,7 @@ on:
     tags:
       - 'dns-checker-v*'
       - 'gh-watcher-v*'
+      - 'repo-ready-v*'
   workflow_dispatch:
     inputs:
       tool:
@@ -24,6 +25,7 @@ on:
         options:
           - dns-checker
           - gh-watcher
+          - repo-ready
       version:
         description: 'Version to release, without the leading v (for example 0.2.0)'
         required: true

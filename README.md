@@ -8,19 +8,20 @@ Tools that let AI agents check external state, wait for changes, and resume work
 
 ## Tools
 
-| Name        | Package                 | Bin           | One line                              | What it does                                                                                                                                              |
-| ----------- | ----------------------- | ------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, and persistent watchers with hooks                      |
-| gh-watcher  | `@ai-tools/gh-watcher`  | `gh-watcher`  | GitHub Actions watcher for agents     | Reads Actions runs and checks through the `gh` CLI, blocks until a target succeeds or fails, and fires hooks when a job step fails or everything succeeds |
-| hooks       | `@ai-tools/hooks`       | (library)     | Shared hook machinery                 | The shared `exec` / `webhook` / `file` / `notify` hook library both watcher tools use                                                                     |
+| Name        | Package                 | Bin           | One line                              | What it does                                                                                                                                                                                 |
+| ----------- | ----------------------- | ------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, and persistent watchers with hooks                                                         |
+| gh-watcher  | `@ai-tools/gh-watcher`  | `gh-watcher`  | GitHub Actions watcher for agents     | Reads Actions runs and checks through the `gh` CLI, blocks until a target succeeds or fails, and fires hooks when a job step fails or everything succeeds                                    |
+| repo-ready  | `@ai-tools/repo-ready`  | `repo-ready`  | Repository readiness quiz engine      | Stores a map of a repository's design areas and every question, answer, time and score an AI agent records, then computes levels, the verdict, what to ask next and charts. No network calls |
+| hooks       | `@ai-tools/hooks`       | (library)     | Shared hook machinery                 | The shared `exec` / `webhook` / `file` / `notify` hook library both watcher tools use                                                                                                        |
 
 ## Install
 
 ### Option A: prebuilt binaries
 
-Both CLIs are published on the Releases page of this repository, each on its own version and tag (`<tool>-v<version>`), as self-contained native binaries: no Node or any other runtime is needed to run them.
+The CLIs are published on the Releases page of this repository, each on its own version and tag (`<tool>-v<version>`), as self-contained native binaries: no Node or any other runtime is needed to run them.
 
-Pick the release for the tool, for example `dns-checker 0.1.0` (tag `dns-checker-v0.1.0`), and download the artifact for your platform. `dns-checker` ships as `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`; `gh-watcher` uses the same scheme. Make the file executable, put it on your `PATH`, and verify it runs:
+Pick the release for the tool, for example `dns-checker 0.1.0` (tag `dns-checker-v0.1.0`), and download the artifact for your platform. `dns-checker` ships as `dns-checker-linux-x64`, `dns-checker-linux-arm64`, `dns-checker-macos-x64`, `dns-checker-macos-arm64` and `dns-checker-win-x64.exe`; `gh-watcher` and `repo-ready` use the same scheme. Make the file executable, put it on your `PATH`, and verify it runs:
 
 ```sh
 chmod +x dns-checker-linux-x64
@@ -51,11 +52,12 @@ The compiled JS CLIs can also be run directly, without packaging:
 ```sh
 node tools/dns-checker/dist/cli.js --help
 node tools/gh-watcher/dist/cli.js --help
+node tools/repo-ready/dist/cli.js --help
 ```
 
 ### Releases
 
-Each CLI is released independently, with its own version and a tag named `<tool>-v<version>` (for example `dns-checker-v0.2.0`, `gh-watcher-v0.1.0`). Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. A run lints, typechecks, builds and tests the repository, cross-compiles only that tool for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (five binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests under the title `<tool> <version>`. The workflow fails, without overwriting anything, if a release or tag with that name already exists, or if the version does not match `version` in `tools/<tool>/package.json`: bump `package.json` through a PR first.
+Each CLI is released independently, with its own version and a tag named `<tool>-v<version>` (for example `dns-checker-v0.2.0`, `gh-watcher-v0.1.0`, `repo-ready-v0.1.0`). Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. A run lints, typechecks, builds and tests the repository, cross-compiles only that tool for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (five binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests under the title `<tool> <version>`. The workflow fails, without overwriting anything, if a release or tag with that name already exists, or if the version does not match `version` in `tools/<tool>/package.json`: bump `package.json` through a PR first.
 
 To cut a release, either:
 
@@ -84,7 +86,7 @@ See [skills/README.md](skills/README.md) for the full install matrix.
 ## Requirements
 
 - Node >= 20 and npm, for building from source only (the prebuilt binaries are self-contained)
-- `gh` CLI installed and authenticated (needed by gh-watcher only; dns-checker never calls GitHub)
+- `gh` CLI installed and authenticated (needed by gh-watcher only; dns-checker and repo-ready never call GitHub)
 
 ## Quick start
 
@@ -94,7 +96,7 @@ Skip the build entirely if you installed the prebuilt binaries; the examples bel
 git clone <repository-url> ai-tools
 cd ai-tools
 npm install
-npm run build -w @ai-tools/dns-checker -w @ai-tools/gh-watcher
+npm run build -w @ai-tools/dns-checker -w @ai-tools/gh-watcher -w @ai-tools/repo-ready
 ```
 
 Three things you can do straight away. If you built from source instead of installing a binary, run the same commands as `node tools/<tool>/dist/cli.js ...` from the repository root:
@@ -152,25 +154,29 @@ Hooks are fired through `@ai-tools/hooks`. Every hook process gets:
 
 ## State and configuration
 
-Both watcher tools keep state under the XDG state directory:
+The tools keep state under the XDG state directory:
 
 | Tool        | Default state dir                     | Override                        |
 | ----------- | ------------------------------------- | ------------------------------- |
 | dns-checker | `~/.local/state/ai-tools/dns-checker` | `AI_TOOLS_DNS_STATE_DIR`        |
 | gh-watcher  | `~/.local/state/ai-tools/gh-watcher`  | `AI_TOOLS_GH_WATCHER_STATE_DIR` |
+| repo-ready  | `~/.local/state/ai-tools/repo-ready`  | `AI_TOOLS_REPO_READY_STATE_DIR` |
 
-Each directory holds:
+Each watcher directory holds:
 
 - `watchers.json`: saved watch specs (and per-watch baselines for dns-checker)
 - `events.jsonl`: append-only log of watch events
+
+repo-ready keeps one folder per studied repository under `repos/`, holding the current map, earlier maps and an append-only `events.jsonl`; see [tools/repo-ready/README.md](tools/repo-ready/README.md).
 
 `XDG_STATE_HOME` is honoured when set.
 
 ## Privacy and security
 
-- No telemetry, no accounts, no network calls beyond the lookups and GitHub API requests the tools exist to make.
+- No telemetry, no accounts, no network calls beyond the lookups and GitHub API requests the tools exist to make (repo-ready makes none).
 - DNS queries go only to the resolvers you pick (`system` by default, or a named preset, or a literal IP).
 - gh-watcher talks to GitHub only through your local, authenticated `gh` CLI. No tokens are stored or proxied by this repo.
+- repo-ready makes no network calls and never writes into the repository it studies. It stores the full text of the questions it asks and of your answers on your machine only; `repo-ready export` prints it and `repo-ready reset --yes` deletes it.
 - This repository must never contain personal information. Contributors: keep examples generic (example.com, octo-org/hello-world).
 
 ## Monorepo layout
@@ -180,6 +186,7 @@ ai-tools/
 ├── tools/
 │   ├── dns-checker/   # @ai-tools/dns-checker (CLI, core)
 │   ├── gh-watcher/    # @ai-tools/gh-watcher (CLI, core)
+│   ├── repo-ready/    # @ai-tools/repo-ready (CLI, core)
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check (TASKS.md format check)
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
@@ -217,7 +224,7 @@ Follow the existing conventions:
 - Source is split into `core/` (engine, no I/O assumptions) and `cli/` (commander program).
 - Dependencies are injectable so tests run offline (no real DNS or GitHub calls).
 - `--json` is supported everywhere a result is printed.
-- Exit codes are documented: `0` success or match, `1` no match or not found, `2` error, `124` timeout.
+- Exit codes are documented: `0` success or match, `1` no match or not found, `2` error, `124` timeout (only for tools that wait; `repo-ready` never waits and has no `124`).
 - State lives under `ai-tools/<name>` in the XDG state directory, overridable by `AI_TOOLS_<NAME>_STATE_DIR`.
 
 ## License
