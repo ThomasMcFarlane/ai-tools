@@ -27,9 +27,17 @@ export interface Deps {
   print(text: string): void;
 }
 
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+  delete env['GIT_DIR'];
+  delete env['GIT_WORK_TREE'];
+  delete env['GIT_INDEX_FILE'];
+  return env;
+}
+
 function git(cwd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+    execFile('git', args, { cwd, env: gitEnv(), maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
       resolve(error === null ? stdout : null);
     });
   });
@@ -77,7 +85,7 @@ export function realGit(): GitFacts {
       return (await git(root, ['cat-file', '-e', `${sha}^{commit}`])) !== null;
     },
     async changedFiles(root, from, to) {
-      return lines(await git(root, ['diff', '--name-only', '-z', from, to]), '\0');
+      return lines(await git(root, ['diff', '--name-only', '--no-renames', '-z', from, to]), '\0');
     },
     async trackedFiles(root) {
       return lines(await git(root, ['ls-files', '-z']), '\0');
