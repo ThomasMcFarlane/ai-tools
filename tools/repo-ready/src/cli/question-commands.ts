@@ -54,6 +54,8 @@ async function readFileText(
   }
 }
 
+const GAP_TAG = /^[a-z0-9][a-z0-9-]*$/;
+
 function splitList(value: string | undefined): string[] {
   return (value ?? '')
     .split(',')
@@ -245,6 +247,16 @@ async function grade(
   const session = requireLiveSession(model, question);
   const notes = opts.file === undefined ? '' : await readFileText(deps, opts.file, 'grade');
   const gaps = [...new Set(splitList(opts.gaps))];
+  for (const tag of gaps) {
+    if (tag === 'none') {
+      throw new Error('leave --gaps out when the answer had no gap');
+    }
+    if (!GAP_TAG.test(tag)) {
+      throw new Error(
+        `gap tag ${JSON.stringify(tag)} must use lower-case letters, digits and hyphens`,
+      );
+    }
+  }
   await record(ctx, map, session, {
     type: 'grade',
     questionId: id,

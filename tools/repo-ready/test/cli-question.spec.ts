@@ -415,6 +415,21 @@ describe('question lifecycle', () => {
     expect(text.out).not.toMatch(/, passed\./);
   });
 
+  it.each([
+    ['none', /leave --gaps out/],
+    ['n/a', /lower-case letters, digits and hyphens/],
+    ['Bad Tag', /lower-case letters, digits and hyphens/],
+  ])('grade refuses the gap tag %j and writes nothing', async (tag, pattern) => {
+    const world = await worldWithMap();
+    const id = await ask(world);
+    await ok(world, ['answer', id, '--file', 'answer.txt']);
+    const before = await eventCount(world);
+    const r = await runCli(['grade', id, '--score', '4', '--gaps', tag], world);
+    expect(r.code).toBe(2);
+    expect(r.error?.message).toMatch(pattern);
+    expect(await eventCount(world)).toBe(before);
+  });
+
   it('a hinted answer is graded but does not pass', async () => {
     const world = await worldWithMap();
     const id = await ask(world);

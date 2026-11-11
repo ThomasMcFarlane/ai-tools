@@ -23,7 +23,7 @@ export function areaMarks(a: AreaState): string {
     a.stale
       ? `stale${a.staleFrom === null ? '' : ` (was ${a.staleFrom}: ${LEVEL_LABELS[a.staleFrom]})`}`
       : '',
-    a.untested ? 'untested' : '',
+    a.untested && !a.stale ? 'untested' : '',
   ]
     .filter((n) => n.length > 0)
     .join(', ');

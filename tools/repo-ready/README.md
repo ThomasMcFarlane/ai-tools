@@ -100,7 +100,7 @@ Question types by level:
 Rules the commands enforce:
 
 - `ask` needs an open session, one known area and principle ids, a prompt that is not empty, and a type that belongs to the level. Every `--evidence` value must be `path:line` or `path:line-line`, follow the map's path rules (below), and point at a file that exists in the repository.
-- `answer` is accepted once per question; `grade` only after `answer`, once. `grade --gaps` drops repeated tags.
+- `answer` is accepted once per question; `grade` only after `answer`, once. `grade --gaps` drops repeated tags; a tag uses lower-case letters, digits and hyphens, and the placeholder `none` is refused (leave `--gaps` out when there is no gap).
 - `answer`, `grade`, `hint` and `skip` refuse a question whose session has ended, including one ended by a later `session start`.
 - A follow-up (`ask --follow-up-of <id>`) must target an answered question of the same session and area that is not itself a follow-up, and each question can have one follow-up.
 - `hint` is refused in interview mode, and only an open question can take a hint.

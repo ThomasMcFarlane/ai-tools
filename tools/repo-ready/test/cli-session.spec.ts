@@ -153,9 +153,9 @@ describe('session and teach', () => {
     ].map((e) => ({ ...base, ...e }) as LogEvent);
     for (const event of events) await appendEvent(status.stateDir, event);
     const r = await runCli(['session', 'end'], world);
-    const line = r.out.split('\n').find((l) => l.includes('a at '));
-    expect(line).toContain('read');
-    expect(line).toContain('Ready to be interviewed on it');
+    const line = r.out.split('\n').find((l) => l.trim().startsWith('a: '));
+    expect(line).toContain('read questions');
     expect(line).toContain('1 of 1 passed');
+    expect(line).not.toContain('Ready to be interviewed on it');
   });
 });

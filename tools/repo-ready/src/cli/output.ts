@@ -1,6 +1,6 @@
 import { areaMarks, formatTable, verdictText } from '../core/format.js';
 import type { SessionSummary } from '../core/stats.js';
-import { LEVEL_LABELS, type AreaState } from '../core/types.js';
+import type { AreaState } from '../core/types.js';
 
 export { formatTable, verdictText };
 
@@ -40,9 +40,7 @@ export function summaryText(summary: SessionSummary): string {
     ]),
   ];
   for (const e of summary.byArea) {
-    lines.push(
-      `  ${e.areaId} at ${e.level} (${LEVEL_LABELS[e.level]}): ${e.passed} of ${e.asked} passed`,
-    );
+    lines.push(`  ${e.areaId}: ${e.level} questions, ${e.passed} of ${e.asked} passed`);
   }
   return lines.join('\n');
 }
