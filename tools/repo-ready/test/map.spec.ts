@@ -293,10 +293,52 @@ describe('checkUpdate', () => {
   it('lowering a revision is blocking and cannot be forced', () =>
     expect(checkUpdate(prevWithA2, sampleMap(), quiet).blocking).toHaveLength(1));
 
-  it('everything is allowed when the commits cannot be compared', () =>
+  describe('when the commits cannot be compared', () => {
+    const unknown: UpdateContext = { ...quiet, comparable: false };
+    const cleared = withArea(sampleMap(), 'b', { key: false });
+
+    it('removal and key clearing of an area that still has tracked files need force', () => {
+      expect(checkUpdate(prev, withoutB, unknown)).toEqual({
+        blocking: [],
+        forceable: [expect.stringContaining('"b"')],
+      });
+      expect(checkUpdate(prev, cleared, unknown)).toEqual({
+        blocking: [],
+        forceable: [expect.stringContaining('"b"')],
+      });
+    });
+
+    it('ignores any changed-file list it is given', () =>
+      expect(
+        checkUpdate(prev, withoutB, { ...unknown, changedFiles: ['src/b/x.ts'] }).forceable,
+      ).toHaveLength(1));
+
+    it('removal is allowed when the area matches no tracked file', () =>
+      expect(
+        checkUpdate(prev, withoutB, { ...unknown, trackedFiles: ['src/a/x.ts', 'docs/a.md'] }),
+      ).toEqual({ blocking: [], forceable: [] }));
+
+    it('a revision rise is allowed', () =>
+      expect(checkUpdate(prev, withArea(sampleMap(), 'a', { revision: 2 }), unknown)).toEqual({
+        blocking: [],
+        forceable: [],
+      }));
+
+    it('a lowered revision is still blocking', () =>
+      expect(checkUpdate(prevWithA2, sampleMap(), unknown).blocking).toHaveLength(1));
+  });
+
+  it('outside a git repository every removal and key clear needs force', () => {
+    const noGit: UpdateContext = { comparable: false, changedFiles: [], trackedFiles: null };
+    expect(checkUpdate(prev, withoutB, noGit).forceable).toHaveLength(1);
     expect(
-      checkUpdate(prev, withoutB, { comparable: false, changedFiles: [], trackedFiles: null }),
-    ).toEqual({ blocking: [], forceable: [] }));
+      checkUpdate(prev, withArea(sampleMap(), 'b', { key: false }), noGit).forceable,
+    ).toHaveLength(1);
+    expect(checkUpdate(prev, withArea(sampleMap(), 'a', { revision: 2 }), noGit)).toEqual({
+      blocking: [],
+      forceable: [],
+    });
+  });
 });
 
 describe('checkUpdate: paths must match a tracked file', () => {

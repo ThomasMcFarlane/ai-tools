@@ -211,9 +211,16 @@ export function checkUpdate(
   }
   if (prev === null) return { blocking, forceable };
 
+  const changed = ctx.comparable ? ctx.changedFiles : [];
   const droppable = (area: Area): boolean =>
-    ctx.changedFiles.some((f) => matchesAny(f, area.paths)) ||
-    (ctx.trackedFiles !== null && !ctx.trackedFiles.some((f) => matchesAny(f, area.paths)));
+    changed.some((f) => matchesAny(f, area.paths)) ||
+    (tracked !== null && !tracked.some((f) => matchesAny(f, area.paths)));
+  const why =
+    tracked === null
+      ? 'there is no list of tracked files to show its files are gone'
+      : ctx.comparable
+        ? 'none of its files changed since the map was set'
+        : 'the map commit cannot be compared and its paths still match tracked files';
 
   for (const old of prev.areas) {
     const now = nextById.get(old.id);
@@ -222,23 +229,16 @@ export function checkUpdate(
         `Area "${old.id}" would lower its revision from ${old.revision} to ${now.revision}, which is never allowed.`,
       );
     }
-    if (!ctx.comparable) continue;
     if (now === undefined) {
-      if (!droppable(old)) {
-        forceable.push(
-          `Area "${old.id}" would be removed, but none of its files changed since the map was set.`,
-        );
-      }
+      if (!droppable(old)) forceable.push(`Area "${old.id}" would be removed, but ${why}.`);
       continue;
     }
     if (old.key && !now.key && !droppable(old)) {
-      forceable.push(
-        `Area "${old.id}" would stop being a key area, but none of its files changed since the map was set.`,
-      );
+      forceable.push(`Area "${old.id}" would stop being a key area, but ${why}.`);
     }
-    if (now.revision > old.revision) {
+    if (ctx.comparable && now.revision > old.revision) {
       const paths = [...old.paths, ...now.paths];
-      if (!ctx.changedFiles.some((f) => matchesAny(f, paths))) {
+      if (!changed.some((f) => matchesAny(f, paths))) {
         forceable.push(
           `Area "${old.id}" would raise its revision from ${old.revision} to ${now.revision}, but none of its files changed since the map was set.`,
         );

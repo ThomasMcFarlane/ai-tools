@@ -228,4 +228,31 @@ describe('status and map', () => {
     expect(forced.code).toBe(0);
     expect(forced.json()).toMatchObject({ forced: 'files come later' });
   });
+
+  it('refuses to drop a failing key area when the map commit is gone, or outside git', async () => {
+    for (const git of [{}, { toplevel: null }]) {
+      const world = await makeWorld({
+        git,
+        files: {
+          ...defaultFiles(),
+          'without-a.json': mapJson((areas) => areas.filter((a) => a.id !== 'a')),
+        },
+      });
+      await runCli(['map', 'set', '--file', 'map.json'], world);
+      const log = new LogBuilder();
+      log.session();
+      log.q('a', 'read', 0);
+      log.q('a', 'read', 1);
+      log.q('b', 'read', 4);
+      log.q('b', 'read', 4);
+      log.endSession();
+      await seed(world, log);
+      world.git.state.head = 'c1-amended';
+      world.git.state.commits = ['c1-amended'];
+      const r = await runCli(['map', 'set', '--file', 'without-a.json'], world);
+      expect(r.code).toBe(2);
+      expect(r.error?.message).toContain('"a"');
+      expect(await verdictKind(world)).toBe('not_yet_ready');
+    }
+  });
 });
