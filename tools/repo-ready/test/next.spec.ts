@@ -101,4 +101,42 @@ describe('nextTargets', () => {
     for (let i = 0; i < 8; i++) L.q('a', 'read', 4);
     expect(next().session).toMatchObject({ asked: 8, limit: 8, done: true });
   });
+
+  it('applies the session cap to a stale area too', () => {
+    hold('a', 'maintain');
+    hold('b', 'read');
+    L.raise('a');
+    for (let i = 0; i < 3; i++) L.q('a', 'read', 4);
+    const r = next({ count: 3 });
+    expect(ids(r)).toEqual(['b', 'c', 'a']);
+    expect(r.targets[2]).toMatchObject({ areaId: 'a', reason: 'stale', level: 'maintain' });
+  });
+
+  it('puts a stale key area before a stale non-key area', () => {
+    hold('c', 'read');
+    hold('a', 'read');
+    L.raise('c');
+    L.raise('a');
+    const cFirst = { areas: [...sampleMap().areas].reverse() };
+    const r = nextTargets(cFirst, buildModel(cFirst, L.events), { count: 3, sessionId: sid() });
+    expect(ids(r)).toEqual(['a', 'c', 'b']);
+    expect(r.targets.map((t) => t.reason)).toEqual(['stale', 'stale', 'untested']);
+  });
+
+  it('breaks a tie by last test time, never tested first', () => {
+    L.q('a', 'read', 1);
+    expect(ids(next({ count: 2 }))).toEqual(['b', 'a']);
+    L.q('b', 'read', 1);
+    L.q('a', 'read', 1);
+    expect(ids(next({ count: 2 }))).toEqual(['b', 'a']);
+  });
+
+  it('breaks a full tie by map order', () => {
+    const reversed = { areas: [...sampleMap().areas].reverse() };
+    const r = nextTargets(reversed, buildModel(reversed, L.events), {
+      count: 3,
+      sessionId: sid(),
+    });
+    expect(ids(r)).toEqual(['b', 'a', 'c']);
+  });
 });

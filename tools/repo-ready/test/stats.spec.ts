@@ -45,6 +45,20 @@ describe('sessionSummary', () => {
     });
   });
 
+  it('sums hints over questions and splits one area by level', () => {
+    L.q('a', 'read', 4, { hints: 2 });
+    L.q('a', 'read', 4, { hints: 1 });
+    L.q('a', 'maintain', 4);
+    expect(sessionSummary(m(), sid)).toMatchObject({
+      hints: 3,
+      passed: 1,
+      byArea: [
+        { areaId: 'a', level: 'read', asked: 2, passed: 0 },
+        { areaId: 'a', level: 'maintain', asked: 1, passed: 1 },
+      ],
+    });
+  });
+
   it('throws for an unknown session', () => {
     expect(() => sessionSummary(m(), 'zzz')).toThrow(/zzz/);
   });

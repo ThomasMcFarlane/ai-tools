@@ -100,11 +100,9 @@ describe('buildModel', () => {
     hold('a', 'maintain');
     L.raise('a');
     expect(area(m(), 'a')).toMatchObject({ level: 'read', stale: true, staleFrom: 'maintain' });
-    expect(
-      m()
-        .questions.filter((q) => q.voided)
-        .every((q) => q.level === 'maintain'),
-    ).toBe(true);
+    const voided = m().questions.filter((q) => q.voided);
+    expect(voided).toHaveLength(2);
+    expect(voided.every((q) => q.level === 'maintain')).toBe(true);
   });
 
   it('two passes at the old level bring it back', () => {
@@ -288,36 +286,40 @@ describe('damaged log', () => {
     b.q('b', 'read', 'open');
     return b;
   };
-  const damaged = [
-    ['null', junk(null)],
-    ['a string', junk('not an event')],
-    ['a map_set without changes', bad({ type: 'map_set' })],
+  const damaged: [name: string, event: LogEvent, harmless: boolean][] = [
+    ['null', junk(null), true],
+    ['a string', junk('not an event'), true],
+    ['a map_set without changes', bad({ type: 'map_set' }), true],
     [
       'a grade without gaps or notes for a known question',
       bad({ type: 'grade', questionId: 'q3', score: 4 }),
+      false,
     ],
     [
       'an ask without an area',
       bad({ type: 'ask', questionId: 'q99', level: 'read', qtype: 'explain' }),
+      true,
     ],
-    ['an event of unknown type', bad({ type: 'teleport' })],
+    ['an event of unknown type', bad({ type: 'teleport' }), true],
     [
       'a grade for an unknown question',
       bad({ type: 'grade', questionId: 'nope', score: 4, notes: '', gaps: [] }),
+      true,
     ],
     [
       'an answer for an unknown question',
       bad({ type: 'answer', questionId: 'nope', text: 'x', durationMs: 1 }),
+      true,
     ],
-  ] as const;
+  ];
 
-  it('gives the same model as the clean log when junk events are mixed in', () => {
+  it('gives the same model as the clean log when harmless junk events are mixed in', () => {
     const good = clean();
     const expected = buildModel(sampleMap(), good.events);
     const events = good.events.slice(0, 1);
-    for (const [, event] of damaged.filter(([name]) => !name.includes('known question'))) {
-      events.push(event);
-    }
+    const harmless = damaged.filter(([, , isHarmless]) => isHarmless);
+    expect(harmless).toHaveLength(7);
+    for (const [, event] of harmless) events.push(event);
     events.push(...good.events.slice(1));
     expect(() => buildModel(sampleMap(), events)).not.toThrow();
     expect(buildModel(sampleMap(), events)).toEqual(expected);

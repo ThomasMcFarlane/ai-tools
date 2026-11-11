@@ -91,8 +91,12 @@ it('drives a learn session, a revision rise and an interview session end to end'
   world.git.state.head = 'c2';
   world.git.state.commits.push('c2');
   world.git.state.diffs['c1..c2'] = ['src/a/x.ts'];
-  const changes = await json(world, ['map', 'changes']);
-  expect(JSON.stringify(changes)).toContain('"a"');
+  const changes = await json<{ comparable: boolean; areas: unknown[]; unmapped: string[] }>(world, [
+    'map',
+    'changes',
+  ]);
+  expect(changes).toMatchObject({ comparable: true, unmapped: [] });
+  expect(changes.areas).toEqual([{ id: 'a', title: 'Area a', files: ['src/a/x.ts'] }]);
   const set = await json<{ changes: unknown[] }>(world, ['map', 'set', '--file', 'map2.json']);
   expect(set.changes).toContainEqual({ kind: 'revision_raised', areaId: 'a', from: 1, to: 2 });
 
