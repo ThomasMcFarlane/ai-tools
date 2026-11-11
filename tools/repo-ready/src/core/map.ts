@@ -14,7 +14,7 @@ export class MapError extends Error {
 }
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
-const EVIDENCE = /^[^:\s]+:\d+(-\d+)?$/;
+export const EVIDENCE = /^[^:\s]+:\d+(-\d+)?$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

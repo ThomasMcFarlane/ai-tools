@@ -154,6 +154,44 @@ describe('question lifecycle', () => {
     });
   });
 
+  it('ask accepts an evidence line range, as the map does, and still needs a line', async () => {
+    const world = await worldWithMap();
+    await ok(world, askArgs(['--evidence', 'src/a/x.ts:1-5']));
+    expect((await history(world))[0]?.evidence).toEqual(['src/a/x.ts:1-5']);
+    const before = await eventCount(world);
+    expect(await askCode(world, ['--evidence', 'src/a/x.ts'])).toBe(2);
+    expect(await eventCount(world)).toBe(before);
+  });
+
+  it('recorded prompt, answer and notes lose trailing whitespace only', async () => {
+    const world = await makeWorld({
+      files: {
+        ...defaultFiles(),
+        'prompt.txt': '  Indented prompt,\n  second line.\n\n',
+        'answer.txt': 'line one\nline two\n\n',
+        'notes.txt': 'Notes here.\n',
+      },
+    });
+    await runCli(['map', 'set', '--file', 'map.json'], world);
+    await runCli(['session', 'start', '--mode', 'learn'], world);
+    const id = await ask(world);
+    await ok(world, ['answer', id, '--file', 'answer.txt']);
+    await ok(world, ['grade', id, '--score', '3', '--file', 'notes.txt']);
+    expect((await history(world))[0]).toMatchObject({
+      prompt: '  Indented prompt,\n  second line.',
+      answer: 'line one\nline two',
+      notes: 'Notes here.',
+    });
+  });
+
+  it('an answer of only whitespace is accepted and stored as empty', async () => {
+    const world = await worldWithMap();
+    const id = await ask(world);
+    world.stdin = ' \n\t\n';
+    await ok(world, ['answer', id, '--file', '-']);
+    expect((await history(world))[0]).toMatchObject({ status: 'answered', answer: '' });
+  });
+
   it('ask needs an open session', async () => {
     const world = await worldWithMap(null);
     const before = await eventCount(world);

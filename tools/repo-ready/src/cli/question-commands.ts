@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import type { Deps } from '../core/deps.js';
+import { EVIDENCE } from '../core/map.js';
 import { buildModel } from '../core/model.js';
 import { readEvents } from '../core/store.js';
 import {
@@ -46,7 +47,7 @@ async function readFileText(
   if (file === undefined)
     throw new Error(`${command} needs --file <path>, or - for standard input`);
   try {
-    return await deps.readText(file);
+    return (await deps.readText(file)).trimEnd();
   } catch (error) {
     throw new Error(`cannot read ${file}: ${(error as Error).message}`);
   }
@@ -151,9 +152,11 @@ async function ask(deps: Deps, command: Command, opts: AskOptions): Promise<void
   if (opts.evidence.length === 0) {
     throw new Error('ask needs at least one --evidence <path:line>');
   }
-  const badEvidence = opts.evidence.filter((e) => !/^.+:\d+$/.test(e));
+  const badEvidence = opts.evidence.filter((e) => !EVIDENCE.test(e));
   if (badEvidence.length > 0) {
-    throw new Error(`evidence must be in path:line form: ${badEvidence.join(', ')}`);
+    throw new Error(
+      `evidence must be in path:line or path:line-line form: ${badEvidence.join(', ')}`,
+    );
   }
   const principleIds = splitList(opts.principles);
   const unknown = principleIds.filter((id) => !area.principles.some((p) => p.id === id));
