@@ -7,6 +7,7 @@ export const SESSION_AREA_CAP = 3;
 export const MIN_AREAS = 1;
 export const MAX_AREAS = 10;
 export const RECENT_PROMPTS = 5;
+export const DIR_SLUG_MAX = 80;
 
 export const LEVELS = ['read', 'maintain', 'rebuild'] as const;
 export type Level = (typeof LEVELS)[number];

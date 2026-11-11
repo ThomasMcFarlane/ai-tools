@@ -229,7 +229,11 @@ State lives in the XDG state directory. The default is `~/.local/state/ai-tools/
         └── events.jsonl     # append-only event log
 ```
 
-`<name>` is the repository key made safe for a file name plus a short hash. State is keyed by repository, not by folder: the key is the normalised `origin` remote URL when there is one, otherwise the first commit, otherwise the absolute path. Two clones of the same repository share one history, and there is one history across all branches.
+`<name>` is the repository key made safe for a file name (at most 80 characters) plus a short hash. The state folder must lie outside the studied repository; a relative `AI_TOOLS_REPO_READY_STATE_DIR` or `XDG_STATE_HOME` is resolved against the current folder first, and if the result is inside the repository every command refuses to run (exit `2`).
+
+### Repository identity
+
+State is keyed by repository, not by folder, and there is one history across all branches. The tool works out up to three candidate keys in this order: the normalised `origin` remote URL, the first commit (`root:<commit>`), and the absolute path of the repository root (`path:<root>`), each only when it is available. It uses the first candidate whose state folder already exists, and the first candidate when none does, so a repository seen for the first time is keyed by `origin` and two clones with the same `origin` share one history. History made before the first commit, or before `origin` was added, is still found under its older key; `status` prints the key in use. The one case that starts fresh is a repository with no `origin` whose first commit is rewritten.
 
 Every event records the time, session, mode, branch, commit, whether the working tree had uncommitted changes, and the map's commit. The log holds session starts and ends, map changes, lessons, questions, hints, answers, grades and skips. Levels, statistics and charts are all computed from the log; nothing derived is stored.
 

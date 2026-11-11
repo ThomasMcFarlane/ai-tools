@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { run } from '../src/cli/index.js';
@@ -83,6 +83,7 @@ export const repo: RepoState = {
   dirty: false,
   key: 'github.com/octo-org/hello-world',
   dirName: 'github.com-octo-org-hello-world-00000000',
+  candidates: ['github.com/octo-org/hello-world', 'root:r0', 'path:/w'],
 };
 
 export function askEvent(overrides: Record<string, unknown> = {}): LogEvent {
@@ -278,7 +279,13 @@ export async function runCli(args: string[], world: CliWorld): Promise<CliResult
       counters[prefix] = (counters[prefix] ?? 0) + 1;
       return `${prefix}${counters[prefix]}`;
     },
-    fileExists: async (absPath) => relativeToRoot(absPath) in files,
+    async fileExists(absPath) {
+      if (!absPath.startsWith(world.stateRoot)) return relativeToRoot(absPath) in files;
+      return access(absPath).then(
+        () => true,
+        () => false,
+      );
+    },
     async readText(source) {
       if (source === '-') return world.stdin ?? '';
       const text = files[relativeToRoot(source)];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dirNameFor, normaliseRemote, readRepoState } from '../src/core/identity.js';
+import { candidateKeys, dirNameFor, normaliseRemote, readRepoState } from '../src/core/identity.js';
 import { fakeGit } from './helpers.js';
 
 describe('repository identity', () => {
@@ -51,5 +51,39 @@ describe('repository identity', () => {
       fakeGit({ toplevel: '/w', head: null, branch: null, origin: null, rootCommit: null }),
     );
     expect(s).toMatchObject({ isGit: true, branch: null, commit: null, key: 'path:/w' });
+  });
+
+  it('candidateKeys lists origin, root commit and path, each only when available', () => {
+    expect(
+      candidateKeys({
+        path: '/w/src',
+        top: '/w',
+        origin: 'git@github.com:octo-org/hello-world.git',
+        rootCommit: 'r0',
+      }),
+    ).toEqual(['github.com/octo-org/hello-world', 'root:r0', 'path:/w']);
+    expect(candidateKeys({ path: '/w', top: '/w', origin: null, rootCommit: 'r0' })).toEqual([
+      'root:r0',
+      'path:/w',
+    ]);
+    expect(candidateKeys({ path: '/w', top: '/w', origin: '', rootCommit: null })).toEqual([
+      'path:/w',
+    ]);
+    expect(candidateKeys({ path: '/plain', top: null, origin: null, rootCommit: null })).toEqual([
+      'path:/plain',
+    ]);
+  });
+
+  it('readRepoState keeps the candidates and uses the first as the default key', async () => {
+    const s = await readRepoState('/w', fakeGit({ toplevel: '/w' }));
+    expect(s.candidates).toEqual(['github.com/octo-org/hello-world', 'root:r0', 'path:/w']);
+    expect(s.key).toBe('github.com/octo-org/hello-world');
+  });
+
+  it('dirNameFor keeps a very long key to at most 89 characters', () => {
+    const name = dirNameFor(`example.com/${'very-long-name/'.repeat(30)}hello-world`);
+    expect(name.length).toBeLessThanOrEqual(89);
+    expect(name).toMatch(/-[0-9a-f]{8}$/);
+    expect(dirNameFor('a'.repeat(200))).not.toBe(dirNameFor(`${'a'.repeat(199)}b`));
   });
 });

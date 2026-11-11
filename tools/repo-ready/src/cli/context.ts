@@ -1,7 +1,7 @@
-import { resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Command } from 'commander';
 import type { Deps } from '../core/deps.js';
-import { readRepoState, type RepoState } from '../core/identity.js';
+import { dirNameFor, readRepoState, type RepoState } from '../core/identity.js';
 import { buildModel } from '../core/model.js';
 import { appendEvent, readMap, repoDir } from '../core/store.js';
 import { NotFoundError, type LogEvent, type SessionRecord, type StoredMap } from '../core/types.js';
@@ -20,13 +20,32 @@ export type EventBody = DistributiveOmit<
   'at' | 'sessionId' | 'mode' | 'branch' | 'commit' | 'dirty' | 'mapCommit'
 >;
 
+export function insideRoot(root: string, path: string): boolean {
+  const rel = relative(resolve(root), resolve(path));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
 export async function openRepo(
   deps: Deps,
   repoPath: string | undefined,
   json: boolean,
 ): Promise<Ctx> {
-  const repo = await readRepoState(resolve(repoPath ?? process.cwd()), deps.git);
-  return { deps, repo, dir: repoDir(deps.stateRoot(), repo.dirName), json };
+  const found = await readRepoState(resolve(repoPath ?? process.cwd()), deps.git);
+  const stateRoot = resolve(deps.stateRoot());
+  if (insideRoot(found.root, stateRoot)) {
+    throw new Error(
+      `the state folder ${stateRoot} is inside the studied repository (${found.root}); set AI_TOOLS_REPO_READY_STATE_DIR or XDG_STATE_HOME to a folder outside it`,
+    );
+  }
+  let repo = found;
+  for (const key of found.candidates) {
+    const dirName = dirNameFor(key);
+    if (await deps.fileExists(repoDir(stateRoot, dirName))) {
+      repo = { ...found, key, dirName };
+      break;
+    }
+  }
+  return { deps, repo, dir: repoDir(stateRoot, repo.dirName), json };
 }
 
 export function openFromCommand(deps: Deps, command: Command): Promise<Ctx> {

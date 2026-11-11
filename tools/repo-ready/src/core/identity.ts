@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { GitFacts } from './deps.js';
+import { DIR_SLUG_MAX } from './types.js';
 
 export interface RepoState {
   root: string;
@@ -9,6 +10,7 @@ export interface RepoState {
   dirty: boolean;
   key: string;
   dirName: string;
+  candidates: string[];
 }
 
 export function normaliseRemote(url: string): string {
@@ -29,24 +31,43 @@ export function normaliseRemote(url: string): string {
 }
 
 export function dirNameFor(key: string): string {
-  const slug = key.toLowerCase().replace(/[^a-z0-9.]/g, '-');
+  const slug = key
+    .toLowerCase()
+    .replace(/[^a-z0-9.]/g, '-')
+    .slice(0, DIR_SLUG_MAX);
   const digest = createHash('sha256').update(key).digest('hex').slice(0, 8);
   return `${slug}-${digest}`;
+}
+
+export function candidateKeys(facts: {
+  path: string;
+  top: string | null;
+  origin: string | null;
+  rootCommit: string | null;
+}): string[] {
+  if (facts.top === null) return [`path:${facts.path}`];
+  const keys: string[] = [];
+  if (facts.origin !== null && facts.origin.length > 0) keys.push(normaliseRemote(facts.origin));
+  if (facts.rootCommit !== null) keys.push(`root:${facts.rootCommit}`);
+  keys.push(`path:${facts.top}`);
+  return keys;
+}
+
+function withKeys(
+  state: Omit<RepoState, 'key' | 'dirName' | 'candidates'>,
+  candidates: string[],
+): RepoState {
+  const key = candidates[0] ?? `path:${state.root}`;
+  return { ...state, key, dirName: dirNameFor(key), candidates };
 }
 
 export async function readRepoState(path: string, git: GitFacts): Promise<RepoState> {
   const top = await git.toplevel(path);
   if (top === null) {
-    const key = `path:${path}`;
-    return {
-      root: path,
-      isGit: false,
-      branch: null,
-      commit: null,
-      dirty: false,
-      key,
-      dirName: dirNameFor(key),
-    };
+    return withKeys(
+      { root: path, isGit: false, branch: null, commit: null, dirty: false },
+      candidateKeys({ path, top, origin: null, rootCommit: null }),
+    );
   }
   const [branch, commit, dirty, origin, rootCommit] = await Promise.all([
     git.branch(top),
@@ -55,11 +76,8 @@ export async function readRepoState(path: string, git: GitFacts): Promise<RepoSt
     git.originUrl(top),
     git.rootCommit(top),
   ]);
-  const key =
-    origin !== null && origin.length > 0
-      ? normaliseRemote(origin)
-      : rootCommit !== null
-        ? `root:${rootCommit}`
-        : `path:${top}`;
-  return { root: top, isGit: true, branch, commit, dirty, key, dirName: dirNameFor(key) };
+  return withKeys(
+    { root: top, isGit: true, branch, commit, dirty },
+    candidateKeys({ path, top, origin, rootCommit }),
+  );
 }

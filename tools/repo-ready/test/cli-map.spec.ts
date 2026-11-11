@@ -329,4 +329,49 @@ describe('status and map', () => {
       expect(await areaA(world)).toMatchObject({ retired: true });
     });
   });
+
+  describe('repository identity', () => {
+    async function statusKey(world: CliWorld): Promise<{ code: number; key: string }> {
+      const r = await runCli(['status', '--json'], world);
+      return { code: r.code, key: (r.json() as { repo: { key: string } }).repo.key };
+    }
+
+    it('finds history made before the first commit and before origin was added', async () => {
+      const world = await makeWorld({
+        git: { head: null, branch: null, rootCommit: null, origin: null, commits: [] },
+      });
+      expect((await runCli(['map', 'set', '--file', 'map.json'], world)).code).toBe(0);
+      expect(await statusKey(world)).toEqual({ code: 0, key: 'path:/w' });
+      Object.assign(world.git.state, { head: 'c1', branch: 'main', rootCommit: 'r0' });
+      world.git.state.commits = ['c1'];
+      expect(await statusKey(world)).toEqual({ code: 0, key: 'path:/w' });
+      world.git.state.origin = 'git@github.com:octo-org/hello-world.git';
+      expect(await statusKey(world)).toEqual({ code: 0, key: 'path:/w' });
+      expect((await runCli(['status'], world)).out).toContain('path:/w');
+    });
+
+    it('a repository seen for the first time uses the origin key', async () => {
+      const world = await makeWorld();
+      expect(await statusKey(world)).toEqual({
+        code: 1,
+        key: 'github.com/octo-org/hello-world',
+      });
+      await runCli(['map', 'set', '--file', 'map.json'], world);
+      expect(await statusKey(world)).toEqual({
+        code: 0,
+        key: 'github.com/octo-org/hello-world',
+      });
+    });
+
+    it('refuses a state folder inside the studied repository and writes nothing', async () => {
+      const world = await makeWorld();
+      world.stateRoot = '/w/.repo-ready-state';
+      for (const args of [['status'], ['map', 'set', '--file', 'map.json']]) {
+        const r = await runCli(args, world);
+        expect(r.code).toBe(2);
+        expect(r.error?.message).toMatch(/inside the studied repository/);
+      }
+      expect(world.written).toEqual({});
+    });
+  });
 });

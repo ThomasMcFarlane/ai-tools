@@ -10,7 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { RepoState } from './identity.js';
 import type { LogEvent, StoredMap } from './types.js';
 
@@ -22,7 +22,7 @@ const REPO_FILE = 'repo.json';
 export function stateDir(): string {
   const override = process.env.AI_TOOLS_REPO_READY_STATE_DIR;
   if (override !== undefined && override.length > 0) {
-    return override;
+    return resolve(override);
   }
   const xdg = process.env.XDG_STATE_HOME;
   const base =
@@ -31,7 +31,7 @@ export function stateDir(): string {
       : process.platform === 'win32'
         ? (process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'))
         : join(homedir(), '.local', 'state');
-  return join(base, 'ai-tools', 'repo-ready');
+  return resolve(base, 'ai-tools', 'repo-ready');
 }
 
 export function repoDir(stateRoot: string, dirName: string): string {

@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import type { Command } from 'commander';
 import type { Deps } from '../core/deps.js';
 import { renderHtml } from '../core/charts/html.js';
@@ -8,7 +8,7 @@ import { nextTargets, type NextResult } from '../core/next.js';
 import { CHART_KINDS, chartData, type ChartKind } from '../core/stats.js';
 import { readEvents, resetRepo } from '../core/store.js';
 import { NotFoundError } from '../core/types.js';
-import { collect, emit, openFromCommand, openSession, requireMap } from './context.js';
+import { collect, emit, insideRoot, openFromCommand, openSession, requireMap } from './context.js';
 import { areasText, formatTable, verdictText } from './output.js';
 
 function wholeNumber(value: string | undefined, flag: string, fallback: number): number {
@@ -135,11 +135,6 @@ async function chart(
   if (format === 'json') deps.print(JSON.stringify(data, null, 2));
   else if (format === 'html') deps.print(renderHtml([data], ctx.repo.key));
   else deps.print(renderText(data));
-}
-
-function insideRoot(root: string, path: string): boolean {
-  const rel = relative(resolve(root), path);
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 async function report(
