@@ -99,20 +99,22 @@ Question types by level:
 
 Rules the commands enforce:
 
-- `ask` needs an open session, one known area and principle ids, a prompt that is not empty, and a type that belongs to the level.
-- `answer` is accepted once per question; `grade` only after `answer`, once.
+- `ask` needs an open session, one known area and principle ids, a prompt that is not empty, and a type that belongs to the level. Every `--evidence` value must be `path:line` or `path:line-line`, follow the map's path rules (below), and point at a file that exists in the repository.
+- `answer` is accepted once per question; `grade` only after `answer`, once. `grade --gaps` drops repeated tags.
+- `answer`, `grade`, `hint` and `skip` refuse a question whose session has ended, including one ended by a later `session start`.
 - A follow-up (`ask --follow-up-of <id>`) must target an answered question of the same session and area that is not itself a follow-up, and each question can have one follow-up.
-- `hint` is refused in interview mode.
+- `hint` is refused in interview mode, and only an open question can take a hint.
 - `next` leaves out an area once 3 questions in it have been asked in the session, and reports the session as done after 8 questions.
 - `report --out` refuses a path inside the studied repository.
+- Every command refuses to run when the state folder is inside the studied repository.
 
 ### Exit codes
 
-| Code | Meaning                                                                                            |
-| ---- | -------------------------------------------------------------------------------------------------- |
-| `0`  | Success                                                                                            |
-| `1`  | Not found: no map yet, no open session to end, no sessions, or no questions match a history filter |
-| `2`  | Error: bad flags, an invalid map or refused update, an unknown id, or a rule above was broken      |
+| Code | Meaning                                                                                                                                           |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success                                                                                                                                           |
+| `1`  | Not found: no map yet, no open session to end, no sessions, or no questions match a history filter                                                |
+| `2`  | Error: bad flags, an invalid map or refused update, an unknown id, or a rule above was broken (for example `ask` or `teach` with no open session) |
 
 There is no timeout exit code; the CLI never waits.
 
@@ -143,21 +145,23 @@ The agent submits the map as JSON with `map set --file <path>`. A map has 1 to 1
 }
 ```
 
-| Field                    | Rule                                                                                  |
-| ------------------------ | ------------------------------------------------------------------------------------- |
-| `id`                     | A slug: lower-case letters, digits and hyphens. It is the area's identity.            |
-| `title`, `summary`       | Not empty.                                                                            |
-| `key`                    | `true` or `false`. Key areas count towards the verdict.                               |
-| `paths`                  | At least one glob for the files of the area.                                          |
-| `revision`               | A whole number of 1 or more. The agent raises it only when the area's design changes. |
-| `principles[].id`        | A slug.                                                                               |
-| `principles[].statement` | The design decision or rule.                                                          |
-| `principles[].reason`    | Why it is so.                                                                         |
-| `principles[].evidence`  | `path:line` or `path:line-line` references; the files must exist.                     |
+| Field                    | Rule                                                                                                |
+| ------------------------ | --------------------------------------------------------------------------------------------------- |
+| `id`                     | A slug: lower-case letters, digits and hyphens. It is the area's identity.                          |
+| `title`, `summary`       | Not empty.                                                                                          |
+| `key`                    | `true` or `false`. Key areas count towards the verdict.                                             |
+| `paths`                  | At least one glob for the files of the area, relative to the repository root; a folder needs `/**`. |
+| `revision`               | A whole number of 1 or more. The agent raises it only when the area's design changes.               |
+| `principles[].id`        | A slug.                                                                                             |
+| `principles[].statement` | The design decision or rule.                                                                        |
+| `principles[].reason`    | Why it is so.                                                                                       |
+| `principles[].evidence`  | `path:line` or `path:line-line` references; the files must exist.                                   |
 
-`map set` stamps the map with the current branch and commit and prints every structural change: areas added, removed, `key` set or cleared, and revisions raised. Adding an area, and changing titles, summaries, paths or principles, is always accepted. Removing an area, or clearing its `key` flag, is refused unless files in that area changed since the map's commit or its paths no longer match any file. `--force --reason <text>` overrides that refusal and records the reason in the log.
+Area paths and evidence paths must not be absolute, start with `./`, contain a `..` segment or contain a backslash; such a map is always rejected.
 
-`map changes` lists the files changed between the map's commit and now, grouped by area, plus changed files that belong to no area. If the map's commit cannot be found (for example after a history rewrite) it says it cannot compare, and every area should be reviewed.
+`map set` stamps the map with the current branch and commit and prints every structural change: areas added, removed, `key` set or cleared, and revisions raised. In a git repository with tracked files, every area's paths, in the first map and in every later one, must match at least one tracked file. Adding an area, and changing titles, summaries, paths or principles, is otherwise accepted. Removing an area, or clearing its `key` flag, is refused unless files in that area changed since the map's commit or its paths no longer match any tracked file. When the map's commit cannot be compared, only the second reason counts, and outside a git repository every removal and key clear is refused. A revision may never go down. An area that comes back after it was removed is judged against the highest revision on record for its id: above it, the return counts as a revision rise (`revision_raised` from the recorded revision); below it, the map is refused; at it, the area is simply added. `--force --reason <text>` overrides the refusals about paths, removals, key clears and unchanged files (never a lowered revision) and records the reason in the log.
+
+`map changes` lists the files changed between the map's commit and now, grouped by area, plus changed files that belong to no area. A renamed file is listed under both its old and its new path, so a file moved out of an area still counts against it. If the map's commit cannot be found (for example after a history rewrite) it says it cannot compare, and every area should be reviewed.
 
 ## Levels, stale marks and the verdict
 
@@ -187,7 +191,7 @@ The numbers below are named constants in `src/core/types.ts`.
 
 **Holding a level.** An area holds a level when the person passed at least 2 of their last 3 valid graded questions at that level, and the area holds every lower level. A skipped question counts as valid and not passed. An area is **untested** when it has fewer than 2 valid counted (graded or skipped) questions at `read`; only `read` carries the mark. Untested is not the same as failed, and the output keeps the two apart.
 
-**Stale areas.** When the agent raises an area's `revision`, the design of that area has changed. The CLI voids the graded questions at the top level the area held, and at every level above it. Lower levels stay valid. If the area held no level, all its counted questions are voided and it gets no stale mark; it is simply untested again (an area that was already stale keeps its mark, and the count towards clearing it starts again from 0).
+**Stale areas.** When the agent raises an area's `revision`, the design of that area has changed. The CLI voids the questions at the top level the area held, and at every level above it, including questions still open or answered but not yet graded; a voided question never counts, even if it is graded later. Lower levels stay valid. If the area held no level, all its counted questions are voided and it gets no stale mark; it is simply untested again (an area that was already stale keeps its mark, and the count towards clearing it starts again from 0).
 
 - The area now holds one level lower, and that lower level is the one that counts in the verdict.
 - The area is marked `stale (was <level>: <label>)` and comes first in `next`, aimed at the earlier level.
@@ -207,7 +211,7 @@ A typing fix costs the person nothing; a design change costs one level in that a
 | Not yet ready                 | Every key area has been tested at `read` and at least one holds no level.                                                   |
 | Not enough evidence yet       | A key area holds no level because it has fewer than 2 graded questions at `read`. The count of untested key areas is shown. |
 
-The verdict also lists the gaps: the areas holding it down, the weakest question types and the gap tags that recur. `session end` prints the cumulative levels and verdict, and a summary for that session alone (questions asked, pass rate, time per question, results by area and level), because a first verdict can take more than one session.
+The verdict also lists the gaps: the areas holding it down, the weakest question types and the gap tags that recur (on at least two questions; a tag counts once per question). `session end` prints the cumulative levels and verdict, and a summary for that session alone (questions asked, pass rate, time per question, results by area and level), because a first verdict can take more than one session.
 
 `next` orders its targets as: stale areas first, then key areas at the lowest level (aimed at the level above the one held), then other areas at the lowest level; within an area it picks the question type with the lowest pass rate, then the slowest. `--area` filters the list.
 
@@ -237,19 +241,19 @@ State is keyed by repository, not by folder, and there is one history across all
 
 Every event records the time, session, mode, branch, commit, whether the working tree had uncommitted changes, and the map's commit. The log holds session starts and ends, map changes, lessons, questions, hints, answers, grades and skips. Levels, statistics and charts are all computed from the log; nothing derived is stored.
 
-**The full text of every question and answer is kept so you can review past sessions. It stays on your machine and is never sent anywhere.** To see what is stored, run `repo-ready export`, which prints the repository, the map and the event log as JSON. To delete a repository's map and history, run `repo-ready reset --yes`. Without `--yes` it refuses. The tool never writes into the repository it studies; `report --out` refuses a path inside it.
+**The full text of every question and answer is kept so you can review past sessions. It stays on your machine and is never sent anywhere.** To see what is stored, run `repo-ready export`, which prints the repository, the map and the event log as JSON. To delete a repository's map and history, run `repo-ready reset --yes`. Without `--yes` it refuses. The tool never writes into the repository it studies: git is only read, with optional locks turned off so `.git/index` is never refreshed, `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` from the environment are ignored, and `report --out` refuses a path inside the repository.
 
 ## Charts
 
 `chart <kind>` shows one chart and `report` shows all of them. `text` uses Unicode bars and sparklines that read well in a terminal chat; `html` is one self-contained page with inline SVG and no network scripts; `json` gives the numbers behind a chart.
 
-| Kind       | Shows                                                                  |
-| ---------- | ---------------------------------------------------------------------- |
-| `levels`   | Each area with its level, stale and untested marks, and last test time |
-| `accuracy` | Pass rate over sessions, overall and per area                          |
-| `speed`    | Time per question over sessions                                        |
-| `types`    | Pass rate per question type                                            |
-| `timeline` | Sessions against the branch and commit they ran on                     |
+| Kind       | Shows                                                                                                                               |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `levels`   | Each area with its level, stale and untested marks, and last test time; retired areas follow, marked `retired`, outside the verdict |
+| `accuracy` | Pass rate over sessions, overall and per area                                                                                       |
+| `speed`    | Time per question over sessions                                                                                                     |
+| `types`    | Pass rate per question type                                                                                                         |
+| `timeline` | Sessions against the branch and commit they ran on                                                                                  |
 
 ```sh
 repo-ready chart levels
