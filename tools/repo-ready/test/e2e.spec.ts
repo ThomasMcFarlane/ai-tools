@@ -133,3 +133,41 @@ it('drives a learn session, a revision rise and an interview session end to end'
   expect(timeline.maps).toHaveLength(2);
   expect(timeline.maps[1]?.raised).toEqual(['a']);
 });
+
+it.each([
+  ['a folder that is not a git repository', { toplevel: null }],
+  [
+    'a repository with no commits',
+    { head: null, branch: null, rootCommit: null, origin: null, commits: [] },
+  ],
+])('runs a whole session in %s with null branch and commit', async (_name, git) => {
+  const world = await makeWorld({
+    git,
+    files: { ...defaultFiles(), 'prompt.txt': 'What does it do?', 'answer.txt': 'It does.' },
+  });
+  await exitsZero(world, ['map', 'set', '--file', 'map.json']);
+  await exitsZero(world, ['session', 'start', '--mode', 'learn']);
+  await question(world, 'a', 'explain', 'read', 10_000, 4);
+  await exitsZero(world, ['session', 'end']);
+  await exitsZero(world, ['levels']);
+  expect(await exitsZero(world, ['report', '--format', 'text'])).toContain('Area a');
+
+  const exported = await json<{ events: { type: string; branch: unknown; commit: unknown }[] }>(
+    world,
+    ['export'],
+  );
+  expect(exported.events.map((e) => e.type)).toEqual([
+    'map_set',
+    'session_start',
+    'ask',
+    'answer',
+    'grade',
+    'session_end',
+  ]);
+  for (const event of exported.events) {
+    expect(event).toMatchObject({ branch: null, commit: null });
+  }
+  const changes = await json<{ comparable: boolean; reason: string }>(world, ['map', 'changes']);
+  expect(changes.comparable).toBe(false);
+  expect(changes.reason).toMatch(/cannot be listed|nothing to compare/);
+});
