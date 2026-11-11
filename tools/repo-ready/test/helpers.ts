@@ -39,7 +39,7 @@ export function fakeGit(state: Partial<FakeGitState> = {}): GitFacts & { state: 
     rootCommit: 'r0',
     commits: ['c1'],
     diffs: {},
-    tracked: [],
+    tracked: ['src/a/x.ts', 'src/b/x.ts', 'docs/a.md'],
     ...state,
   };
   return {

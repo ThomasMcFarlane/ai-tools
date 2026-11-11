@@ -154,6 +154,39 @@ describe('validateMap', () => {
     expect(problemsOf(map).join(' ')).toMatch(pattern);
   });
 
+  const badPaths: [string, (m: MapInput) => void][] = [
+    ['an absolute area path', (m) => void (first(m).paths = ['/src/a/**'])],
+    ['an area path starting with ./', (m) => void (first(m).paths = ['./src/a/**'])],
+    ['an area path with a .. segment', (m) => void (first(m).paths = ['src/../a/**'])],
+    ['an area path that is only ..', (m) => void (first(m).paths = ['..'])],
+    ['an area path with a backslash', (m) => void (first(m).paths = ['src\\a\\**'])],
+    [
+      'an absolute evidence path',
+      (m) => void ((first(m).principles[0] as Area['principles'][number]).evidence = ['/a.ts:1']),
+    ],
+    [
+      'an evidence path starting with ./',
+      (m) =>
+        void ((first(m).principles[0] as Area['principles'][number]).evidence = ['./src/a/x.ts:1']),
+    ],
+    [
+      'an evidence path with a .. segment',
+      (m) =>
+        void ((first(m).principles[0] as Area['principles'][number]).evidence = ['src/../x.ts:1']),
+    ],
+    [
+      'an evidence path with a backslash',
+      (m) =>
+        void ((first(m).principles[0] as Area['principles'][number]).evidence = ['src\\a.ts:1']),
+    ],
+  ];
+  it.each(badPaths)('rejects %s', (_case, mutate) => {
+    const map = clone();
+    mutate(map);
+    expect(() => validateMap(map)).toThrow(MapError);
+    expect(problemsOf(map).join(' ')).toMatch(/relative to the repository root/);
+  });
+
   it('reports every problem at once', () => {
     const map = clone();
     first(map).title = '';
@@ -197,7 +230,12 @@ describe('diffMaps', () => {
 
 describe('checkUpdate', () => {
   it('adding an area is always allowed', () =>
-    expect(checkUpdate(prev, withAreaD, quiet)).toEqual({ blocking: [], forceable: [] }));
+    expect(
+      checkUpdate(prev, withAreaD, {
+        ...quiet,
+        trackedFiles: [...(quiet.trackedFiles ?? []), 'src/d/x.ts'],
+      }),
+    ).toEqual({ blocking: [], forceable: [] }));
 
   it('removing an untouched area needs force', () => {
     const r = checkUpdate(prev, withoutB, quiet);
@@ -213,7 +251,8 @@ describe('checkUpdate', () => {
 
   it('removing an area whose paths match no tracked file is allowed', () =>
     expect(
-      checkUpdate(prev, withoutB, { ...quiet, trackedFiles: ['src/a/x.ts'] }).forceable,
+      checkUpdate(prev, withoutB, { ...quiet, trackedFiles: ['src/a/x.ts', 'docs/a.md'] })
+        .forceable,
     ).toEqual([]));
 
   it('clearing key follows the same rule as removal', () => {
@@ -222,9 +261,11 @@ describe('checkUpdate', () => {
     expect(
       checkUpdate(prev, cleared, { ...quiet, changedFiles: ['src/b/x.ts'] }).forceable,
     ).toEqual([]);
-    expect(
-      checkUpdate(prev, cleared, { ...quiet, trackedFiles: ['src/a/x.ts'] }).forceable,
-    ).toEqual([]);
+    const gone = checkUpdate(prev, cleared, {
+      ...quiet,
+      trackedFiles: ['src/a/x.ts', 'docs/a.md'],
+    }).forceable;
+    expect(gone.filter((p) => p.includes('stop being a key area'))).toEqual([]);
   });
 
   it('raising a revision needs a changed file in that area, or force', () => {
@@ -240,10 +281,11 @@ describe('checkUpdate', () => {
 
   it('judges a revision rise against the union of the previous and next paths', () => {
     const raised = withArea(sampleMap(), 'a', { revision: 2, paths: ['lib/a/**'] });
-    expect(checkUpdate(prev, raised, { ...quiet, changedFiles: ['lib/a/y.ts'] }).forceable).toEqual(
+    const moved = { ...quiet, trackedFiles: ['lib/a/y.ts', 'src/b/x.ts', 'docs/a.md'] };
+    expect(checkUpdate(prev, raised, { ...moved, changedFiles: ['lib/a/y.ts'] }).forceable).toEqual(
       [],
     );
-    expect(checkUpdate(prev, raised, { ...quiet, changedFiles: ['src/a/x.ts'] }).forceable).toEqual(
+    expect(checkUpdate(prev, raised, { ...moved, changedFiles: ['src/a/x.ts'] }).forceable).toEqual(
       [],
     );
   });
@@ -255,6 +297,33 @@ describe('checkUpdate', () => {
     expect(
       checkUpdate(prev, withoutB, { comparable: false, changedFiles: [], trackedFiles: null }),
     ).toEqual({ blocking: [], forceable: [] }));
+});
+
+describe('checkUpdate: paths must match a tracked file', () => {
+  const nowhere = withArea(sampleMap(), 'a', { paths: ['nowhere/**'] });
+
+  it('a first map with an area that matches no tracked file needs force', () => {
+    const r = checkUpdate(null, nowhere, quiet);
+    expect(r.blocking).toEqual([]);
+    expect(r.forceable).toHaveLength(1);
+    expect(r.forceable[0]).toContain('"a"');
+  });
+
+  it('changing an existing area to paths that match no tracked file needs force', () => {
+    const r = checkUpdate(prev, nowhere, quiet);
+    expect(r.forceable).toHaveLength(1);
+    expect(r.forceable[0]).toContain('"a"');
+  });
+
+  it('a folder path without /** is caught', () => {
+    const folder = withArea(sampleMap(), 'a', { paths: ['src/a'] });
+    expect(checkUpdate(null, folder, quiet).forceable).toHaveLength(1);
+  });
+
+  it('is not applied without a list of tracked files', () => {
+    expect(checkUpdate(null, nowhere, { ...quiet, trackedFiles: null }).forceable).toEqual([]);
+    expect(checkUpdate(null, nowhere, { ...quiet, trackedFiles: [] }).forceable).toEqual([]);
+  });
 });
 
 describe('mapChanges', () => {

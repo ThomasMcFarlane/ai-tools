@@ -4,6 +4,7 @@ import type { Deps } from '../core/deps.js';
 import {
   checkUpdate,
   diffMaps,
+  evidencePath,
   MapError,
   mapChanges,
   validateMap,
@@ -40,7 +41,7 @@ async function missingEvidence(ctx: Ctx, input: MapInput): Promise<string[]> {
   for (const area of input.areas) {
     for (const principle of area.principles) {
       for (const item of principle.evidence) {
-        const path = item.slice(0, item.lastIndexOf(':'));
+        const path = evidencePath(item);
         if (!(await ctx.deps.fileExists(join(ctx.repo.root, path)))) {
           missing.add(`area "${area.id}": evidence file ${path} does not exist`);
         }
@@ -85,24 +86,23 @@ async function setMap(
   if (missing.length > 0) throw problemsError('Evidence points at missing files:', missing);
 
   const earlier = await readMap(ctx.dir);
+  const changes = earlier === null ? null : await mapChanges(earlier, ctx.repo, deps.git);
+  const check = checkUpdate(earlier, input, {
+    comparable: changes?.comparable ?? false,
+    changedFiles:
+      changes === null ? [] : [...changes.areas.flatMap((a) => a.files), ...changes.unmapped],
+    trackedFiles: ctx.repo.isGit ? await deps.git.trackedFiles(ctx.repo.root) : null,
+  });
+  if (check.blocking.length > 0) throw problemsError('Map update refused:', check.blocking);
   let forced: string | null = null;
-  if (earlier !== null) {
-    const result = await mapChanges(earlier, ctx.repo, deps.git);
-    const check = checkUpdate(earlier, input, {
-      comparable: result.comparable,
-      changedFiles: [...result.areas.flatMap((a) => a.files), ...result.unmapped],
-      trackedFiles: ctx.repo.isGit ? await deps.git.trackedFiles(ctx.repo.root) : null,
-    });
-    if (check.blocking.length > 0) throw problemsError('Map update refused:', check.blocking);
-    if (check.forceable.length > 0) {
-      if (opts.force !== true) {
-        throw problemsError(
-          'Map update refused (use --force --reason <text> to override):',
-          check.forceable,
-        );
-      }
-      forced = opts.reason ?? null;
+  if (check.forceable.length > 0) {
+    if (opts.force !== true) {
+      throw problemsError(
+        'Map update refused (use --force --reason <text> to override):',
+        check.forceable,
+      );
     }
+    forced = opts.reason ?? null;
   }
 
   const stored: StoredMap = {
@@ -113,12 +113,12 @@ async function setMap(
     setAt: deps.now().toISOString(),
     areas: input.areas,
   };
-  const changes = diffMaps(earlier, input);
+  const diff = diffMaps(earlier, input);
   await writeMap(ctx.dir, stored, ctx.repo);
   const session = openSession(await readEvents(ctx.dir));
-  await record(ctx, stored, session, { type: 'map_set', changes, forced });
-  emit(ctx, { changes, forced, map: mapSummary(stored) }, () =>
-    [changesText(changes), forced === null ? '' : `Forced: ${forced}`]
+  await record(ctx, stored, session, { type: 'map_set', changes: diff, forced });
+  emit(ctx, { changes: diff, forced, map: mapSummary(stored) }, () =>
+    [changesText(diff), forced === null ? '' : `Forced: ${forced}`]
       .filter((l) => l.length > 0)
       .join('\n'),
   );

@@ -23,6 +23,28 @@ function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
+const PATH_RULE = 'paths are relative to the repository root and use /';
+
+export function pathProblem(path: string): string | null {
+  if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return 'is absolute';
+  if (path.startsWith('./')) return 'starts with ./';
+  if (path.includes('\\')) return 'contains a backslash';
+  if (path.split('/').includes('..')) return 'contains a .. segment';
+  return null;
+}
+
+export function evidencePath(evidence: string): string {
+  return evidence.slice(0, evidence.lastIndexOf(':'));
+}
+
+export function evidenceProblem(evidence: string): string | null {
+  if (!EVIDENCE.test(evidence)) {
+    return `evidence ${JSON.stringify(evidence)} must look like path:line or path:line-line`;
+  }
+  const problem = pathProblem(evidencePath(evidence));
+  return problem === null ? null : `evidence ${JSON.stringify(evidence)} ${problem}; ${PATH_RULE}`;
+}
+
 function validatePrinciple(
   raw: unknown,
   where: string,
@@ -52,11 +74,11 @@ function validatePrinciple(
     problems.push(`${where}: principle "${id}" needs at least one evidence string`);
   }
   for (const item of evidence) {
-    if (typeof item !== 'string' || !EVIDENCE.test(item)) {
-      problems.push(
-        `${where}: evidence ${JSON.stringify(item)} must look like path:line or path:line-line`,
-      );
-    }
+    const problem =
+      typeof item === 'string'
+        ? evidenceProblem(item)
+        : `evidence ${JSON.stringify(item)} must look like path:line or path:line-line`;
+    if (problem !== null) problems.push(`${where}: ${problem}`);
   }
   if (problems.length > before || statement === null || reason === null) return null;
   return { id, statement, reason, evidence: evidence as string[] };
@@ -91,6 +113,12 @@ function validateArea(
   const paths = Array.isArray(raw['paths']) ? (raw['paths'] as unknown[]) : [];
   if (paths.length === 0 || !paths.every((p) => text(p) !== null)) {
     problems.push(`${where}: paths must list at least one non-empty glob`);
+  }
+  for (const path of paths) {
+    const problem = typeof path === 'string' ? pathProblem(path) : null;
+    if (problem !== null) {
+      problems.push(`${where}: path ${JSON.stringify(path)} ${problem}; ${PATH_RULE}`);
+    }
   }
   const revision = raw['revision'];
   if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 1) {
@@ -164,13 +192,24 @@ export interface UpdateContext {
 }
 
 export function checkUpdate(
-  prev: MapInput,
+  prev: MapInput | null,
   next: MapInput,
   ctx: UpdateContext,
 ): { blocking: string[]; forceable: string[] } {
   const blocking: string[] = [];
   const forceable: string[] = [];
   const nextById = new Map(next.areas.map((a) => [a.id, a]));
+
+  const tracked =
+    ctx.trackedFiles !== null && ctx.trackedFiles.length > 0 ? ctx.trackedFiles : null;
+  for (const area of next.areas) {
+    if (tracked !== null && !tracked.some((f) => matchesAny(f, area.paths))) {
+      forceable.push(
+        `Area "${area.id}" has paths that match no tracked file (${area.paths.join(', ')}); ${PATH_RULE}, and a folder needs /**.`,
+      );
+    }
+  }
+  if (prev === null) return { blocking, forceable };
 
   const droppable = (area: Area): boolean =>
     ctx.changedFiles.some((f) => matchesAny(f, area.paths)) ||

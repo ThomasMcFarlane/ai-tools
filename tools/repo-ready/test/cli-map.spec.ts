@@ -1,9 +1,32 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { defaultFiles, makeWorld, removeWorlds, runCli, sampleMap } from './helpers.js';
+import { appendEvent } from '../src/core/store.js';
+import {
+  defaultFiles,
+  LogBuilder,
+  makeWorld,
+  removeWorlds,
+  runCli,
+  sampleMap,
+  type CliWorld,
+} from './helpers.js';
 
 afterEach(removeWorlds);
 
 const TRACKED = ['src/a/x.ts', 'src/b/x.ts', 'docs/a.md'];
+
+function mapJson(change: (areas: ReturnType<typeof sampleMap>['areas']) => unknown[]): string {
+  return JSON.stringify({ areas: change(sampleMap().areas) });
+}
+
+async function seed(world: CliWorld, log: LogBuilder): Promise<void> {
+  const dir = ((await runCli(['status', '--json'], world)).json() as { stateDir: string }).stateDir;
+  for (const event of log.events) await appendEvent(dir, event);
+}
+
+async function verdictKind(world: CliWorld): Promise<string> {
+  return ((await runCli(['levels', '--json'], world)).json() as { verdict: { kind: string } })
+    .verdict.kind;
+}
 
 function withoutB(): string {
   const m = sampleMap();
@@ -153,5 +176,56 @@ describe('status and map', () => {
     expect((await runCli(['map', 'changes', '--json'], world)).json()).toMatchObject({
       comparable: false,
     });
+  });
+
+  it('refuses to move a failing key area onto paths that match nothing, so it cannot then be dropped', async () => {
+    const world = await makeWorld({
+      files: {
+        ...defaultFiles(),
+        'a-nowhere.json': mapJson((areas) =>
+          areas.map((a) => (a.id === 'a' ? { ...a, paths: ['nowhere/**'] } : a)),
+        ),
+        'without-a.json': mapJson((areas) => areas.filter((a) => a.id !== 'a')),
+      },
+    });
+    await runCli(['map', 'set', '--file', 'map.json'], world);
+    const log = new LogBuilder();
+    log.session();
+    log.q('a', 'read', 0);
+    log.q('a', 'read', 1);
+    log.q('b', 'read', 4);
+    log.q('b', 'read', 4);
+    log.endSession();
+    await seed(world, log);
+    expect(await verdictKind(world)).toBe('not_yet_ready');
+
+    const step1 = await runCli(['map', 'set', '--file', 'a-nowhere.json'], world);
+    expect(step1.code).toBe(2);
+    expect(step1.error?.message).toContain('"a"');
+    expect(step1.error?.message).toMatch(/match no tracked file/);
+    const step2 = await runCli(['map', 'set', '--file', 'without-a.json'], world);
+    expect(step2.code).toBe(2);
+    expect(await verdictKind(world)).toBe('not_yet_ready');
+  });
+
+  it('refuses a first map whose area matches no tracked file, unless forced with a reason', async () => {
+    const world = await makeWorld({
+      files: {
+        ...defaultFiles(),
+        'folder.json': mapJson((areas) =>
+          areas.map((a) => (a.id === 'a' ? { ...a, paths: ['src/a'] } : a)),
+        ),
+      },
+    });
+    const refused = await runCli(['map', 'set', '--file', 'folder.json'], world);
+    expect(refused.code).toBe(2);
+    expect(refused.error?.message).toContain('"a"');
+    expect((await runCli(['status'], world)).code).toBe(1);
+    const forced = await runCli(
+      ['map', 'set', '--file', 'folder.json', '--force', '--reason', 'files come later', '--json'],
+      world,
+    );
+    expect(forced.code).toBe(0);
+    expect(forced.json()).toMatchObject({ forced: 'files come later' });
   });
 });
