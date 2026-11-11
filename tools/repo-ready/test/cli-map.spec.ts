@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { appendEvent } from '../src/core/store.js';
 import {
   defaultFiles,
+  holdLevel,
   LogBuilder,
   makeWorld,
   removeWorlds,
@@ -254,5 +255,78 @@ describe('status and map', () => {
       expect(r.error?.message).toContain('"a"');
       expect(await verdictKind(world)).toBe('not_yet_ready');
     }
+  });
+
+  describe('removing an area and adding it back', () => {
+    async function heldThenDropped(): Promise<Awaited<ReturnType<typeof makeWorld>>> {
+      const at = (revision: number): string =>
+        mapJson((areas) => areas.map((a) => (a.id === 'a' ? { ...a, revision } : a)));
+      const world = await makeWorld({
+        files: {
+          ...defaultFiles(),
+          'without-a.json': mapJson((areas) => areas.filter((a) => a.id !== 'a')),
+          'a-1.json': at(1),
+          'a-2.json': at(2),
+        },
+      });
+      await runCli(['map', 'set', '--file', 'map.json'], world);
+      const log = new LogBuilder();
+      log.session();
+      holdLevel(log, 'a', 'maintain');
+      holdLevel(log, 'b', 'read');
+      log.endSession();
+      await seed(world, log);
+      world.git.state.head = 'c2';
+      world.git.state.commits = ['c1', 'c2'];
+      world.git.state.diffs = { 'c1..c2': ['src/a/x.ts'] };
+      expect((await runCli(['map', 'set', '--file', 'without-a.json'], world)).code).toBe(0);
+      return world;
+    }
+
+    async function areaA(world: CliWorld): Promise<Record<string, unknown> | undefined> {
+      const levels = (await runCli(['levels', '--json'], world)).json() as {
+        areas: Record<string, unknown>[];
+      };
+      return levels.areas.find((a) => a['id'] === 'a');
+    }
+
+    it('back at a higher revision, the area drops one level and is stale', async () => {
+      const world = await heldThenDropped();
+      const r = await runCli(['map', 'set', '--file', 'a-2.json', '--json'], world);
+      expect(r.code).toBe(0);
+      expect(r.json()).toMatchObject({
+        changes: [{ kind: 'revision_raised', areaId: 'a', from: 1, to: 2 }],
+      });
+      expect(await areaA(world)).toMatchObject({
+        level: 'read',
+        stale: true,
+        staleFrom: 'maintain',
+        retired: false,
+      });
+    });
+
+    it('back at the same revision, the area keeps its level with no stale mark', async () => {
+      const world = await heldThenDropped();
+      const r = await runCli(['map', 'set', '--file', 'a-1.json', '--json'], world);
+      expect(r.code).toBe(0);
+      expect(r.json()).toMatchObject({ changes: [{ kind: 'added', areaId: 'a' }] });
+      expect(await areaA(world)).toMatchObject({ level: 'maintain', stale: false });
+    });
+
+    it('back at a lower revision is refused even with --force', async () => {
+      const world = await heldThenDropped();
+      expect((await runCli(['map', 'set', '--file', 'a-2.json'], world)).code).toBe(0);
+      world.git.state.head = 'c3';
+      world.git.state.commits = ['c1', 'c2', 'c3'];
+      world.git.state.diffs = { 'c2..c3': ['src/a/x.ts'] };
+      expect((await runCli(['map', 'set', '--file', 'without-a.json'], world)).code).toBe(0);
+      const r = await runCli(
+        ['map', 'set', '--file', 'a-1.json', '--force', '--reason', 'person asked'],
+        world,
+      );
+      expect(r.code).toBe(2);
+      expect(r.error?.message).toContain('"a"');
+      expect(await areaA(world)).toMatchObject({ retired: true });
+    });
   });
 });

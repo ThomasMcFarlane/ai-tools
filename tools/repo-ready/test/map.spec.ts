@@ -5,11 +5,12 @@ import {
   checkUpdate,
   diffMaps,
   mapChanges,
+  revisionRecord,
   validateMap,
   type UpdateContext,
 } from '../src/core/map.js';
 import type { Area, MapInput, StoredMap } from '../src/core/types.js';
-import { fakeGit, sampleMap } from './helpers.js';
+import { fakeGit, LogBuilder, sampleMap } from './helpers.js';
 
 function clone(): MapInput {
   return structuredClone(sampleMap());
@@ -226,6 +227,47 @@ describe('diffMaps', () => {
   });
 
   it('reports nothing for identical maps', () => expect(diffMaps(prev, sampleMap())).toEqual([]));
+});
+
+describe('revisionRecord', () => {
+  it('keeps the highest revision seen per area in asks and revision rises', () => {
+    const log = new LogBuilder();
+    log.session();
+    log.q('a', 'read', 4);
+    log.raise('a');
+    log.raise('a');
+    log.q('b', 'read', 4);
+    log.raise('b');
+    expect(revisionRecord(log.events)).toEqual(
+      new Map([
+        ['a', 3],
+        ['b', 2],
+      ]),
+    );
+    expect(revisionRecord([])).toEqual(new Map());
+  });
+});
+
+describe('diffMaps against the revision record', () => {
+  const record = new Map([['b', 2]]);
+  const atB = (revision: number): MapInput => withArea(sampleMap(), 'b', { revision });
+
+  it('reports an area re-added above its record as a revision rise from the record', () =>
+    expect(diffMaps(withoutB, atB(3), record)).toEqual([
+      { kind: 'revision_raised', areaId: 'b', from: 2, to: 3 },
+    ]));
+
+  it('reports an area re-added at its record, or with no record, as added', () => {
+    expect(diffMaps(withoutB, atB(2), record)).toEqual([{ kind: 'added', areaId: 'b' }]);
+    expect(diffMaps(withoutB, atB(3), new Map())).toEqual([{ kind: 'added', areaId: 'b' }]);
+  });
+
+  it('refuses, without force, an area re-added below its record', () => {
+    expect(checkUpdate(withoutB, atB(1), { ...quiet, revisions: record }).blocking).toEqual([
+      expect.stringContaining('"b"'),
+    ]);
+    expect(checkUpdate(withoutB, atB(2), { ...quiet, revisions: record }).blocking).toEqual([]);
+  });
 });
 
 describe('checkUpdate', () => {

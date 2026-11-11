@@ -7,6 +7,7 @@ import {
   evidencePath,
   MapError,
   mapChanges,
+  revisionRecord,
   validateMap,
   type MapChangesResult,
 } from '../core/map.js';
@@ -86,12 +87,14 @@ async function setMap(
   if (missing.length > 0) throw problemsError('Evidence points at missing files:', missing);
 
   const earlier = await readMap(ctx.dir);
+  const revisions = revisionRecord(await readEvents(ctx.dir));
   const changes = earlier === null ? null : await mapChanges(earlier, ctx.repo, deps.git);
   const check = checkUpdate(earlier, input, {
     comparable: changes?.comparable ?? false,
     changedFiles:
       changes === null ? [] : [...changes.areas.flatMap((a) => a.files), ...changes.unmapped],
     trackedFiles: ctx.repo.isGit ? await deps.git.trackedFiles(ctx.repo.root) : null,
+    revisions,
   });
   if (check.blocking.length > 0) throw problemsError('Map update refused:', check.blocking);
   let forced: string | null = null;
@@ -113,7 +116,7 @@ async function setMap(
     setAt: deps.now().toISOString(),
     areas: input.areas,
   };
-  const diff = diffMaps(earlier, input);
+  const diff = diffMaps(earlier, input, revisions);
   await writeMap(ctx.dir, stored, ctx.repo);
   const session = openSession(await readEvents(ctx.dir));
   await record(ctx, stored, session, { type: 'map_set', changes: diff, forced });

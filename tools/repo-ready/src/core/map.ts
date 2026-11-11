@@ -2,7 +2,7 @@ import type { GitFacts } from './deps.js';
 import { matchesAny } from './glob.js';
 import type { RepoState } from './identity.js';
 import { MAX_AREAS, MIN_AREAS } from './types.js';
-import type { Area, MapChange, MapInput, Principle, StoredMap } from './types.js';
+import type { Area, LogEvent, MapChange, MapInput, Principle, StoredMap } from './types.js';
 
 export class MapError extends Error {
   problems: string[];
@@ -158,13 +158,44 @@ export function validateMap(input: unknown): MapInput {
   return { areas: areas as Area[] };
 }
 
-export function diffMaps(prev: MapInput | null, next: MapInput): MapChange[] {
+export type RevisionRecord = ReadonlyMap<string, number>;
+
+export function revisionRecord(events: LogEvent[]): Map<string, number> {
+  const record = new Map<string, number>();
+  const note = (areaId: unknown, revision: unknown): void => {
+    if (typeof areaId !== 'string' || typeof revision !== 'number') return;
+    record.set(areaId, Math.max(record.get(areaId) ?? revision, revision));
+  };
+  for (const event of events as unknown[]) {
+    if (typeof event !== 'object' || event === null) continue;
+    const e = event as Record<string, unknown>;
+    if (e['type'] === 'ask') note(e['areaId'], e['revision']);
+    if (e['type'] === 'map_set' && Array.isArray(e['changes'])) {
+      for (const change of e['changes'] as unknown[]) {
+        const c = change as Record<string, unknown> | null;
+        if (c?.['kind'] === 'revision_raised') note(c['areaId'], c['to']);
+      }
+    }
+  }
+  return record;
+}
+
+export function diffMaps(
+  prev: MapInput | null,
+  next: MapInput,
+  record: RevisionRecord = new Map(),
+): MapChange[] {
   const before = new Map((prev?.areas ?? []).map((a) => [a.id, a]));
   const changes: MapChange[] = [];
   for (const area of next.areas) {
     const old = before.get(area.id);
     if (old === undefined) {
-      changes.push({ kind: 'added', areaId: area.id });
+      const recorded = record.get(area.id);
+      changes.push(
+        recorded !== undefined && area.revision > recorded
+          ? { kind: 'revision_raised', areaId: area.id, from: recorded, to: area.revision }
+          : { kind: 'added', areaId: area.id },
+      );
       continue;
     }
     if (!old.key && area.key) changes.push({ kind: 'key_set', areaId: area.id });
@@ -189,6 +220,7 @@ export interface UpdateContext {
   comparable: boolean;
   changedFiles: string[];
   trackedFiles: string[] | null;
+  revisions?: RevisionRecord;
 }
 
 export function checkUpdate(
@@ -206,6 +238,15 @@ export function checkUpdate(
     if (tracked !== null && !tracked.some((f) => matchesAny(f, area.paths))) {
       forceable.push(
         `Area "${area.id}" has paths that match no tracked file (${area.paths.join(', ')}); ${PATH_RULE}, and a folder needs /**.`,
+      );
+    }
+  }
+  for (const area of next.areas) {
+    const recorded = ctx.revisions?.get(area.id);
+    const inPrev = prev?.areas.some((a) => a.id === area.id) ?? false;
+    if (!inPrev && recorded !== undefined && area.revision < recorded) {
+      blocking.push(
+        `Area "${area.id}" would come back at revision ${area.revision}, below revision ${recorded} on record, which is never allowed.`,
       );
     }
   }
