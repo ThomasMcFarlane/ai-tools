@@ -1,3 +1,5 @@
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { appendEvent } from '../src/core/store.js';
 import {
@@ -365,12 +367,15 @@ describe('status and map', () => {
 
     it('refuses a state folder inside the studied repository and writes nothing', async () => {
       const world = await makeWorld();
-      world.stateRoot = '/w/.repo-ready-state';
+      const root = world.stateRoot;
+      world.git.state.toplevel = root;
+      world.stateRoot = join(root, '.repo-ready-state');
       for (const args of [['status'], ['map', 'set', '--file', 'map.json']]) {
         const r = await runCli(args, world);
         expect(r.code).toBe(2);
         expect(r.error?.message).toMatch(/inside the studied repository/);
       }
+      expect(await readdir(root)).toEqual([]);
       expect(world.written).toEqual({});
     });
   });
