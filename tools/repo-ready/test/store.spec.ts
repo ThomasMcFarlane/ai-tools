@@ -63,6 +63,16 @@ describe('store', () => {
     expect(await readdir(join(dir, 'maps'))).toEqual(['2026-01-01T00-00-00.000Z.json']);
   });
 
+  it('writeMap leaves the live map whole when a later write fails', async () => {
+    const first = { ...map, setAt: '2026-01-01T00:00:00.000Z' };
+    await writeMap(dir, first, repo);
+    await mkdir(join(dir, 'map.json.tmp'));
+    await expect(
+      writeMap(dir, { ...map, setAt: '2026-01-02T00:00:00.000Z' }, repo),
+    ).rejects.toThrow();
+    expect(await readMap(dir)).toEqual(first);
+  });
+
   it('writeMap writes repo.json once and leaves it alone afterwards', async () => {
     await writeMap(dir, { ...map, setAt: '2026-01-01T00:00:00.000Z' }, repo);
     await writeMap(dir, { ...map, setAt: '2026-01-02T00:00:00.000Z' }, repo);

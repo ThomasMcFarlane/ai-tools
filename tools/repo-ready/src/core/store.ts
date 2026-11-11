@@ -1,4 +1,13 @@
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { RepoState } from './identity.js';
@@ -61,15 +70,15 @@ export async function writeMap(dir: string, map: StoredMap, repo: RepoState): Pr
       throw error;
     }
   }
+  const temporary = join(dir, `${MAP_FILE}.tmp`);
+  await writeFile(temporary, `${JSON.stringify(map, null, 2)}\n`);
   const earlier = await readMap(dir);
   if (earlier !== null) {
-    await rename(
+    await copyFile(
       join(dir, MAP_FILE),
       join(dir, MAPS_DIR, `${earlier.setAt.replaceAll(':', '-')}.json`),
     );
   }
-  const temporary = join(dir, `${MAP_FILE}.tmp`);
-  await writeFile(temporary, `${JSON.stringify(map, null, 2)}\n`);
   await rename(temporary, join(dir, MAP_FILE));
 }
 
