@@ -34,8 +34,8 @@ function git(cwd: string, args: string[]): Promise<string | null> {
   });
 }
 
-function lines(output: string | null): string[] {
-  return output === null ? [] : output.split('\n').filter((l) => l.length > 0);
+function lines(output: string | null, separator = '\n'): string[] {
+  return output === null ? [] : output.split(separator).filter((l) => l.length > 0);
 }
 
 export function realGit(): GitFacts {
@@ -76,10 +76,10 @@ export function realGit(): GitFacts {
       return (await git(root, ['cat-file', '-e', `${sha}^{commit}`])) !== null;
     },
     async changedFiles(root, from, to) {
-      return lines(await git(root, ['diff', '--name-only', from, to]));
+      return lines(await git(root, ['diff', '--name-only', '-z', from, to]), '\0');
     },
     async trackedFiles(root) {
-      return lines(await git(root, ['ls-files']));
+      return lines(await git(root, ['ls-files', '-z']), '\0');
     },
   };
 }

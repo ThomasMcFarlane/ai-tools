@@ -71,4 +71,16 @@ describe('realGit', () => {
     const second = await g.head(dir);
     expect(await g.changedFiles(dir, first as string, second as string)).toEqual(['b.txt']);
   });
+
+  it('returns special file names unquoted and exact', async () => {
+    const before = await g.head(dir);
+    await writeFile(join(dir, 'café.ts'), 'x\n');
+    await writeFile(join(dir, 'with space.txt'), 'y\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'special names');
+    const after = await g.head(dir);
+    const expected = ['café.ts', 'with space.txt'];
+    expect(await g.changedFiles(dir, before as string, after as string)).toEqual(expected);
+    expect(await g.trackedFiles(dir)).toEqual(expect.arrayContaining(expected));
+  });
 });
