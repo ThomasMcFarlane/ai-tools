@@ -113,6 +113,38 @@ function raiseRevision(tracked: Tracked): void {
   }
 }
 
+const isText = (value: unknown): value is string => typeof value === 'string';
+const isNumber = (value: unknown): value is number => typeof value === 'number';
+
+function usable(event: unknown): event is LogEvent {
+  if (typeof event !== 'object' || event === null) return false;
+  const e = event as Record<string, unknown>;
+  switch (e['type']) {
+    case 'session_start':
+    case 'session_end':
+      return true;
+    case 'map_set':
+      return Array.isArray(e['changes']);
+    case 'ask':
+      return (
+        isText(e['questionId']) &&
+        isText(e['areaId']) &&
+        isNumber(e['revision']) &&
+        LEVELS.includes(e['level'] as Level) &&
+        isText(e['qtype'])
+      );
+    case 'hint':
+    case 'skip':
+      return isText(e['questionId']);
+    case 'answer':
+      return isText(e['questionId']) && isNumber(e['durationMs']);
+    case 'grade':
+      return isText(e['questionId']) && isNumber(e['score']);
+    default:
+      return false;
+  }
+}
+
 function replay(
   map: MapInput,
   events: LogEvent[],
@@ -130,9 +162,10 @@ function replay(
   }
 
   for (const event of events) {
+    if (!usable(event)) continue;
     switch (event.type) {
       case 'session_start': {
-        if (event.sessionId === null || sessions.has(event.sessionId)) break;
+        if (!isText(event.sessionId) || sessions.has(event.sessionId)) break;
         sessions.set(event.sessionId, {
           id: event.sessionId,
           mode: event.mode ?? 'learn',
@@ -147,7 +180,7 @@ function replay(
         break;
       }
       case 'session_end': {
-        const session = event.sessionId === null ? undefined : sessions.get(event.sessionId);
+        const session = !isText(event.sessionId) ? undefined : sessions.get(event.sessionId);
         if (session) {
           session.endedAt = event.at;
           session.auto = event.auto;
@@ -156,7 +189,7 @@ function replay(
       }
       case 'map_set': {
         for (const change of event.changes) {
-          if (change.kind !== 'revision_raised') continue;
+          if (change?.kind !== 'revision_raised') continue;
           const tracked = areas.get(change.areaId);
           if (tracked) raiseRevision(tracked);
         }
@@ -179,9 +212,9 @@ function replay(
           revision: event.revision,
           level: event.level,
           qtype: event.qtype,
-          principleIds: event.principleIds,
+          principleIds: Array.isArray(event.principleIds) ? event.principleIds : [],
           prompt: event.prompt,
-          evidence: event.evidence,
+          evidence: Array.isArray(event.evidence) ? event.evidence : [],
           followUpOf: event.followUpOf,
           askedAt: event.at,
           branch: event.branch,
@@ -199,7 +232,7 @@ function replay(
         };
         questions.set(record.id, record);
         tracked.questions.push(record);
-        if (event.sessionId !== null) sessions.get(event.sessionId)?.questionIds.push(record.id);
+        if (isText(event.sessionId)) sessions.get(event.sessionId)?.questionIds.push(record.id);
         break;
       }
       case 'hint': {
@@ -211,7 +244,7 @@ function replay(
         const question = questions.get(event.questionId);
         if (!question || question.status !== 'open') break;
         question.status = 'answered';
-        question.answer = event.text;
+        question.answer = isText(event.text) ? event.text : '';
         question.answeredAt = event.at;
         question.durationMs = event.durationMs;
         break;
@@ -221,8 +254,8 @@ function replay(
         if (!question || (question.status !== 'open' && question.status !== 'answered')) break;
         question.status = 'graded';
         question.score = event.score;
-        question.notes = event.notes;
-        question.gaps = event.gaps;
+        question.notes = isText(event.notes) ? event.notes : '';
+        question.gaps = Array.isArray(event.gaps) ? event.gaps : [];
         question.passed = event.score >= PASS_SCORE && question.hints === 0;
         const tracked = areas.get(question.areaId);
         if (tracked) afterTest(tracked, question, event.at);

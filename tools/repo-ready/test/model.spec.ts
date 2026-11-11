@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildModel } from '../src/core/model.js';
-import type { AreaState, Level, Model } from '../src/core/types.js';
+import type { AreaState, Level, LogEvent, Model } from '../src/core/types.js';
 import { LogBuilder, sampleMap } from './helpers.js';
 
 let L: LogBuilder;
@@ -77,6 +77,8 @@ describe('buildModel', () => {
   it('a non-key area never lowers the verdict', () => {
     hold('a', 'read');
     hold('b', 'read');
+    L.q('c', 'read', 0);
+    L.q('c', 'read', 0);
     expect(m().verdict.level).toBe('read');
   });
 
@@ -200,5 +202,73 @@ describe('buildModel', () => {
       mode: 'interview',
       passed: false,
     });
+  });
+});
+
+describe('damaged log', () => {
+  const at = '2026-02-01T00:00:00.000Z';
+  const base = { at, sessionId: 's1', mode: 'learn', branch: 'main', commit: 'c1', dirty: false };
+  const bad = (body: Record<string, unknown>): LogEvent => ({ ...base, ...body }) as LogEvent;
+  const junk = (value: unknown): LogEvent => value as LogEvent;
+
+  const clean = (): LogBuilder => {
+    const b = new LogBuilder().session();
+    b.q('a', 'read', 4, { gaps: ['locking'] });
+    b.q('a', 'read', 1, { gaps: ['locking'] });
+    b.q('b', 'read', 'open');
+    return b;
+  };
+  const damaged = [
+    ['null', junk(null)],
+    ['a string', junk('not an event')],
+    ['a map_set without changes', bad({ type: 'map_set' })],
+    [
+      'a grade without gaps or notes for a known question',
+      bad({ type: 'grade', questionId: 'q3', score: 4 }),
+    ],
+    [
+      'an ask without an area',
+      bad({ type: 'ask', questionId: 'q99', level: 'read', qtype: 'explain' }),
+    ],
+    ['an event of unknown type', bad({ type: 'teleport' })],
+    [
+      'a grade for an unknown question',
+      bad({ type: 'grade', questionId: 'nope', score: 4, notes: '', gaps: [] }),
+    ],
+    [
+      'an answer for an unknown question',
+      bad({ type: 'answer', questionId: 'nope', text: 'x', durationMs: 1 }),
+    ],
+  ] as const;
+
+  it('gives the same model as the clean log when junk events are mixed in', () => {
+    const good = clean();
+    const expected = buildModel(sampleMap(), good.events);
+    const events = good.events.slice(0, 1);
+    for (const [, event] of damaged.filter(([name]) => !name.includes('known question'))) {
+      events.push(event);
+    }
+    events.push(...good.events.slice(1));
+    expect(() => buildModel(sampleMap(), events)).not.toThrow();
+    expect(buildModel(sampleMap(), events)).toEqual(expected);
+  });
+
+  it.each(damaged)('does not throw on %s', (_name, event) => {
+    const good = clean();
+    expect(() => buildModel(sampleMap(), [...good.events, event])).not.toThrow();
+  });
+
+  it('treats a grade without gaps or notes as having none', () => {
+    const good = clean();
+    const model = buildModel(sampleMap(), [
+      ...good.events,
+      bad({ type: 'grade', questionId: 'q3', score: 4 }),
+    ]);
+    expect(model.questions.find((q) => q.id === 'q3')).toMatchObject({
+      status: 'graded',
+      gaps: [],
+      notes: '',
+    });
+    expect(model.verdict.recurringGaps).toEqual(['locking']);
   });
 });
