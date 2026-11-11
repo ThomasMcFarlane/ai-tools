@@ -47,7 +47,7 @@ Read, in this order: the README and any design docs; agent and contributor guide
 
 Find principles by asking what a newcomer would most likely break, what looks odd until you know why, and what the tests guard. Two to four per area is typical.
 
-**How many areas:** a normal repository has 4 to 10; a small one may have fewer. Never pad the map to reach a number. **Key areas** (`"key": true`) are the ones nobody can work on the repository without: the core flows, the state, the public interface. They alone set the overall verdict, so leave peripheral tooling and examples out of them. At least one area must be key. `paths` are globs relative to the root. `revision` starts at 1.
+**How many areas:** a normal repository has 4 to 10; a small one may have fewer. Never pad the map to reach a number. **Key areas** (`"key": true`) are the ones nobody can work on the repository without: the core flows, the state, the public interface. They alone set the overall verdict, so leave peripheral tooling and examples out of them. At least one area must be key. `paths` are globs relative to the root. `revision` starts at 1. Area and principle ids are lower-case letters, digits and hyphens, and every evidence file must exist in the repository, or `map set` exits `2`.
 
 ```json
 {
@@ -88,34 +88,34 @@ A bad map exits `2` with every problem listed; fix them and submit again. Then s
    - `openSession` is set: an earlier session was never closed. Run `repo-ready session end` and tell the person in one line.
 2. A map exists, so check what changed since it was set: `repo-ready map changes --json`.
    - `comparable` is `false`: tell the person the `reason`, then review every area against the code as it is now.
-   - `areas` lists changed files by area, and `unmapped` lists changed files in no area. Read the changes (`git diff <from> <to> -- <files>`). For each area decide: did the design change (a principle, a flow, a boundary), or only details (names, messages, a fix within the same design)? Raise that area's `revision` by 1 only for a design change. Unmapped files may need new paths or a new area.
+   - `areas` lists changed files by area, and `unmapped` lists changed files in no area. Read the changes (`git diff <from> <to> -- <files>`). For each area decide: did the design change (a principle, a flow, a boundary), or only details (names, messages, a fix within the same design)? Raise that area's `revision` by 1 only for a design change. In every changed area, update the principle statements and `path:line` evidence to match the new code, not only the `revision`. Unmapped files may need new paths or a new area.
    - If anything changed, take the current map from `repo-ready map show --json` (the stored fields it adds are ignored on submit), write the updated map to the temporary folder, and submit it with `repo-ready map set --file <folder>/map.json`, even if no revision rose, so the next comparison starts from this commit. If the CLI refuses a change, your judgement was wrong (for example, a revision raised on an area whose files did not change): correct the map; do not force it.
    - Tell the person which areas went stale and why. The CLI shows a stale area as `stale (was <level>: <label>)`: it now counts one level lower, and `next` puts it first until the person shows they understand the change.
 3. Show the progress chart: `repo-ready chart levels --format text` (see "Charts").
 4. Ask the person to choose a mode, learn or interview (see "Modes"), and whether to focus on any areas. List the area ids so they can name them.
-5. Run `repo-ready session start --mode learn` or `repo-ready session start --mode interview`. In interview mode, tell the person the terms now: no hints, no feedback until the end, and please do not look at the code.
+5. Run `repo-ready session start --mode learn` or `repo-ready session start --mode interview`. Keep the session id it prints (such as `sa112csvc`); the debrief needs it for `--session <id>`. In interview mode, tell the person the terms now: no hints, no feedback until the end, and please do not look at the code.
 
 ## The loop
 
 Repeat until `next` reports `done`, or the person says to stop.
 
 1. **Choose the target.** Run `repo-ready next --json`, adding `--area <id>` once for each focus area. If `session.done` is `true`, go to "End of session". Otherwise take the first entry of `targets`: its `areaId`, `level` and `qtype` are what you ask about; `reason` says why (`stale`, `untested`, `not_held`, `keep_fresh`). Do not repeat or rephrase anything in `recentPrompts`.
-2. **Teach (learn mode only).** If the reason is `untested`, `not_held` or `stale` and you have not yet taught this area in this session, give a short lesson on the principles the question will touch, then record it: `repo-ready teach --area <id> --principles <id>,<id>`.
-3. **Ask.** Re-read the evidence, then write one question of the target's type and level (see "Question types"). Record it, and only then show it to the person, word for word:
+2. **Teach (learn mode only).** If the reason is `untested`, `not_held` or `stale` and you have not yet taught this area in this session, give a short lesson on the principles the question will touch (for `stale`, on what changed), then record it: `repo-ready teach --area <id> --principles <id>,<id>`.
+3. **Ask.** Re-read the evidence, then write one question of the target's type and level (see "Question types"). If `reason` is `stale`, ground the question in the changed code: use the `git diff` you read at the start, and ask how the design change alters the principle. Record it, and only then show it to the person, word for word:
 
    ```sh
    repo-ready ask --area job-retries --level read --type explain \
-     --evidence src/queue/worker.ts:42 --evidence test/queue/worker.test.ts:110 \
+     --evidence src/queue/worker.ts:42-58 --evidence test/queue/worker.test.ts:110 \
      --principles ack-after-run --file - <<'REPO_READY_TEXT'
    A worker acknowledges a job only after its handler returns. What failure does that order protect against, and what does it demand of every handler?
    REPO_READY_TEXT
    ```
 
-   Each `--evidence` is one line, `path:line` with no range; repeat the flag for more. The CLI prints the question id (such as `qfgtjj26y`) and starts the clock. Keep the id.
+   Each `--evidence` is `path:line` or `path:line-line`, as in the map; repeat the flag for more. The CLI prints the question id (such as `qfgtjj26y`) and starts the clock. Keep the id.
 
 4. **Record the reply first.** In learn mode, if the person asks for a hint before answering, give a nudge towards where to look, not the answer, record it with `repo-ready hint <id>`, and tell them a hinted answer cannot count as a pass. When they answer, run `repo-ready answer <id> --file -` with their reply before you think about the grade; the clock stops there, so your grading time is not counted as theirs. If they ask to skip or say they do not know, run `repo-ready skip <id>` instead; a skip counts as score 0 and is not graded.
 5. **Grade.** Grade against the evidence (see "Grading") and record it: `repo-ready grade <id> --score <0-4> --gaps <tag>,<tag> --file -` with your notes on standard input.
-6. **Respond by mode.** Learn: give the score, what was right, what was missing, and the `path:line` evidence; on a score of 2 or less, teach the missing point in a few sentences. Interview: say only "Recorded." and move on; no score, no correction, no reaction.
+6. **Respond by mode.** Learn: give the score you recorded, what was right, what was missing, and the `path:line` evidence; on a score of 2 or less, teach the missing point in a few sentences. Interview: say only "Recorded." and move on; no score, no correction, no reaction.
 7. **Follow up (optional).** You may ask one follow-up for each answered question that `next` chose, never a follow-up of a follow-up. It stays in the same area, at the same level or one above, and it is a full question: `repo-ready ask --area <area> --level <level> --type <type> --follow-up-of <question-id> --evidence <path:line> --file -`, then answer, grade and respond as above. It counts towards the session length. Then return to step 1.
 
 If the person stops early, go straight to "End of session".
@@ -130,7 +130,7 @@ If the person stops early, go straight to "End of session".
 | Looking at the code | Allowed                                                       | The person is asked not to; this is on trust |
 | Follow-up questions | Gentle                                                        | Probing, as an interviewer would             |
 
-Interview mode is strict, because its value is an honest picture of what the person knows unaided. Between questions give no hints, no feedback, no teaching and no encouragement that hints at the score ("good", "close", "not quite"). If the person asks for a hint, say hints are not given in interview mode and offer to skip. If they ask how they are doing, say the debrief comes at the end. Probe as an interviewer would: a follow-up that finds the edge of what they know is the point, even when it costs them a level.
+Interview mode is strict, because its value is an honest picture of what the person knows unaided. Between questions give no hints, no feedback, no teaching and no encouragement that hints at the score ("good", "close", "not quite"). If the person asks for a hint, say hints are not given in interview mode and offer to skip. You may repeat the question as recorded, but not rephrase or narrow it; after a skip say only "Recorded." If they ask how they are doing, say the debrief comes at the end. Probe as an interviewer would: a follow-up that finds the edge of what they know is the point, even when it costs them a level. Word a follow-up neutrally; never quote back, confirm or challenge the previous answer.
 
 ## Question types
 
