@@ -1,7 +1,12 @@
-import type { GitFacts } from '../src/core/deps.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { run } from '../src/cli/index.js';
+import type { Deps, GitFacts } from '../src/core/deps.js';
 import type { RepoState } from '../src/core/identity.js';
 import {
   LEVELS,
+  NotFoundError,
   QTYPES,
   type Area,
   type Level,
@@ -225,4 +230,94 @@ export function holdLevel(log: LogBuilder, areaId: string, level: Level): void {
     log.q(areaId, lv, 4);
     if (lv === level) break;
   }
+}
+
+export interface CliWorld {
+  git: GitFacts;
+  clock: { now(): Date };
+  stateRoot: string;
+  files?: Record<string, string>;
+  stdin?: string;
+}
+
+export interface CliResult {
+  out: string;
+  json(): unknown;
+  error: Error | null;
+  code: 0 | 1 | 2;
+}
+
+const REPO_ROOT = '/w';
+const idCounters = new WeakMap<object, Record<string, number>>();
+
+export function defaultFiles(): Record<string, string> {
+  return {
+    'src/a/x.ts': 'a\n',
+    'src/b/x.ts': 'b\n',
+    'docs/a.md': 'c\n',
+    'map.json': JSON.stringify(sampleMap()),
+  };
+}
+
+function relativeToRoot(path: string): string {
+  return path.startsWith(`${REPO_ROOT}/`) ? path.slice(REPO_ROOT.length + 1) : path;
+}
+
+export async function runCli(args: string[], world: CliWorld): Promise<CliResult> {
+  const files = world.files ?? defaultFiles();
+  const counters = idCounters.get(world) ?? {};
+  idCounters.set(world, counters);
+  const lines: string[] = [];
+  const deps: Partial<Deps> = {
+    now: () => world.clock.now(),
+    git: world.git,
+    stateRoot: () => world.stateRoot,
+    newId(prefix) {
+      counters[prefix] = (counters[prefix] ?? 0) + 1;
+      return `${prefix}${counters[prefix]}`;
+    },
+    fileExists: async (absPath) => relativeToRoot(absPath) in files,
+    async readText(source) {
+      if (source === '-') return world.stdin ?? '';
+      const text = files[relativeToRoot(source)];
+      if (text === undefined) throw new Error(`ENOENT: ${source}`);
+      return text;
+    },
+    print: (text) => {
+      lines.push(text);
+    },
+  };
+  const withRepo = args.includes('--repo') ? args : ['--repo', REPO_ROOT, ...args];
+  let error: Error | null = null;
+  try {
+    await run(['node', 'repo-ready', ...withRepo], deps);
+  } catch (thrown) {
+    error = thrown instanceof Error ? thrown : new Error(String(thrown));
+  }
+  const out = lines.join('\n');
+  return {
+    out,
+    json: () => JSON.parse(out) as unknown,
+    error,
+    code: error === null ? 0 : error instanceof NotFoundError ? 1 : 2,
+  };
+}
+
+const stateRoots: string[] = [];
+
+export async function makeWorld(
+  overrides: { git?: Partial<FakeGitState>; files?: Record<string, string> } = {},
+): Promise<CliWorld & { git: ReturnType<typeof fakeGit>; clock: ReturnType<typeof clock> }> {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'repo-ready-cli-'));
+  stateRoots.push(stateRoot);
+  return {
+    git: fakeGit(overrides.git),
+    clock: clock('2026-01-05T09:00:00.000Z'),
+    stateRoot,
+    ...(overrides.files === undefined ? {} : { files: overrides.files }),
+  };
+}
+
+export async function removeWorlds(): Promise<void> {
+  await Promise.all(stateRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 }

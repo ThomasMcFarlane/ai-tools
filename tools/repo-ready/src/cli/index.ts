@@ -5,14 +5,17 @@ import { Command } from 'commander';
 import { defaultDeps, type Deps } from '../core/deps.js';
 import { NotFoundError } from '../core/types.js';
 import { VERSION } from '../version.js';
+import { registerMapCommands } from './map-commands.js';
+import { registerSessionCommands } from './session-commands.js';
 
 function buildProgram(deps: Deps): Command {
-  void deps;
   const p = new Command();
   p.name('repo-ready')
     .description('Repository readiness quiz engine for AI agents')
     .version(VERSION, '-V, --version', 'print the version')
     .option('--repo <path>', 'path of the repository to study');
+  registerMapCommands(p, deps);
+  registerSessionCommands(p, deps);
   return p;
 }
 
