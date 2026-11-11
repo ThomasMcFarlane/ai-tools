@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ai-tools">
+  <title>ai-tools</title>
+  <rect width="512" height="512" rx="112" fill="#0f1420"/>
+  <path d="M342.9 116.9A164 164 0 1 1 120.0 164.3" fill="none" stroke="#3ddc97" stroke-width="36" stroke-linecap="round"/>
+  <path d="M148.0 122.8L86.9 141.9L153.2 186.7Z" fill="#3ddc97" stroke="#3ddc97" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M190 206l52 50-52 50" fill="none" stroke="#eef2fa" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M274 306h50" stroke="#eef2fa" stroke-width="36" stroke-linecap="round"/>
+</svg>
