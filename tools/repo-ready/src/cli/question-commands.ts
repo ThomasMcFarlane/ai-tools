@@ -252,12 +252,18 @@ async function grade(
     notes,
     gaps,
   });
-  const passed = score >= PASS_SCORE && question.hints === 0;
-  emit(ctx, { questionId: id, score, passed }, () =>
-    passed
+  const passed = !question.voided && score >= PASS_SCORE && question.hints === 0;
+  const result = question.voided
+    ? { questionId: id, score, passed, voided: true }
+    : { questionId: id, score, passed };
+  emit(ctx, result, () => {
+    if (question.voided) {
+      return `Graded ${id}: ${score}. It does not count: the design of this area changed after the question was asked.`;
+    }
+    return passed
       ? `Graded ${id}: ${score}, passed.`
-      : `Graded ${id}: ${score}, not passed${question.hints > 0 && score >= PASS_SCORE ? ' (hinted)' : ''}.`,
-  );
+      : `Graded ${id}: ${score}, not passed${question.hints > 0 && score >= PASS_SCORE ? ' (hinted)' : ''}.`;
+  });
 }
 
 async function skip(deps: Deps, command: Command, id: string): Promise<void> {

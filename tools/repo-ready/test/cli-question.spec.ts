@@ -2,7 +2,14 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { QuestionRecord } from '../src/core/types.js';
-import { defaultFiles, makeWorld, removeWorlds, runCli, type CliWorld } from './helpers.js';
+import {
+  defaultFiles,
+  makeWorld,
+  removeWorlds,
+  runCli,
+  sampleMap,
+  type CliWorld,
+} from './helpers.js';
 
 afterEach(removeWorlds);
 
@@ -344,6 +351,68 @@ describe('question lifecycle', () => {
     expect(r.code).toBe(2);
     expect(r.error?.message).toMatch(/not given in interview mode/);
     expect(await eventCount(interview)).toBe(before);
+  });
+
+  it('grade says so when a design change voided the question', async () => {
+    const raised = sampleMap();
+    const first = raised.areas[0];
+    if (first === undefined) throw new Error('sample map has no area');
+    first.revision = 2;
+    const world = await makeWorld({
+      files: {
+        ...defaultFiles(),
+        'prompt.txt': 'What does area a do?',
+        'answer.txt': 'It does a.',
+        'map2.json': JSON.stringify(raised),
+      },
+    });
+    await ok(world, ['map', 'set', '--file', 'map.json']);
+    await ok(world, ['session', 'start', '--mode', 'learn']);
+    const id = await ask(world);
+    await ok(world, ['answer', id, '--file', 'answer.txt']);
+    world.git.state.head = 'c2';
+    world.git.state.commits.push('c2');
+    world.git.state.diffs['c1..c2'] = ['src/a/x.ts'];
+    await ok(world, ['map', 'set', '--file', 'map2.json']);
+
+    const json = await runCli(['grade', id, '--score', '4', '--json'], world);
+    expect(json.code).toBe(0);
+    expect(json.json()).toEqual({ questionId: id, score: 4, passed: false, voided: true });
+    expect((await history(world))[0]).toMatchObject({ status: 'graded', voided: true });
+
+    const other = await ask(world);
+    await ok(world, ['answer', other, '--file', 'answer.txt']);
+    const text = await runCli(['grade', other, '--score', '4'], world);
+    expect(text.out).toContain('passed');
+    expect(text.out).not.toContain('does not count');
+  });
+
+  it('grade text names a voided question as not counting', async () => {
+    const raised = sampleMap();
+    const first = raised.areas[0];
+    if (first === undefined) throw new Error('sample map has no area');
+    first.revision = 2;
+    const world = await makeWorld({
+      files: {
+        ...defaultFiles(),
+        'prompt.txt': 'What does area a do?',
+        'answer.txt': 'It does a.',
+        'map2.json': JSON.stringify(raised),
+      },
+    });
+    await ok(world, ['map', 'set', '--file', 'map.json']);
+    await ok(world, ['session', 'start', '--mode', 'learn']);
+    const id = await ask(world);
+    await ok(world, ['answer', id, '--file', 'answer.txt']);
+    world.git.state.head = 'c2';
+    world.git.state.commits.push('c2');
+    world.git.state.diffs['c1..c2'] = ['src/a/x.ts'];
+    await ok(world, ['map', 'set', '--file', 'map2.json']);
+
+    const text = await runCli(['grade', id, '--score', '4'], world);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain('does not count');
+    expect(text.out).not.toMatch(/, passed\./);
   });
 
   it('a hinted answer is graded but does not pass', async () => {
