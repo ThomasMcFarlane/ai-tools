@@ -2,10 +2,12 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
+import { defaultDeps, type Deps } from '../core/deps.js';
 import { NotFoundError } from '../core/types.js';
 import { VERSION } from '../version.js';
 
-function buildProgram(): Command {
+function buildProgram(deps: Deps): Command {
+  void deps;
   const p = new Command();
   p.name('repo-ready')
     .description('Repository readiness quiz engine for AI agents')
@@ -14,8 +16,9 @@ function buildProgram(): Command {
   return p;
 }
 
-export async function run(argv: string[]): Promise<void> {
-  await buildProgram().parseAsync(argv);
+export async function run(argv: string[], overrides: Partial<Deps> = {}): Promise<void> {
+  const deps: Deps = { ...defaultDeps(), ...overrides };
+  await buildProgram(deps).parseAsync(argv);
 }
 
 export function isEntryModule(moduleUrl: string): boolean {
