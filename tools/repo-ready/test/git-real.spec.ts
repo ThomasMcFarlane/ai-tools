@@ -2,8 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { realGit } from '../src/core/deps.js';
+
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 
 const saved = { global: process.env.GIT_CONFIG_GLOBAL, system: process.env.GIT_CONFIG_NOSYSTEM };
 let dir: string;

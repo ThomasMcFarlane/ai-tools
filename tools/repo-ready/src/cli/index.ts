@@ -6,13 +6,16 @@ import { defaultDeps, type Deps } from '../core/deps.js';
 import { NotFoundError } from '../core/types.js';
 import { VERSION } from '../version.js';
 import { registerMapCommands } from './map-commands.js';
+import { registerQuestionCommands } from './question-commands.js';
+import { registerReadCommands } from './read-commands.js';
 import { registerSessionCommands } from './session-commands.js';
 
 function buildProgram(deps: Deps): Command {
   const p = new Command();
   p.exitOverride().configureOutput({
     writeOut: (text) => deps.print(text.replace(/\n$/, '')),
-    writeErr: () => undefined,
+    writeErr: (text) => deps.print(text.replace(/\n$/, '')),
+    outputError: () => undefined,
   });
   p.name('repo-ready')
     .description('Repository readiness quiz engine for AI agents')
@@ -20,6 +23,8 @@ function buildProgram(deps: Deps): Command {
     .option('--repo <path>', 'path of the repository to study');
   registerMapCommands(p, deps);
   registerSessionCommands(p, deps);
+  registerQuestionCommands(p, deps);
+  registerReadCommands(p, deps);
   return p;
 }
 
@@ -30,6 +35,7 @@ export async function run(argv: string[], overrides: Partial<Deps> = {}): Promis
   } catch (error) {
     if (!(error instanceof CommanderError)) throw error;
     if (error.exitCode === 0) return;
+    if (error.code === 'commander.help') throw new Error('no command given');
     throw new Error(error.message.replace(/^error: /, ''));
   }
 }

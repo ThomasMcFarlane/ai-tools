@@ -37,3 +37,21 @@ describe('usage errors', () => {
     expect(r.out).toContain('--file');
   });
 });
+
+describe('no command given', () => {
+  it.each([[[] as string[]], [['map']], [['session']]])(
+    '%j prints help and exits 2',
+    async (args) => {
+      const r = await runCli(args, await makeWorld());
+      expect(r.code).toBe(2);
+      expect(r.out).toContain('Usage:');
+      expect(r.error?.message).toBe('no command given');
+    },
+  );
+
+  it('a group help names its own subcommands', async () => {
+    const r = await runCli(['map'], await makeWorld());
+    expect(r.out).toContain('Usage: repo-ready map');
+    expect(r.out).toContain('changes');
+  });
+});
