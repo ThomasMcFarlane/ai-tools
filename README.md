@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./favicon.svg" alt="ai-tools" width="128" height="128" />
+</p>
+
 # ai-tools
 
 Tools that let AI agents check external state, wait for changes, and resume work from hooks.
