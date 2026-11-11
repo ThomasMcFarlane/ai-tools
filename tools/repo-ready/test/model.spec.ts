@@ -199,6 +199,82 @@ describe('buildModel', () => {
   });
 });
 
+describe('voided and late events', () => {
+  beforeEach(() => {
+    L = new LogBuilder().session();
+  });
+
+  const late = (body: Record<string, unknown>): void => {
+    const last = L.events[L.events.length - 1];
+    const at = new Date(new Date(last?.at ?? 0).getTime() + 60_000).toISOString();
+    L.events.push({
+      at,
+      sessionId: 's1',
+      mode: 'learn',
+      branch: 'main',
+      commit: 'c1',
+      dirty: false,
+      mapCommit: 'c1',
+      ...body,
+    } as LogEvent);
+  };
+  const answerAndGrade = (questionId: string, score: number): void => {
+    late({ type: 'answer', questionId, text: 'Late.', durationMs: 1 });
+    late({ type: 'grade', questionId, score, notes: '', gaps: [] });
+  };
+
+  it('a question left open across a revision rise is voided and does not bring the level back', () => {
+    hold('a', 'maintain');
+    const open = L.q('a', 'maintain', 'open');
+    L.raise('a');
+    L.endSession().session();
+    answerAndGrade(open, 4);
+    L.q('a', 'maintain', 4);
+    const model = m();
+    expect(model.questions.find((q) => q.id === open)).toMatchObject({
+      voided: true,
+      status: 'graded',
+    });
+    expect(area(model, 'a')).toMatchObject({ level: 'read', stale: true, staleFrom: 'maintain' });
+  });
+
+  it('an answered question across a rise is voided too', () => {
+    hold('a', 'maintain');
+    const answered = L.q('a', 'maintain', 'open');
+    late({ type: 'answer', questionId: answered, text: 'Before.', durationMs: 1 });
+    L.raise('a');
+    late({ type: 'grade', questionId: answered, score: 4, notes: '', gaps: [] });
+    expect(m().questions.find((q) => q.id === answered)?.voided).toBe(true);
+  });
+
+  it('a voided question graded later neither counts as a re-test nor sets lastTestedAt', () => {
+    hold('a', 'maintain');
+    const open = L.q('a', 'maintain', 'open');
+    L.raise('a');
+    const before = area(m(), 'a').lastTestedAt;
+    answerAndGrade(open, 1);
+    expect(area(m(), 'a').lastTestedAt).toBe(before);
+    L.q('a', 'maintain', 1);
+    L.q('a', 'maintain', 1);
+    expect(area(m(), 'a')).toMatchObject({ level: 'read', stale: true });
+    L.q('a', 'maintain', 1);
+    expect(area(m(), 'a')).toMatchObject({ level: 'read', stale: false });
+  });
+
+  it('a hint after a grade does not change the record', () => {
+    const id = L.q('a', 'read', 4);
+    late({ type: 'hint', questionId: id });
+    expect(m().questions.find((q) => q.id === id)).toMatchObject({ passed: true, hints: 0 });
+  });
+
+  it('a gap tag counts once per question towards recurring gaps', () => {
+    const id = L.q('a', 'read', 'open');
+    late({ type: 'answer', questionId: id, text: 'x', durationMs: 1 });
+    late({ type: 'grade', questionId: id, score: 1, notes: '', gaps: ['foo', 'foo'] });
+    expect(m().verdict.recurringGaps).toEqual([]);
+  });
+});
+
 describe('damaged log', () => {
   const at = '2026-02-01T00:00:00.000Z';
   const base = { at, sessionId: 's1', mode: 'learn', branch: 'main', commit: 'c1', dirty: false };

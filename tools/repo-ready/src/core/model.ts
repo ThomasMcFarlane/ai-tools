@@ -102,7 +102,7 @@ function raiseRevision(tracked: Tracked): void {
   const level = standing(tracked.questions).level;
   const floor = level === 'none' ? 1 : levelRank(level);
   for (const question of tracked.questions) {
-    if (counts(question) && levelRank(question.level) >= floor) question.voided = true;
+    if (levelRank(question.level) >= floor) question.voided = true;
   }
   if (level !== 'none') {
     tracked.stale = true;
@@ -237,7 +237,7 @@ function replay(
       }
       case 'hint': {
         const question = questions.get(event.questionId);
-        if (question) question.hints += 1;
+        if (question?.status === 'open') question.hints += 1;
         break;
       }
       case 'answer': {
@@ -258,7 +258,7 @@ function replay(
         question.gaps = Array.isArray(event.gaps) ? event.gaps : [];
         question.passed = event.score >= PASS_SCORE && question.hints === 0;
         const tracked = areas.get(question.areaId);
-        if (tracked) afterTest(tracked, question, event.at);
+        if (tracked && !question.voided) afterTest(tracked, question, event.at);
         break;
       }
       case 'skip': {
@@ -266,7 +266,7 @@ function replay(
         if (!question || (question.status !== 'open' && question.status !== 'answered')) break;
         question.status = 'skipped';
         const tracked = areas.get(question.areaId);
-        if (tracked) afterTest(tracked, question, event.at);
+        if (tracked && !question.voided) afterTest(tracked, question, event.at);
         break;
       }
       default:
@@ -309,7 +309,7 @@ function weakestTypes(questions: QuestionRecord[]): QType[] {
 function recurringGaps(questions: QuestionRecord[]): string[] {
   const seen = new Map<string, number>();
   for (const question of questions) {
-    for (const gap of question.gaps) seen.set(gap, (seen.get(gap) ?? 0) + 1);
+    for (const gap of new Set(question.gaps)) seen.set(gap, (seen.get(gap) ?? 0) + 1);
   }
   return [...seen.entries()]
     .filter(([, count]) => count >= 2)

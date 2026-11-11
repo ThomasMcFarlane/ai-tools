@@ -70,6 +70,16 @@ function sessionOf(model: Model, question: QuestionRecord): SessionRecord | null
   return model.sessions.find((s) => s.id === question.sessionId) ?? null;
 }
 
+function requireLiveSession(model: Model, question: QuestionRecord): SessionRecord {
+  const session = sessionOf(model, question);
+  if (session === null || session.endedAt !== null) {
+    throw new Error(
+      `question ${question.id} belongs to session ${question.sessionId || 'unknown'}, which has ended; ask a new question in the open session`,
+    );
+  }
+  return session;
+}
+
 function requireOpen(question: QuestionRecord): void {
   switch (question.status) {
     case 'open':
@@ -185,10 +195,11 @@ async function hint(deps: Deps, command: Command, id: string): Promise<void> {
   const { ctx, map, model } = await load(deps, command);
   const question = findQuestion(model, id);
   requireOpen(question);
+  const session = requireLiveSession(model, question);
   if (question.mode !== 'learn') {
     throw new Error('hints are not given in interview mode');
   }
-  await record(ctx, map, sessionOf(model, question), { type: 'hint', questionId: id });
+  await record(ctx, map, session, { type: 'hint', questionId: id });
   const hints = question.hints + 1;
   emit(ctx, { questionId: id, hints }, () => `Recorded hint ${hints} for ${id}.`);
 }
@@ -197,9 +208,10 @@ async function answer(deps: Deps, command: Command, id: string, file?: string): 
   const { ctx, map, model } = await load(deps, command);
   const question = findQuestion(model, id);
   requireOpen(question);
+  const session = requireLiveSession(model, question);
   const text = await readFileText(deps, file, 'answer');
   const durationMs = Math.max(0, deps.now().getTime() - new Date(question.askedAt).getTime());
-  await record(ctx, map, sessionOf(model, question), {
+  await record(ctx, map, session, {
     type: 'answer',
     questionId: id,
     text,
@@ -227,9 +239,10 @@ async function grade(
   if (question.status === 'graded') throw new Error(`question ${id} is already graded`);
   if (question.status === 'skipped') throw new Error(`question ${id} was skipped`);
   if (question.status !== 'answered') throw new Error(`question ${id} is not answered yet`);
+  const session = requireLiveSession(model, question);
   const notes = opts.file === undefined ? '' : await readFileText(deps, opts.file, 'grade');
-  const gaps = splitList(opts.gaps);
-  await record(ctx, map, sessionOf(model, question), {
+  const gaps = [...new Set(splitList(opts.gaps))];
+  await record(ctx, map, session, {
     type: 'grade',
     questionId: id,
     score,
@@ -248,7 +261,8 @@ async function skip(deps: Deps, command: Command, id: string): Promise<void> {
   const { ctx, map, model } = await load(deps, command);
   const question = findQuestion(model, id);
   requireOpen(question);
-  await record(ctx, map, sessionOf(model, question), { type: 'skip', questionId: id });
+  const session = requireLiveSession(model, question);
+  await record(ctx, map, session, { type: 'skip', questionId: id });
   emit(ctx, { questionId: id }, () => `Skipped ${id}.`);
 }
 

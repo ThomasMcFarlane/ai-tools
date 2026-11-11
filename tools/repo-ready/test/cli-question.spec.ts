@@ -412,4 +412,40 @@ describe('question lifecycle', () => {
     const r = await runCli(['answer', id, '--file', 'answer.txt', '--json'], world);
     expect(r.json()).toEqual({ questionId: id, durationMs: 0 });
   });
+
+  describe('a question from an ended session', () => {
+    it('cannot be answered, hinted or skipped, and nothing is written', async () => {
+      for (const command of ['answer', 'hint', 'skip']) {
+        const world = await worldWithMap('learn');
+        const id = await ask(world);
+        await ok(world, ['session', 'end']);
+        const before = await eventCount(world);
+        const args = command === 'answer' ? [command, id, '--file', 'answer.txt'] : [command, id];
+        const r = await runCli(args, world);
+        expect(r.code).toBe(2);
+        expect(r.error?.message).toMatch(/session .* has ended/);
+        expect(await eventCount(world)).toBe(before);
+      }
+    });
+
+    it('cannot be graded after a new session ended it, and nothing is written', async () => {
+      const world = await worldWithMap('learn');
+      const id = await ask(world);
+      await ok(world, ['answer', id, '--file', 'answer.txt']);
+      await ok(world, ['session', 'start', '--mode', 'learn']);
+      const before = await eventCount(world);
+      const r = await runCli(['grade', id, '--score', '4'], world);
+      expect(r.code).toBe(2);
+      expect(r.error?.message).toMatch(/session .* has ended/);
+      expect(await eventCount(world)).toBe(before);
+    });
+  });
+
+  it('grade drops repeated gap tags', async () => {
+    const world = await worldWithMap('learn');
+    const id = await ask(world);
+    await ok(world, ['answer', id, '--file', 'answer.txt']);
+    await ok(world, ['grade', id, '--score', '1', '--gaps', 'foo,foo, bar ,foo']);
+    expect((await history(world))[0]?.gaps).toEqual(['foo', 'bar']);
+  });
 });
