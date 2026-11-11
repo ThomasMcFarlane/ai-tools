@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildModel } from '../src/core/model.js';
 import type { AreaState, Level, LogEvent, Model } from '../src/core/types.js';
-import { LogBuilder, sampleMap } from './helpers.js';
+import { holdLevel, LogBuilder, sampleMap } from './helpers.js';
 
 let L: LogBuilder;
 const m = (): Model => buildModel(sampleMap(), L.events);
@@ -10,13 +10,7 @@ const area = (model: Model, id: string): AreaState => {
   if (!found) throw new Error(`no area ${id}`);
   return found;
 };
-const hold = (areaId: string, level: Level): void => {
-  for (const lv of ['read', 'maintain', 'rebuild'] as const) {
-    L.q(areaId, lv, 4);
-    L.q(areaId, lv, 4);
-    if (lv === level) break;
-  }
-};
+const hold = (areaId: string, level: Level): void => holdLevel(L, areaId, level);
 
 describe('buildModel', () => {
   beforeEach(() => {

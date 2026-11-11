@@ -3,6 +3,8 @@ export * from './core/glob.js';
 export * from './core/identity.js';
 export * from './core/map.js';
 export * from './core/model.js';
+export * from './core/next.js';
+export * from './core/stats.js';
 export * from './core/store.js';
 export * from './core/types.js';
 export * from './version.js';

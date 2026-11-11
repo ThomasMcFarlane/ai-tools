@@ -1,6 +1,7 @@
 import type { GitFacts } from '../src/core/deps.js';
 import type { RepoState } from '../src/core/identity.js';
 import {
+  LEVELS,
   QTYPES,
   type Area,
   type Level,
@@ -215,5 +216,13 @@ export class LogBuilder {
       forced: null,
     });
     return this;
+  }
+}
+
+export function holdLevel(log: LogBuilder, areaId: string, level: Level): void {
+  for (const lv of LEVELS) {
+    log.q(areaId, lv, 4);
+    log.q(areaId, lv, 4);
+    if (lv === level) break;
   }
 }
