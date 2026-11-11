@@ -185,14 +185,14 @@ The numbers below are named constants in `src/core/types.ts`.
 
 **Passing.** The agent gives each answer a whole score: 0 wrong or blank, 1 mostly wrong, 2 partly correct, 3 correct with small gaps, 4 correct and complete. An answer passes when its score is 3 or 4 and no hint was used. A skipped question counts as score 0. Passes count in both modes.
 
-**Holding a level.** An area holds a level when the person passed at least 2 of their last 3 valid graded questions at that level, and the area holds every lower level. An area with fewer than 2 valid graded questions at a level is **untested** there, which is not the same as failed; the output keeps the two apart.
+**Holding a level.** An area holds a level when the person passed at least 2 of their last 3 valid graded questions at that level, and the area holds every lower level. A skipped question counts as valid and not passed. An area is **untested** when it has fewer than 2 valid counted (graded or skipped) questions at `read`; only `read` carries the mark. Untested is not the same as failed, and the output keeps the two apart.
 
-**Stale areas.** When the agent raises an area's `revision`, the design of that area has changed. The CLI voids the graded questions at the top level the area held, and at every level above it. Lower levels stay valid.
+**Stale areas.** When the agent raises an area's `revision`, the design of that area has changed. The CLI voids the graded questions at the top level the area held, and at every level above it. Lower levels stay valid. If the area held no level, all its counted questions are voided and it gets no stale mark; it is simply untested again (an area that was already stale keeps its mark, and the count towards clearing it starts again from 0).
 
 - The area now holds one level lower, and that lower level is the one that counts in the verdict.
 - The area is marked `stale (was <level>: <label>)` and comes first in `next`, aimed at the earlier level.
 - The person earns the earlier level back by the normal rule: 2 passes in the last 3 valid questions at that level.
-- The stale mark clears when the area holds the earlier level again, or after 3 graded questions at that level on the new revision. In the second case the area keeps the lower level, without a mark.
+- The stale mark clears when the area holds the earlier level again, or after 3 questions at the earlier level have been graded or skipped on the new revision (a skipped question counts towards the 3, and questions at other levels do not). In the second case the area keeps the lower level, without a mark.
 - If the revision rises again before the mark clears, the same rule applies again from the level the area holds then, so the area drops one more level.
 
 A typing fix costs the person nothing; a design change costs one level in that area until they show they understand the change.

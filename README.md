@@ -220,7 +220,7 @@ Follow the existing conventions:
 - Source is split into `core/` (engine, no I/O assumptions) and `cli/` (commander program).
 - Dependencies are injectable so tests run offline (no real DNS or GitHub calls).
 - `--json` is supported everywhere a result is printed.
-- Exit codes are documented: `0` success or match, `1` no match or not found, `2` error, `124` timeout.
+- Exit codes are documented: `0` success or match, `1` no match or not found, `2` error, `124` timeout (only for tools that wait; `repo-ready` never waits and has no `124`).
 - State lives under `ai-tools/<name>` in the XDG state directory, overridable by `AI_TOOLS_<NAME>_STATE_DIR`.
 
 ## License

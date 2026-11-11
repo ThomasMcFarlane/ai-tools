@@ -53,7 +53,7 @@ npm run format                                # prettier --write .
 - Prose, comments and commit messages use British English.
 - No personal information anywhere in code or docs: use example.com, example.org and octo-org/hello-world in every example.
 - No code comments unless essential.
-- Exit code conventions for both CLIs: `0` success or match, `1` no match or not found, `2` error, `124` timeout.
+- Exit code conventions (repo-ready has no `124`, because it never waits): `0` success or match, `1` no match or not found, `2` error, `124` timeout.
 - Every result-printing command supports `--json`.
 - Watcher state belongs under `ai-tools/<name>` in the XDG state directory, overridable via `AI_TOOLS_<NAME>_STATE_DIR`.
 - Before touching a tool, read that tool's documentation: `tools/dns-checker/`, `tools/gh-watcher/` and `tools/repo-ready/` follow the patterns described in the root README ("Adding a tool"), and the CLI surface is the contract. Verify flags against `node tools/<tool>/dist/cli.js <command> --help` rather than guessing.
