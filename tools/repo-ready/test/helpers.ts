@@ -1,6 +1,15 @@
 import type { GitFacts } from '../src/core/deps.js';
 import type { RepoState } from '../src/core/identity.js';
-import type { Area, LogEvent, MapInput, StoredMap } from '../src/core/types.js';
+import {
+  QTYPES,
+  type Area,
+  type Level,
+  type LogEvent,
+  type MapInput,
+  type Mode,
+  type QType,
+  type StoredMap,
+} from '../src/core/types.js';
 
 export interface FakeGitState {
   toplevel: string | null;
@@ -117,4 +126,94 @@ export function sampleMap(): MapInput {
       area('c', false, ['docs/*.md'], 'docs/a.md:1'),
     ],
   };
+}
+
+export class LogBuilder {
+  events: LogEvent[] = [];
+  private time = new Date('2026-01-05T09:00:00.000Z').getTime();
+  private sessionCount = 0;
+  private questionCount = 0;
+  private sessionId: string | null = null;
+  private mode: Mode | null = null;
+  private revisions = new Map<string, number>();
+
+  private push(body: Record<string, unknown>, stepMs = 60_000): void {
+    this.time += stepMs;
+    this.events.push({
+      at: new Date(this.time).toISOString(),
+      sessionId: this.sessionId,
+      mode: this.mode,
+      branch: 'main',
+      commit: 'c1',
+      dirty: false,
+      mapCommit: 'c1',
+      ...body,
+    } as LogEvent);
+  }
+
+  session(mode: Mode = 'learn'): this {
+    this.sessionCount += 1;
+    this.sessionId = `s${this.sessionCount}`;
+    this.mode = mode;
+    this.push({ type: 'session_start' });
+    return this;
+  }
+
+  endSession(): this {
+    this.push({ type: 'session_end', auto: false });
+    this.sessionId = null;
+    this.mode = null;
+    return this;
+  }
+
+  q(
+    areaId: string,
+    level: Level,
+    score: number | 'skip' | 'open',
+    opts: {
+      qtype?: QType;
+      hints?: number;
+      durationMs?: number;
+      gaps?: string[];
+      followUpOf?: string;
+      prompt?: string;
+    } = {},
+  ): string {
+    this.questionCount += 1;
+    const questionId = `q${this.questionCount}`;
+    const qtype = opts.qtype ?? QTYPES[level][0]!;
+    this.push({
+      type: 'ask',
+      questionId,
+      areaId,
+      revision: this.revisions.get(areaId) ?? 1,
+      level,
+      qtype,
+      principleIds: [],
+      prompt: opts.prompt ?? `Question ${questionId}`,
+      evidence: [],
+      followUpOf: opts.followUpOf ?? null,
+    });
+    if (score === 'open') return questionId;
+    if (score === 'skip') {
+      this.push({ type: 'skip', questionId });
+      return questionId;
+    }
+    for (let i = 0; i < (opts.hints ?? 0); i++) this.push({ type: 'hint', questionId });
+    const durationMs = opts.durationMs ?? 60_000;
+    this.push({ type: 'answer', questionId, text: 'An answer.', durationMs }, durationMs);
+    this.push({ type: 'grade', questionId, score, notes: '', gaps: opts.gaps ?? [] });
+    return questionId;
+  }
+
+  raise(areaId: string): this {
+    const from = this.revisions.get(areaId) ?? 1;
+    this.revisions.set(areaId, from + 1);
+    this.push({
+      type: 'map_set',
+      changes: [{ kind: 'revision_raised', areaId, from, to: from + 1 }],
+      forced: null,
+    });
+    return this;
+  }
 }
