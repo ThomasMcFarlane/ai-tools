@@ -1,11 +1,15 @@
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { Command } from 'commander';
 import type { Deps } from '../core/deps.js';
+import { renderHtml } from '../core/charts/html.js';
+import { renderText } from '../core/charts/text.js';
 import { buildModel } from '../core/model.js';
 import { nextTargets, type NextResult } from '../core/next.js';
+import { CHART_KINDS, chartData, type ChartKind } from '../core/stats.js';
 import { readEvents, resetRepo } from '../core/store.js';
-import { LEVEL_LABELS, NotFoundError, type AreaState } from '../core/types.js';
-import { emit, openFromCommand, openSession, requireMap } from './context.js';
-import { formatTable, verdictText } from './output.js';
+import { NotFoundError } from '../core/types.js';
+import { collect, emit, openFromCommand, openSession, requireMap } from './context.js';
+import { areasText, formatTable, verdictText } from './output.js';
 
 function wholeNumber(value: string | undefined, flag: string, fallback: number): number {
   if (value === undefined) return fallback;
@@ -13,10 +17,6 @@ function wholeNumber(value: string | undefined, flag: string, fallback: number):
     throw new Error(`${flag} must be a whole number of 1 or more, not "${value}"`);
   }
   return Number(value);
-}
-
-function collect(value: string, previous: string[]): string[] {
-  return [...previous, value];
 }
 
 function nextText(result: NextResult): string {
@@ -55,37 +55,12 @@ async function next(
   emit(ctx, result, () => nextText(result));
 }
 
-function areaMarks(a: AreaState): string {
-  return [
-    a.retired ? 'retired' : '',
-    a.stale ? `stale${a.staleFrom === null ? '' : ` (was ${a.staleFrom})`}` : '',
-    a.untested ? 'untested' : '',
-  ]
-    .filter((m) => m.length > 0)
-    .join(', ');
-}
-
 async function levels(deps: Deps, command: Command): Promise<void> {
   const ctx = await openFromCommand(deps, command);
   const map = await requireMap(ctx);
   const model = buildModel(map, await readEvents(ctx.dir));
   emit(ctx, { areas: model.areas, verdict: model.verdict }, () =>
-    [
-      model.areas.length === 0
-        ? 'No areas.'
-        : formatTable([
-            ['AREA', 'LEVEL', 'KEY', 'NOTES', 'LAST TESTED'],
-            ...model.areas.map((a) => [
-              a.id,
-              `${a.level} (${LEVEL_LABELS[a.level]})`,
-              a.key ? 'key' : '',
-              areaMarks(a),
-              a.lastTestedAt ?? 'never',
-            ]),
-          ]),
-      '',
-      verdictText(model.verdict),
-    ].join('\n'),
+    [areasText(model.areas, { lastTested: true }), '', verdictText(model.verdict)].join('\n'),
   );
 }
 
@@ -140,6 +115,65 @@ async function exportState(deps: Deps, command: Command): Promise<void> {
   deps.print(JSON.stringify({ repo: ctx.repo, map, events }, null, 2));
 }
 
+async function chart(
+  deps: Deps,
+  command: Command,
+  kind: string,
+  opts: { format?: string; json?: boolean },
+): Promise<void> {
+  if (!CHART_KINDS.includes(kind as ChartKind)) {
+    throw new Error(`unknown chart "${kind}"; choose one of: ${CHART_KINDS.join(', ')}`);
+  }
+  const format = opts.json === true ? 'json' : (opts.format ?? 'text');
+  if (!['text', 'json', 'html'].includes(format)) {
+    throw new Error(`--format must be text, json or html, not "${format}"`);
+  }
+  const ctx = await openFromCommand(deps, command);
+  const map = await requireMap(ctx);
+  const events = await readEvents(ctx.dir);
+  const data = chartData(kind as ChartKind, map, buildModel(map, events), events);
+  if (format === 'json') deps.print(JSON.stringify(data, null, 2));
+  else if (format === 'html') deps.print(renderHtml([data], ctx.repo.key));
+  else deps.print(renderText(data));
+}
+
+function insideRoot(root: string, path: string): boolean {
+  const rel = relative(resolve(root), path);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+async function report(
+  deps: Deps,
+  command: Command,
+  opts: { format?: string; out?: string },
+): Promise<void> {
+  const format = opts.format ?? 'text';
+  if (format !== 'text' && format !== 'html') {
+    throw new Error(`--format must be text or html, not "${format}"`);
+  }
+  const ctx = await openFromCommand(deps, command);
+  const out = opts.out === undefined ? null : resolve(process.cwd(), opts.out);
+  if (out !== null && insideRoot(ctx.repo.root, out)) {
+    throw new Error(
+      `the report must not be written into the studied repository (${ctx.repo.root}); choose a path outside it`,
+    );
+  }
+  const map = await requireMap(ctx);
+  const events = await readEvents(ctx.dir);
+  const model = buildModel(map, events);
+  const charts = CHART_KINDS.map((kind) => chartData(kind, map, model, events));
+  const text =
+    format === 'html'
+      ? renderHtml(charts, ctx.repo.key)
+      : charts.map((c) => renderText(c)).join('\n\n');
+  if (out === null) {
+    deps.print(text);
+    return;
+  }
+  await deps.writeText(out, text);
+  deps.print(out);
+}
+
 async function reset(deps: Deps, command: Command, opts: { yes?: boolean }): Promise<void> {
   if (opts.yes !== true) {
     throw new Error("reset deletes this repository's map and history; pass --yes to confirm");
@@ -175,7 +209,23 @@ export function registerReadCommands(p: Command, deps: Deps): void {
     );
   p.command('export')
     .description('Print the repository, map and event log as JSON')
+    .option('--json', 'accepted for consistency; the output is always JSON')
     .action(async (_opts: unknown, command: Command) => exportState(deps, command));
+  p.command('chart')
+    .description(`Show one chart of progress (${CHART_KINDS.join(', ')})`)
+    .argument('<kind>', 'the chart to show')
+    .option('--format <format>', 'text, json or html (default text)')
+    .option('--json', 'same as --format json')
+    .action(async (kind: string, opts: { format?: string; json?: boolean }, command: Command) =>
+      chart(deps, command, kind, opts),
+    );
+  p.command('report')
+    .description('Show all charts as text, or as one self-contained HTML page')
+    .option('--format <format>', 'text or html (default text)')
+    .option('--out <path>', 'write the report to a file outside the repository')
+    .action(async (opts: { format?: string; out?: string }, command: Command) =>
+      report(deps, command, opts),
+    );
   p.command('reset')
     .description("Delete this repository's map and history")
     .option('--yes', 'confirm the deletion')

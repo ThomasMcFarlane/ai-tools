@@ -14,7 +14,15 @@ import {
   type SessionRecord,
   type StoredMap,
 } from '../core/types.js';
-import { emit, openFromCommand, openSession, record, requireMap, type Ctx } from './context.js';
+import {
+  collect,
+  emit,
+  openFromCommand,
+  openSession,
+  record,
+  requireMap,
+  type Ctx,
+} from './context.js';
 
 interface Loaded {
   ctx: Ctx;
@@ -49,10 +57,6 @@ function splitList(value: string | undefined): string[] {
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-}
-
-function collect(value: string, previous: string[]): string[] {
-  return [...previous, value];
 }
 
 function findQuestion(model: Model, id: string): QuestionRecord {

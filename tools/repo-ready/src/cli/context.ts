@@ -71,3 +71,7 @@ export function emit(ctx: Ctx, data: unknown, text: () => string): void {
   if (ctx.json) printJson(ctx.deps.print, data);
   else ctx.deps.print(text());
 }
+
+export function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}

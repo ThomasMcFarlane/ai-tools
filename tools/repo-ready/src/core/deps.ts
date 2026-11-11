@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { randomInt } from 'node:crypto';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { stateDir } from './store.js';
 
 export interface GitFacts {
@@ -22,6 +23,7 @@ export interface Deps {
   newId(prefix: 's' | 'q'): string;
   fileExists(absPath: string): Promise<boolean>;
   readText(source: string): Promise<string>;
+  writeText(absPath: string, text: string): Promise<void>;
   print(text: string): void;
 }
 
@@ -112,6 +114,10 @@ export function defaultDeps(): Deps {
       }
     },
     readText: (source) => (source === '-' ? readStdin() : readFile(source, 'utf8')),
+    async writeText(absPath, text) {
+      await mkdir(dirname(absPath), { recursive: true });
+      await writeFile(absPath, text, 'utf8');
+    },
     print: (text) => {
       process.stdout.write(`${text}\n`);
     },

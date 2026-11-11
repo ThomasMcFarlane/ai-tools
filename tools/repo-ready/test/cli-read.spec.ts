@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { NextResult } from '../src/core/next.js';
@@ -80,7 +81,7 @@ describe('read commands', () => {
     const r = await runCli(['levels'], world);
     expect(r.code).toBe(0);
     expect(r.out).toContain('Ready to be interviewed on it');
-    expect(r.out).toContain('stale (was maintain)');
+    expect(r.out).toContain('stale (was maintain: Ready to work on it)');
     expect(r.out).toContain('untested');
     expect(r.out).toContain('Verdict:');
     const json = (await runCli(['levels', '--json'], world)).json() as {
@@ -171,5 +172,65 @@ describe('read commands', () => {
     await runCli(['reset', '--yes'], world);
     await expect(stat(other)).resolves.toBeTruthy();
     await expect(readFile(join(dir, 'map.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('export accepts --json as a no-op', async () => {
+    const world = await worldWithMap();
+    const plain = (await runCli(['export'], world)).out;
+    const withFlag = await runCli(['export', '--json'], world);
+    expect(withFlag.code).toBe(0);
+    expect(withFlag.out).toBe(plain);
+  });
+
+  it('chart returns JSON data, text and html, and rejects unknown input', async () => {
+    const world = await worldWithMap(null);
+    const json = (await runCli(['chart', 'levels', '--format', 'json'], world)).json() as {
+      kind: string;
+      areas: unknown[];
+    };
+    expect(json.kind).toBe('levels');
+    expect(json.areas).toHaveLength(3);
+    const text = await runCli(['chart', 'accuracy'], world);
+    expect(text.code).toBe(0);
+    expect(text.out).toContain('No sessions yet.');
+    const html = await runCli(['chart', 'types', '--format', 'html'], world);
+    expect(html.out.startsWith('<!doctype html>')).toBe(true);
+    expect(html.out.match(/<section/g)).toHaveLength(1);
+    expect((await runCli(['chart', 'nope'], world)).code).toBe(2);
+    expect((await runCli(['chart', 'levels', '--format', 'pdf'], world)).code).toBe(2);
+    expect((await runCli(['chart', 'levels'], await makeWorld())).code).toBe(1);
+    expect((await runCli(['report'], await makeWorld())).code).toBe(1);
+  });
+
+  it('report prints five text charts separated by blank lines', async () => {
+    const world = await worldWithMap();
+    const r = await runCli(['report', '--format', 'text'], world);
+    expect(r.code).toBe(0);
+    expect(r.out.split('\n\n').length).toBeGreaterThanOrEqual(5);
+    expect(r.out).toContain('Levels');
+    expect(r.out).toContain('Timeline');
+    expect((await runCli(['report', '--format', 'json'], world)).code).toBe(2);
+  });
+
+  it('report --out writes a self-contained html file and prints its path', async () => {
+    const world = await worldWithMap();
+    const path = join(tmpdir(), 'repo-ready-example', 'report.html');
+    const r = await runCli(['report', '--format', 'html', '--out', path], world);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(path);
+    expect(world.written?.[path]?.startsWith('<!doctype html>')).toBe(true);
+    const text = await runCli(['report', '--out', path, '--format', 'text'], world);
+    expect(text.code).toBe(0);
+    expect(world.written?.[path]).toContain('Levels');
+  });
+
+  it('report --out inside the studied repository is refused and writes nothing', async () => {
+    const world = await worldWithMap();
+    for (const out of ['/w/report.html', '/w/docs/../report.html', '/w']) {
+      const r = await runCli(['report', '--format', 'html', '--out', out], world);
+      expect(r.code).toBe(2);
+      expect(r.error?.message).toContain('must not be written into the studied repository');
+    }
+    expect(Object.keys(world.written ?? {})).toEqual([]);
   });
 });

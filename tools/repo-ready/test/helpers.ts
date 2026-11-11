@@ -238,6 +238,7 @@ export interface CliWorld {
   stateRoot: string;
   files?: Record<string, string>;
   stdin?: string;
+  written?: Record<string, string>;
 }
 
 export interface CliResult {
@@ -268,6 +269,7 @@ export async function runCli(args: string[], world: CliWorld): Promise<CliResult
   const counters = idCounters.get(world) ?? {};
   idCounters.set(world, counters);
   const lines: string[] = [];
+  const written = (world.written ??= {});
   const deps: Partial<Deps> = {
     now: () => world.clock.now(),
     git: world.git,
@@ -282,6 +284,9 @@ export async function runCli(args: string[], world: CliWorld): Promise<CliResult
       const text = files[relativeToRoot(source)];
       if (text === undefined) throw new Error(`ENOENT: ${source}`);
       return text;
+    },
+    async writeText(absPath, text) {
+      written[absPath] = text;
     },
     print: (text) => {
       lines.push(text);

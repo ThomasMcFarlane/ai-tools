@@ -1,3 +1,5 @@
+export * from './core/charts/html.js';
+export * from './core/charts/text.js';
 export * from './core/deps.js';
 export * from './core/glob.js';
 export * from './core/identity.js';

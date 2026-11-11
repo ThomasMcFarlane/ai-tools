@@ -22,23 +22,29 @@ export function printJson(print: (text: string) => void, data: unknown): void {
   print(JSON.stringify(data, null, 2));
 }
 
-export function areasText(areas: AreaState[]): string {
+export function areaMarks(a: AreaState): string {
+  return [
+    a.retired ? 'retired' : '',
+    a.stale
+      ? `stale${a.staleFrom === null ? '' : ` (was ${a.staleFrom}: ${LEVEL_LABELS[a.staleFrom]})`}`
+      : '',
+    a.untested ? 'untested' : '',
+  ]
+    .filter((n) => n.length > 0)
+    .join(', ');
+}
+
+export function areasText(areas: AreaState[], opts: { lastTested?: boolean } = {}): string {
   if (areas.length === 0) return 'No areas.';
+  const lastTested = opts.lastTested === true;
   return formatTable([
-    ['AREA', 'LEVEL', 'KEY', 'NOTES'],
+    ['AREA', 'LEVEL', 'KEY', 'NOTES', ...(lastTested ? ['LAST TESTED'] : [])],
     ...areas.map((a) => [
       a.id,
       a.label,
       a.key ? 'key' : '',
-      [
-        a.retired ? 'retired' : '',
-        a.stale
-          ? `stale${a.staleFrom === null ? '' : ` (was ${a.staleFrom}: ${LEVEL_LABELS[a.staleFrom]})`}`
-          : '',
-        a.untested ? 'untested' : '',
-      ]
-        .filter((n) => n.length > 0)
-        .join(', '),
+      areaMarks(a),
+      ...(lastTested ? [a.lastTestedAt ?? 'never'] : []),
     ]),
   ]);
 }
