@@ -5,8 +5,8 @@ import { rewriteRow } from './entry'
 import type { EntryRow, Judge } from './entry'
 import { jevAsker } from './jev'
 import { DEFAULT_KEY_FILE, keyFromFile, redact } from './key'
-import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, failure, guardAfter, judge, rawFreed, readsStreamInput, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
-import type { Config, Verdict } from './policy'
+import { CHARS_PER_TOKEN, DEFAULT_SCALE, DEFAULTS, calibrateScale, estimateAfter, failure, guardAfter, judge, readsStreamInput, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import type { Config, Estimate, Verdict } from './policy'
 import { buildRotation, handoffFile, isRule, lastRotationOf, ledgerFromPrompt, ledgerFromRow, lineSplitter, parseHandover, promptsFile, REQUEST_MARKER, rotationDue, standingRules, unfinishedShells, verifyRotation } from './rotate'
 import type { LedgerEntry, RotationInput } from './rotate'
 import { goalFromMessages, truncate } from './state'
@@ -17,7 +17,7 @@ const STATS = { plugin: 'jev-compaction', key: 'stats' } as const
 const INTERACTIVE = { plugin: 'jev-compaction', key: 'interactive' } as const
 const ONE_SHOT = { plugin: 'jev-compaction', key: 'oneShot' } as const
 const GUARD = { plugin: 'jev-compaction', key: 'guard' } as const
-const RATIO = { plugin: 'jev-compaction', key: 'ratio' } as const
+const SCALE = { plugin: 'jev-compaction', key: 'scale' } as const
 const LEDGER = { plugin: 'jev-compaction', key: 'ledger' } as const
 const ROTATION = { plugin: 'jev-compaction', key: 'rotation' } as const
 // How long after `/jev-compact now` the next /compact still counts as that request.
@@ -51,6 +51,8 @@ let oneShot: boolean | undefined
 // When this module started a `/compact` through `$.command.run` in a non-interactive session: the compaction that
 // follows arrives with trigger `manual` and is the mod's own periodic one, so it gets the soft policy.
 let commandAt = 0
+// What this module's compaction hook answered last, for a `/compact` started through `$.command.run`.
+let ranCompact: SessionCompactResult | undefined
 let prescoreAt = 0
 let prescoring = false
 // Set by `/jev-compact now`: $.session.compact() is refused inside a command, and from a timer the engine skips this
@@ -58,8 +60,10 @@ let prescoring = false
 let nowPending = false
 // Estimated tokens after the compaction this hook last applied; read by the trigger that asked for it.
 let lastApplied: number | undefined
-// An applied compaction whose real effect the next turn end measures: the host's tokens before it and the raw estimate.
-let measuring: { before: number; raw: number } | undefined
+// An applied compaction whose real effect the host's next count measures (the first main request after it, read from
+// its turn.step usage; else session.measure or the next turn end): what its estimate rested on, and the estimate.
+// session.measure alone is not enough: it fires about once a turn, at its end, after the turn's own growth.
+let measuring: (Estimate & { before: number; after: number }) | undefined
 
 /** Environment `JEV_COMPACTION_API_KEY`, then `TYPESAFE_API_KEY`, then the key file. */
 async function resolveKey($: EngineInterface): Promise<string | undefined> {
@@ -158,12 +162,43 @@ async function attempt($: EngineInterface, e: SessionCompactInput, key: string, 
   const stop = () => Date.now() - started > budgetMs - config.jevTimeoutMs
   const result = await compact(e.messages, ask, config, memory, { protect, stop })
   await remember($, memory, result.scores)
-  const { value: ratio = DEFAULT_RATIO } = await $.state.get(RATIO)
-  const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / 3.5)
-  const tokensAfter = estimateAfter(tokensBefore, result.stats.charsBefore, result.stats.charsAfter, ratio)
-  // Only a real token count before the compaction can calibrate the ratio.
-  const raw = tokens === undefined ? undefined : rawFreed(result.stats.charsBefore, result.stats.charsAfter)
-  return { result, tokensBefore, tokensAfter, raw, thresholds: thresholdsFor(config, window) }
+  const { value: scale = DEFAULT_SCALE } = await $.state.get(SCALE)
+  const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / CHARS_PER_TOKEN)
+  // Without a real count there is no fixed part to tell apart: all of it scales, which errs high.
+  const fixed = tokens === undefined ? 0 : await fixedTokens($, tokens)
+  const { charsBefore, charsAfter } = result.stats
+  const tokensAfter = estimateAfter(tokensBefore, fixed, charsBefore, charsAfter, scale)
+  // Only a real token count before the compaction can calibrate the scale.
+  const estimate = tokens === undefined ? undefined : { fixed, messages: tokens - fixed, kept: charsBefore > 0 ? Math.min(1, charsAfter / charsBefore) : 1 }
+  return { result, tokensBefore, tokensAfter, estimate, thresholds: thresholdsFor(config, window) }
+}
+
+/**
+ * The context's fixed part: the host's local breakdown (`summary`, no request) less its `Messages` row. Without that
+ * row, 0: every token counts as messages, so the estimate errs high and a compaction defers rather than overshoots.
+ */
+async function fixedTokens($: EngineInterface, tokens: number): Promise<number> {
+  try {
+    const breakdown = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
+    const messages = breakdown?.categories.find((c) => c.kind === 'used' && /^messages$/i.test(c.name.trim()))
+    if (!breakdown || !messages) return 0
+    return Math.min(tokens, Math.max(0, breakdown.totalTokens - messages.tokens))
+  } catch {
+    return 0
+  }
+}
+
+/** The host's first real count after an applied compaction: learn the scale, and regrow from where it really left the context. */
+async function measured($: EngineInterface, tokens: number) {
+  const m = measuring
+  // The count from before the compaction, read again before any request after it, says nothing yet.
+  if (!m || tokens === m.before) return
+  measuring = undefined
+  const { value: scale = DEFAULT_SCALE } = await $.state.get(SCALE)
+  await $.state.set(SCALE, calibrateScale(scale, m, tokens))
+  const { value: guard = 0 } = await $.state.get(GUARD)
+  if (guard > 0) await $.state.set(GUARD, tokens)
+  $.ui.log(`jev-compaction: measured ${tokens} tokens after the compaction (estimated ${m.after})`)
 }
 
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
@@ -210,7 +245,7 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
       const freed = done.tokensBefore - done.tokensAfter
       await bump($, { applied: 1, freedTokens: freed, requests, sentencesDropped: done.result.stats.sentencesDropped, wordCharsSaved: done.result.stats.wordCharsSaved })
       lastApplied = done.tokensAfter
-      measuring = done.raw === undefined ? undefined : { before: done.tokensBefore, raw: done.raw }
+      measuring = done.estimate === undefined ? undefined : { ...done.estimate, before: done.tokensBefore, after: done.tokensAfter }
       notify($, `compacted ~${k(done.tokensBefore)} to ~${k(done.tokensAfter)} tokens (${summary(done.result)})`)
       return { messages: done.result.messages, tokensBefore: done.tokensBefore, tokensAfter: done.tokensAfter }
     }
@@ -234,15 +269,15 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
  * but runs the host's own `/compact` through `$.command.run`: the same `session.compact` chain, trigger `manual`,
  * which onCompact recognises by `commandAt` and judges as the periodic compaction it is.
  */
-async function compactBetweenTurns($: EngineInterface): Promise<void> {
+async function compactBetweenTurns($: EngineInterface): Promise<SessionCompactResult | undefined> {
   interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
-  if (interactive) {
-    await $.session.compact()
-    return
-  }
+  if (interactive) return $.session.compact()
   commandAt = Date.now()
+  ranCompact = undefined
   try {
     await $.command.run({ command: 'compact', args: '' })
+    // `/compact` answers no result of its own: what this module's hook made of it stands for it.
+    return ranCompact
   } finally {
     commandAt = 0
   }
@@ -260,17 +295,9 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
     if (await rotationTurn($, tokens)) return next(e)
     if (tokens !== undefined) {
       const t = thresholdsFor(config, window)
+      // No session.measure since an applied compaction: this turn end's count is the first real one.
+      await measured($, tokens)
       let { value: guard = 0 } = await $.state.get(GUARD)
-      // The first real count after an applied compaction: learn the ratio, and regrow from where it really left the context.
-      if (measuring) {
-        const { value: ratio = DEFAULT_RATIO } = await $.state.get(RATIO)
-        await $.state.set(RATIO, calibrate(ratio, measuring.before, measuring.raw, tokens))
-        measuring = undefined
-        if (guard > tokens) {
-          guard = tokens
-          await $.state.set(GUARD, guard)
-        }
-      }
       // The context fell below the target (a /clear or a compaction): the old attempt no longer says anything.
       if (guard > 0 && tokens < t.target) {
         guard = 0
@@ -427,8 +454,8 @@ async function onCommand($: EngineInterface, args: string) {
   }
   if (word === 'rotate') {
     if (await isRotationOff($)) return { text: 'jev-compaction: rotation is off in this identity.' }
-    interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
-    if (!interactive) return { text: 'jev-compaction: /jev-compact rotate is not available in a non-interactive (headless) session.' }
+    oneShot ??= (await $.state.get(ONE_SHOT)).value ?? false
+    if (oneShot) return { text: 'jev-compaction: /jev-compact rotate is not available in a one-shot (-p) run.' }
     const rest = args.trim().split(/\s+/).slice(1).join(' ')
     if (rest !== '' && rest.toLowerCase() !== 'dry') return { text: 'Usage: /jev-compact rotate [dry]' }
     return { text: `jev-compaction: ${await startRotation($, rest !== '', false)}` }
@@ -641,9 +668,6 @@ export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: 
 /** The rotation's part of a main turn end; true when it acted, so no periodic compaction runs at the same end. */
 async function rotationTurn($: EngineInterface, tokens: number | undefined): Promise<boolean> {
   if (await isRotationOff($)) return false
-  // Rotation asks the model for its handover with a mod-submitted prompt, unproven in an SDK session: interactive only.
-  interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
-  if (!interactive) return false
   const rot = await readRotation($)
   rot.turns++
   if (tokens !== undefined && tokens >= config.rotateHighTokens) rot.highTurns++
@@ -656,7 +680,7 @@ async function rotationTurn($: EngineInterface, tokens: number | undefined): Pro
       rotating = { dry }
       let result: SessionCompactResult | undefined
       try {
-        result = await $.session.compact()
+        result = await compactBetweenTurns($)
       } catch (err) {
         $.ui.log(`jev-compaction: rotation failed: ${message(err)}`)
       } finally {
@@ -735,10 +759,32 @@ export const register: Register = (on, options) => {
   })
   on('turn.complete', ($, e, next) => onTurnComplete($, e, next))
   on('session.append', ($, e, next) => onAppend($, e, next))
-  on('session.compact', ($, e, next) => onCompact($, e, next))
+  on('session.compact', async ($, e, next) => (ranCompact = await onCompact($, e, next)))
+  // The first main request after an applied compaction: its prompt is the compacted context, before the turn grows it.
+  on('turn.step', async function* ($, e, next) {
+    const r = yield* next(e)
+    const u = r?.usage
+    if (measuring && e.agentId === undefined && u) {
+      try {
+        await measured($, u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
+      } catch (err) {
+        $.ui.log(`jev-compaction: measurement not kept: ${message(err)}`)
+      }
+    }
+    return r
+  })
+  on('session.measure', async ($, e, next) => {
+    try {
+      if (measuring && e.context.tokens !== undefined) await measured($, e.context.tokens)
+    } catch (err) {
+      $.ui.log(`jev-compaction: measurement not kept: ${message(err)}`)
+    }
+    return next(e)
+  })
   on('command.run', { command: 'jev-compact' }, ($, e) => onCommand($, e.args))
   on('prompt.submit', async ($, e, next) => {
-    const text = ledgerFromPrompt(e)
+    interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
+    const text = ledgerFromPrompt(e, !interactive)
     if (text !== undefined) {
       try {
         if (!(await isRotationOff($))) {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { keyFromFile, parseEnvFile, redact } from './key'
-import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, rawFreed, failure, guardAfter, judge, readsStreamInput, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import { DEFAULT_SCALE, DEFAULTS, calibrateScale, estimateAfter, failure, guardAfter, judge, readsStreamInput, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Judgement } from './policy'
 
 // The 0.2 thresholds: the tests below were written against them and check the mechanics, not the defaults.
@@ -130,28 +130,39 @@ describe('policy levels', () => {
     expect(failure('auto', 'x').act).toBe('next')
     expect(failure('manual', 'x').act).toBe('next')
   })
-  test('tokens after drop by the characters removed', () => {
-    expect(estimateAfter(400_000, 350_000, 250_000)).toBe(371_429)
-    expect(estimateAfter(400_000, 0, 0)).toBe(400_000)
-    expect(estimateAfter(10_000, 900_000, 0)).toBe(0)
+  test('tokens after: the fixed part stays, the messages keep their share of characters', () => {
+    // 400k: 50k fixed, 350k messages; a quarter of the characters kept
+    expect(estimateAfter(400_000, 50_000, 1_000_000, 250_000)).toBe(137_500)
+    expect(estimateAfter(400_000, 50_000, 0, 0)).toBe(400_000)
+    expect(estimateAfter(400_000, 50_000, 1_000_000, 0)).toBe(50_000)
+    // no fixed part known: everything scales
+    expect(estimateAfter(400_000, 0, 1_000_000, 250_000)).toBe(100_000)
+    // a fixed part above the total is held to it; a scale never keeps more than everything
+    expect(estimateAfter(10_000, 50_000, 1_000_000, 0)).toBe(10_000)
+    expect(estimateAfter(400_000, 50_000, 1_000_000, 900_000, 2)).toBe(400_000)
+    expect(estimateAfter(400_000, 50_000, 1_000_000, 250_000, 0.5)).toBe(93_750)
   })
-  test('the ratio scales the tokens freed', () => {
-    expect(Math.round(rawFreed(350_000, 250_000))).toBe(28_571)
-    expect(estimateAfter(400_000, 350_000, 250_000, DEFAULT_RATIO)).toBe(342_857)
-    expect(estimateAfter(400_000, 350_000, 250_000, 3)).toBe(314_286)
+  test('tokens after: the live T3 case lands within 20% of the next request, where the old subtraction read ~6k', () => {
+    // 16 Nov 2026, stream-json session: 233,036 before; the host's breakdown puts ~28.3k outside Messages; the
+    // compaction kept about 10.8% of the messages' characters (the host counted 22,184 message tokens after); the first
+    // request after it measured 50,471.
+    const after = estimateAfter(233_036, 28_287, 1_000_000, 108_000, DEFAULT_SCALE)
+    expect(Math.abs(after - 50_471) / 50_471).toBeLessThan(0.2)
+    expect(after).toBeGreaterThan(28_287)
   })
-  test('calibration: the live gap (~33k estimated, ~108k real) moves the ratio towards the real one, step by step', () => {
-    // 302k before, raw estimate 33k: the next request showed 194k
-    const once = calibrate(DEFAULT_RATIO, 302_000, 33_000, 194_000)
-    expect(once).toBe((2 + 108_000 / 33_000) / 2)
-    expect(calibrate(once, 302_000, 33_000, 194_000)).toBeGreaterThan(once)
-    expect(estimateAfter(302_000, 33_000 * 3.5, 0, calibrate(once, 302_000, 33_000, 194_000))).toBeLessThan(210_000)
+  test('calibration: the real count moves the scale towards the measured share, step by step', () => {
+    const e = { fixed: 30_000, messages: 270_000, kept: 0.25 }
+    // estimated 30k + 67.5k; the request after showed 30k + 40.5k (thinking blocks dropped with rebuilt rows)
+    const once = calibrateScale(1, e, 70_500)
+    expect(Math.abs(once - (1 + 0.6) / 2)).toBeLessThan(1e-9)
+    expect(calibrateScale(once, e, 70_500)).toBeLessThan(once)
+    expect(calibrateScale(1, e, 30_000 + 67_500)).toBe(1)
   })
-  test('calibration: a low reading holds the ratio at 1 or more, a /clear or a tiny estimate is ignored, 6 is the ceiling', () => {
-    expect(calibrate(1, 300_000, 30_000, 299_000)).toBe(1)
-    expect(calibrate(2, 300_000, 30_000, 5_000)).toBe(2)
-    expect(calibrate(2, 300_000, 4_000, 250_000)).toBe(2)
-    expect(calibrate(6, 300_000, 30_000, 60_000)).toBe(6)
+  test('calibration: a tiny estimate or a reading at or under the fixed part is ignored; 0.2 and 2 are the bounds', () => {
+    expect(calibrateScale(1, { fixed: 30_000, messages: 270_000, kept: 0.005 }, 60_000)).toBe(1)
+    expect(calibrateScale(1, { fixed: 30_000, messages: 270_000, kept: 0.25 }, 29_000)).toBe(1)
+    expect(calibrateScale(2, { fixed: 30_000, messages: 270_000, kept: 0.25 }, 900_000)).toBe(2)
+    expect(calibrateScale(0.2, { fixed: 30_000, messages: 270_000, kept: 0.25 }, 30_100)).toBe(0.2)
   })
 })
 

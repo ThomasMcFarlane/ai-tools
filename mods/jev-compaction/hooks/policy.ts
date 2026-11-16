@@ -171,36 +171,39 @@ export function failure(trigger: SessionCompactTrigger, reason: string, tokensBe
 /** The guard after an attempt: where the context stood, or where an applied compaction left it. */
 export const guardAfter = (tokens: number, appliedTokensAfter: number | undefined) => appliedTokensAfter ?? tokens
 
-const CHARS_PER_TOKEN = 3.5
+/** Characters a token, for a history the host has not measured yet. */
+export const CHARS_PER_TOKEN = 3.5
+
+/** The scale a session starts with: the share of the messages' tokens kept is the share of their characters kept. */
+export const DEFAULT_SCALE = 1
 
 /**
- * Real tokens freed per token of the character estimate. The characters miss part of what a rewrite removes (thinking
- * blocks and per-row overhead of the rebuilt rows), and code and JSON run below 3.5 characters a token: from 14 to 24 Oct
- * 2026 applied compactions estimated ~33k freed where the next request showed ~108k (median). A session starts at a
- * cautious 2 and then learns its own ratio from the host's real token count (`calibrate`).
+ * Tokens after a compaction. The context is the fixed part (system prompt, tool schemas, skills: what the host's
+ * breakdown counts outside `Messages`), which no compaction touches, plus the messages, which keep the share of their
+ * characters the compaction kept, times the session's learnt `scale`. Proportional, so content that runs at 2 or at 4
+ * characters a token cannot drive the estimate below the fixed part, as subtracting characters at a fixed rate did
+ * (233k with ~400k characters of dense logs removed came out at ~6k; the next request measured 50k).
  */
-export const DEFAULT_RATIO = 2
+export function estimateAfter(tokensBefore: number, fixedTokens: number, charsBefore: number, charsAfter: number, scale = DEFAULT_SCALE): number {
+  const fixed = Math.min(tokensBefore, Math.max(0, fixedTokens))
+  const kept = charsBefore > 0 ? Math.min(1, Math.max(0, charsAfter / charsBefore)) : 1
+  return Math.round(fixed + (tokensBefore - fixed) * Math.min(1, kept * scale))
+}
 
-/** Tokens a compaction frees by the characters it removes alone, before the ratio. */
-export const rawFreed = (charsBefore: number, charsAfter: number) => Math.max(0, charsBefore - charsAfter) / CHARS_PER_TOKEN
-
-/**
- * Tokens after a compaction: the characters removed, at 3.5 per token and times the ratio, come off the measured total.
- * The plain ratio of characters would also shrink the system prompt and tool schemas, which no compaction touches.
- */
-export const estimateAfter = (tokensBefore: number, charsBefore: number, charsAfter: number, ratio = 1) =>
-  Math.max(0, Math.round(tokensBefore - Math.min(tokensBefore, rawFreed(charsBefore, charsAfter) * ratio)))
+/** What an applied compaction's estimate rests on, kept until the host's next real count. */
+export type Estimate = { fixed: number; messages: number; kept: number }
 
 /**
- * The ratio once the next request has measured an applied compaction: real tokens freed over the raw estimate,
- * averaged with the old ratio and held between 1 and 6. A small raw estimate, or a reading above 8 (a /clear in
- * between), says nothing and leaves the ratio as it was.
+ * The scale once the host has measured the context after an applied compaction (the first request after it): the
+ * messages' real share over the share by characters, averaged with the old scale and held between 0.2 and 2. Below
+ * 2000 estimated message tokens kept, or with a reading under the fixed part, nothing is learnt.
  */
-export function calibrate(ratio: number, tokensBefore: number, raw: number, realAfter: number): number {
-  if (raw < 5_000) return ratio
-  const measured = (tokensBefore - realAfter) / raw
-  if (measured > 8) return ratio
-  return Math.min(6, Math.max(1, (ratio + Math.max(1, measured)) / 2))
+export function calibrateScale(scale: number, e: Estimate, realAfter: number): number {
+  const expected = e.messages * e.kept
+  if (expected < 2_000 || realAfter <= e.fixed) return scale
+  const measured = (realAfter - e.fixed) / expected
+  if (!Number.isFinite(measured)) return scale
+  return Math.min(2, Math.max(0.2, (scale + Math.min(2, Math.max(0.2, measured))) / 2))
 }
 
 /**

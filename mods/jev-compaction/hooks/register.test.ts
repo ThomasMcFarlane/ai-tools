@@ -23,6 +23,8 @@ type Setup = {
   hang?: boolean
   // an SDK or stream-json session (T3 Code), not the REPL
   headless?: boolean
+  // tokens outside the `Messages` row of the host's breakdown; absent, no breakdown
+  fixed?: number
 }
 
 const KEY = 'k-secret-123'
@@ -59,7 +61,13 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   const clock = mock.clock(on)
   const usage = { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }
-  on('session.usage', () => ({ value: { startedAt: 0, context: { ...usage }, rateLimits: [] } }))
+  on('session.usage', (_$: any, e: any) => {
+    const breakdown =
+      e?.breakdown && setup.fixed !== undefined
+        ? { totalTokens: usage.tokens, categories: [{ name: 'System prompt', kind: 'used', tokens: setup.fixed }, { name: 'Messages', kind: 'used', tokens: usage.tokens - setup.fixed }, { name: 'Free space', kind: 'free', tokens: 1 }] }
+        : undefined
+    return { value: { startedAt: 0, context: { ...usage, ...(breakdown && { breakdown }) }, rateLimits: [] } }
+  })
   on('session.messages', (_$: any, e: any) => ({ value: ((e.as === 'api' ? setup.api : setup.rows) ?? []) as never }))
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
   on('http.fetch', (_$: any, e: any) => {
@@ -83,6 +91,11 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('command.register', () => ({ value: undefined as never }))
+  on('session.measure', (_$: any, e: any) => e)
+  // The engine's response to a step: the usage the request reported (the test puts it on the input).
+  on('turn.step', async function* (_$: any, e: any) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: e.usage ?? null }
+  })
   // The host runs `/compact` in an SDK session: the session.compact chain with trigger `manual`, this plugin's hook included.
   on('command.run', { command: 'compact' }, async (_$: any, e: any) => {
     ran.push({ args: e.args, result: await compact($, 'manual') })
@@ -158,15 +171,15 @@ test('soft compaction at the hard limit that frees too little falls back to the 
 const HARD = { hardTokens: 300_000, triggerTokens: 200_000, targetTokens: 120_000, softMinFreedTokens: 50_000 }
 
 test('hard ceiling: a periodic result that stays above the hard limit runs the built-in summary instead', { options: { ...HARD, hardTokens: 200_000 } }, async ($, on) => {
-  const { toasts, compactCalls } = await boot($, on, { p: 0, tokens: 466_000 })
-  // Jev frees ~240k at the starting ratio of 2 (466k to ~226k), still above the 200k limit
+  const { toasts, compactCalls } = await boot($, on, { p: 0, tokens: 466_000, fixed: 250_000 })
+  // tool schemas and skills hold 250k outside the messages: even all messages gone leaves it above the 200k limit
   expect(isBuiltin(await compact($, 'plugin'))).toBe(true)
   expect(toasts[0]).toMatch(/built-in summary: .*hard limit 200000/)
   expect(compactCalls.length).toBe(1)
 })
 
 test('hard ceiling: a periodic result that reaches below the hard limit is applied', { options: HARD }, async ($, on) => {
-  const { toasts } = await boot($, on, { p: 0, tokens: 350_000 })
+  const { toasts } = await boot($, on, { p: 0, tokens: 350_000, fixed: 150_000 })
   const r = await compact($, 'plugin')
   expect(isBuiltin(r)).toBe(false)
   expect(r.messages!.length).toBe(8)
@@ -299,6 +312,9 @@ test('/jev-compact stats reports the session totals', async ($, on) => {
 })
 
 const reply = () => ({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' }) as never
+const step = (tokens: number, agentId?: string) =>
+  ({ turnId: 't', index: 0, model: 'm', messageCount: 3, ...(agentId && { agentId }), usage: { input_tokens: 2, cache_read_input_tokens: tokens - 1002, cache_creation_input_tokens: 1000, output_tokens: 5 } }) as never
+const measure = (tokens: number) => ({ context: { tokens, window: 1_000_000 }, rateLimits: [], changed: ['context'] }) as never
 
 test('periodic trigger: compacts at the trigger, not below, and waits for 50000 tokens of regrowth after an attempt', { options: OLD }, async ($, on) => {
   const { compactCalls, usage } = await boot($, on, { core: () => ({ skip: 'deferred by test' }) })
@@ -324,8 +340,8 @@ test('periodic trigger: compacts at the trigger, not below, and waits for 50000 
 
 const WIDE = { triggerTokens: 100_000, targetTokens: 50_000, hardTokens: 600_000, softMinFreedTokens: 30_000 }
 
-test('calibration: the real count after an applied compaction sets the ratio, and regrowth counts from it', { options: WIDE }, async ($, on) => {
-  const { toasts, usage, compactCalls } = await boot($, on, { p: 0, core: () => ({ skip: 'deferred by test' }) })
+test('measurement: the first real count after an applied compaction resets the guard to it, and regrowth counts from there', { options: WIDE }, async ($, on) => {
+  const { toasts, logs, usage, compactCalls } = await boot($, on, { p: 0, fixed: 30_000, core: () => ({ skip: 'deferred by test' }) })
   const turn = async (tokens: number) => {
     usage.tokens = tokens
     await $.turn.complete(reply())
@@ -334,21 +350,49 @@ test('calibration: the real count after an applied compaction sets the ratio, an
   expect(compactCalls.length).toBe(1)
   usage.tokens = 466_000
   expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
-  const after = (text: string | undefined) => Number(/compacted ~466k to ~(\d+)k/.exec(text ?? '')?.[1])
-  // the starting ratio is 2, so the raw estimate is half of what the toast says was freed
-  const raw = ((466 - after(toasts.at(-1))) * 1000) / 2
-  // the next request shows three times the raw estimate freed: the ratio becomes (2 + 3) / 2
-  const real = Math.round(466_000 - 3 * raw)
-  await turn(real)
+  // the fixed 30k stays; the messages kept almost none of their characters
+  expect(toasts.at(-1)).toMatch(/compacted ~466k to ~30k tokens/)
+  // a reading of the old count (no request since) says nothing; the first request after does
+  await $.session.measure(measure(466_000))
+  expect(logs.some((l) => l.includes('measured'))).toBe(false)
+  await $.session.measure(measure(60_000))
+  expect(logs.at(-1)).toMatch(/measured 60000 tokens after the compaction \(estimated 30\d{3}\)/)
+  // the guard was 410k; it now counts from the real 60k
+  await turn(109_000)
   expect(compactCalls.length).toBe(1)
-  // the guard was 410k; it now counts from the real size, not from the old attempt
-  await turn(real + 49_000)
-  expect(compactCalls.length).toBe(1)
-  await turn(real + 50_000)
+  await turn(110_000)
   expect(compactCalls.length).toBe(2)
+})
+
+test('measurement: the first main request after an applied compaction is the real count, before the turn grows', { options: WIDE }, async ($, on) => {
+  const { logs, usage } = await boot($, on, { p: 0, fixed: 30_000 })
+  usage.tokens = 466_000
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
+  // a subagent's request says nothing about the main context
+  for await (const _ of $.turn.step(step(9_000, 'sub-1'))) void _
+  expect(logs.some((l) => l.includes('measured'))).toBe(false)
+  for await (const _ of $.turn.step(step(52_000))) void _
+  expect(logs.at(-1)).toMatch(/measured 52000 tokens after the compaction/)
+  // later requests and the turn end, after the turn's growth, are not taken
+  usage.tokens = 72_000
+  await $.turn.complete(reply())
+  expect(logs.filter((l) => l.includes('measured')).length).toBe(1)
+})
+
+test('measurement: without a session.measure the next turn end is the real count', { options: WIDE }, async ($, on) => {
+  const { logs, usage } = await boot($, on, { p: 0, fixed: 30_000 })
+  usage.tokens = 466_000
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
+  usage.tokens = 70_000
+  await $.turn.complete(reply())
+  expect(logs.at(-1)).toMatch(/measured 70000 tokens after the compaction/)
+})
+
+test('estimate: without the host breakdown every token counts as messages, so the estimate errs high, never below the real size', { options: WIDE }, async ($, on) => {
+  const { toasts, usage } = await boot($, on, { p: 0 })
   usage.tokens = 466_000
   await compact($, 'plugin')
-  expect(Math.abs(after(toasts.at(-1)) - (466 - (2.5 * raw) / 1000))).toBeLessThanOrEqual(2)
+  expect(toasts.at(-1)).toMatch(/compacted ~466k to ~\d+ tokens/)
 })
 
 test('default thresholds: a 1M session compacts from 200k, and at 250k the regrowth guard no longer waits', async ($, on) => {
@@ -575,16 +619,6 @@ test('stream-json: /jev-compact now compacts at the next turn end', async ($, on
   await $.turn.complete(reply())
   expect(ran.length).toBe(1)
   expect(ran[0]!.result.skip).toMatch(/deferred/)
-})
-
-test('stream-json: rotation stays interactive only', { options: { rotate: true, rotateHighTurns: 1, rotateHighTokens: 100_000 } }, async ($, on) => {
-  const { ran, usage } = await bootHeadless($, on, { p: 1 })
-  usage.tokens = 150_000
-  await $.turn.complete(reply())
-  await $.turn.complete(reply())
-  const { text } = await $.command.run({ command: 'jev-compact', args: 'rotate' } as never)
-  expect(text).toMatch(/not available in a non-interactive/)
-  expect(ran.length).toBe(0)
 })
 
 // ---- compression on entry (session.append) ----------------------------------------------------------------

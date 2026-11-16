@@ -36,8 +36,10 @@ const SHELL_ID = /\bID: ([A-Za-z0-9_-]+)/g
 const FINISHED = /<status>(completed|failed|killed|stopped)<\/status>/
 
 /** The text a prompt adds to the ledger: the person's own (composer or Remote Control bridge), never a meta prompt. */
-export function ledgerFromPrompt(e: Pick<PromptSubmitInput, 'text' | 'isMeta' | 'origin'>): string | undefined {
-  if (e.isMeta || (e.origin.kind !== 'composer' && e.origin.kind !== 'bridge')) return undefined
+export function ledgerFromPrompt(e: Pick<PromptSubmitInput, 'text' | 'isMeta' | 'origin'>, stream = false): string | undefined {
+  // In an SDK or stream-json session (T3 Code) the person types into the host, which sends the prompt as `sdk`.
+  const typed = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || (stream && e.origin.kind === 'sdk')
+  if (e.isMeta || !typed) return undefined
   return e.text.trim() === '' ? undefined : e.text
 }
 
