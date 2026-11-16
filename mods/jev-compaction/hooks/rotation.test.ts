@@ -46,7 +46,7 @@ const fields = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 })
 
-type Setup = { env?: Record<string, string>; agents?: { id: string; description: string; status: string; type: string }[]; dropWrites?: RegExp; now?: number; grepEnd?: { code: number | null; signal: string | null } }
+type Setup = { headless?: boolean; env?: Record<string, string>; agents?: { id: string; description: string; status: string; type: string }[]; dropWrites?: RegExp; now?: number; grepEnd?: { code: number | null; signal: string | null } }
 
 async function boot($: any, on: any, setup: Setup = {}) {
   const files: Record<string, string> = {}
@@ -108,8 +108,13 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('command.register', () => ({ value: undefined as never }))
+  // An SDK session: the host's `/compact`, which the mod runs there, raises the compaction with the transcript.
+  on('command.run', { command: 'compact' }, async () => {
+    await $.session.compact({ trigger: 'manual', messages } as never)
+    return {}
+  })
   on('session.start', () => ({ cwd: '/work' }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
+  await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
   const agents = setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]
   return { files, toasts, submitted, registered, spawned, compactCalls, messages, clock, agents, dropWrites: setup.dropWrites }
 }
@@ -228,6 +233,48 @@ test('dry run: writes HANDOFF.preview.md and PROMPTS.md, applies nothing, and th
   expect(preview).toContain('shell7')
   expect(compactCalls).toEqual([])
   expect(notes.join('\n')).toContain('nothing applied')
+})
+
+test('stream-json: the ledger also keeps the prompts the host sends as sdk; an interactive session does not', async ($, on) => {
+  const { files } = await boot($, on, { headless: true })
+  await say($, 'Typed in T3.', { kind: 'sdk' })
+  await say($, 'a plugin prompt', { kind: 'plugin', name: 'x' })
+  await command($, 'rotate dry')
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  expect(files[`${DIR}/PROMPTS.md`]).toContain('Typed in T3.')
+  expect(files[`${DIR}/PROMPTS.md`]).not.toContain('a plugin prompt')
+})
+
+test('interactive: an sdk prompt is not the person typing', async ($, on) => {
+  const { files } = await boot($, on)
+  await say($, 'from an sdk caller', { kind: 'sdk' })
+  await command($, 'rotate dry')
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  expect(files[`${DIR}/PROMPTS.md`]).not.toContain('from an sdk caller')
+})
+
+test('stream-json: a rotation asks for the handover at the turn end, then rotates through the host /compact and writes HANDOFF.md', async ($, on) => {
+  const { files, submitted, compactCalls, toasts } = await boot($, on, { headless: true })
+  await say($, 'Build the importer, please.', { kind: 'sdk' })
+  expect((await command($, 'rotate')).text).toContain('next turn ends')
+  await $.turn.complete(reply())
+  expect(submitted.length).toBe(1)
+  expect(submitted[0]).toContain('mcp__jev-compaction__handover')
+  await $.tool.call(fields() as never)
+  await $.turn.complete(reply())
+  expect(files[`${DIR}/HANDOFF.md`]).toContain('Ship the importer')
+  expect(files[`${DIR}/PROMPTS.md`]).toContain('Build the importer, please.')
+  expect(compactCalls).toEqual([])
+  expect(toasts.join('\n')).toMatch(/rotated: /)
+})
+
+test('stream-json: with rotate on, a due rotation starts by itself', { options: { rotate: true, rotateHighTurns: 1, rotateHighTokens: 50_000 } }, async ($, on) => {
+  const { submitted } = await boot($, on, { headless: true })
+  await $.turn.complete(reply())
+  await $.turn.complete(reply())
+  expect(submitted.length).toBe(1)
 })
 
 test('the turn end runs the rotation compaction once the handover is in, and never reaches the built-in summary', async ($, on) => {
