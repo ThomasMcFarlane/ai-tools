@@ -60,8 +60,9 @@ let prescoring = false
 let nowPending = false
 // Estimated tokens after the compaction this hook last applied; read by the trigger that asked for it.
 let lastApplied: number | undefined
-// An applied compaction whose real effect the host's next count measures (the first request after it, seen by
-// session.measure, else the next turn end): what its estimate rested on, and the estimate.
+// An applied compaction whose real effect the host's next count measures (the first main request after it, read from
+// its turn.step usage; else session.measure or the next turn end): what its estimate rested on, and the estimate.
+// session.measure alone is not enough: it fires about once a turn, at its end, after the turn's own growth.
 let measuring: (Estimate & { before: number; after: number }) | undefined
 
 /** Environment `JEV_COMPACTION_API_KEY`, then `TYPESAFE_API_KEY`, then the key file. */
@@ -759,6 +760,19 @@ export const register: Register = (on, options) => {
   on('turn.complete', ($, e, next) => onTurnComplete($, e, next))
   on('session.append', ($, e, next) => onAppend($, e, next))
   on('session.compact', async ($, e, next) => (ranCompact = await onCompact($, e, next)))
+  // The first main request after an applied compaction: its prompt is the compacted context, before the turn grows it.
+  on('turn.step', async function* ($, e, next) {
+    const r = yield* next(e)
+    const u = r?.usage
+    if (measuring && e.agentId === undefined && u) {
+      try {
+        await measured($, u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0))
+      } catch (err) {
+        $.ui.log(`jev-compaction: measurement not kept: ${message(err)}`)
+      }
+    }
+    return r
+  })
   on('session.measure', async ($, e, next) => {
     try {
       if (measuring && e.context.tokens !== undefined) await measured($, e.context.tokens)

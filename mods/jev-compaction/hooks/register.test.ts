@@ -92,6 +92,10 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   on('command.register', () => ({ value: undefined as never }))
   on('session.measure', (_$: any, e: any) => e)
+  // The engine's response to a step: the usage the request reported (the test puts it on the input).
+  on('turn.step', async function* (_$: any, e: any) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: e.usage ?? null }
+  })
   // The host runs `/compact` in an SDK session: the session.compact chain with trigger `manual`, this plugin's hook included.
   on('command.run', { command: 'compact' }, async (_$: any, e: any) => {
     ran.push({ args: e.args, result: await compact($, 'manual') })
@@ -308,6 +312,8 @@ test('/jev-compact stats reports the session totals', async ($, on) => {
 })
 
 const reply = () => ({ answer: 'done', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' }) as never
+const step = (tokens: number, agentId?: string) =>
+  ({ turnId: 't', index: 0, model: 'm', messageCount: 3, ...(agentId && { agentId }), usage: { input_tokens: 2, cache_read_input_tokens: tokens - 1002, cache_creation_input_tokens: 1000, output_tokens: 5 } }) as never
 const measure = (tokens: number) => ({ context: { tokens, window: 1_000_000 }, rateLimits: [], changed: ['context'] }) as never
 
 test('periodic trigger: compacts at the trigger, not below, and waits for 50000 tokens of regrowth after an attempt', { options: OLD }, async ($, on) => {
@@ -356,6 +362,21 @@ test('measurement: the first real count after an applied compaction resets the g
   expect(compactCalls.length).toBe(1)
   await turn(110_000)
   expect(compactCalls.length).toBe(2)
+})
+
+test('measurement: the first main request after an applied compaction is the real count, before the turn grows', { options: WIDE }, async ($, on) => {
+  const { logs, usage } = await boot($, on, { p: 0, fixed: 30_000 })
+  usage.tokens = 466_000
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
+  // a subagent's request says nothing about the main context
+  for await (const _ of $.turn.step(step(9_000, 'sub-1'))) void _
+  expect(logs.some((l) => l.includes('measured'))).toBe(false)
+  for await (const _ of $.turn.step(step(52_000))) void _
+  expect(logs.at(-1)).toMatch(/measured 52000 tokens after the compaction/)
+  // later requests and the turn end, after the turn's growth, are not taken
+  usage.tokens = 72_000
+  await $.turn.complete(reply())
+  expect(logs.filter((l) => l.includes('measured')).length).toBe(1)
 })
 
 test('measurement: without a session.measure the next turn end is the real count', { options: WIDE }, async ($, on) => {
