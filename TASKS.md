@@ -20,12 +20,13 @@ ETA: 2026-10-21 18:00 ICT
 | 7 | CLUSTER-287 hq0 disk cleanup for this repository | done | claude | cluster-287-cleanup | | 2026-10-21 18:00 ICT | Finished the merged task worktrees board-owner-gate-explicit (#12), fix-action-bundle (#14) and epic-eta-lint (#40); removed downloaded resolver lists and vendored type copies from .data scratch. Kept scripts, notes, results and the tasks-board plugin config. Was OPS-1. |
 
 ## 3. jev-compaction
-ETA: 2026-10-23 14:00 ICT
+ETA: 2026-11-16 17:00 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 8 | Shorten dropped-call notes | done | claude | jev-note-collapse | | 2026-10-23 14:00 ICT | Each dropped tool call left `[jev-compaction dropped <tool> call: <raw JSON head>; re-run if needed]` in history, one transcript row per call (about 40 to 45 tokens each). Now `[jev dropped <tool>: <readable head>]` (Bash command, else path, pattern, URL, query or prompt; 80-char cap), roughly half the tokens; old format still recognised so compacted text is never cut twice. Done in #50; version 0.2.2. Was JEV-1. |
 | 9 | Collapse runs of dropped-call notes into one expandable row | dropped | claude | jev-note-collapse | | | Dropped: the engine gives `AssistantMessage` render props no `isExpanded` and no view of neighbouring rows, so a run cannot be merged into one row with a ctrl+o expand; owner chose the shorter note (3.8) instead, 2026-10-23. Was JEV-2. |
+| 10 | Run Jev compaction in T3 Code (stream-json) sessions | in-progress | claude | jev-compaction-stream-json | | 2026-11-16 16:03 ICT | The host refuses `$.session.compact()` in SDK/stream-json sessions, so the periodic trigger never ran in T3 threads (a filedeck thread reached 350k). The mod now runs the host's `/compact` via `$.command.run` from `turn.complete` there and judges it as periodic; one-shot `-p` stays excluded; rotation stays interactive only. Version 0.5.0. |
 
 ## 4. tasks-board
 ETA: 2026-10-25 03:30 ICT

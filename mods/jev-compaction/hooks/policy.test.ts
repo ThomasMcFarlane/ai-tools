@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { keyFromFile, parseEnvFile, redact } from './key'
-import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, rawFreed, failure, guardAfter, judge, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, rawFreed, failure, guardAfter, judge, readsStreamInput, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Judgement } from './policy'
 
 // The 0.2 thresholds: the tests below were written against them and check the mechanics, not the defaults.
@@ -173,4 +173,11 @@ describe('key file', () => {
     expect(redact('bad key k-one in text', 'k-one')).toBe('bad key *** in text')
     expect(redact('plain', undefined)).toBe('plain')
   })
+})
+
+test('readsStreamInput: the stream-json input flag in either spelling, not a one-shot -p run', () => {
+  expect(readsStreamInput(['claude', '--output-format', 'stream-json', '--input-format', 'stream-json'])).toBe(true)
+  expect(readsStreamInput(['claude', '--input-format=stream-json'])).toBe(true)
+  expect(readsStreamInput(['claude', '-p', '--output-format', 'stream-json', 'hi'])).toBe(false)
+  expect(readsStreamInput(['claude', '--input-format', 'text'])).toBe(false)
 })

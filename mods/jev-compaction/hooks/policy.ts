@@ -202,3 +202,11 @@ export function calibrate(ratio: number, tokensBefore: number, raw: number, real
   if (measured > 8) return ratio
   return Math.min(6, Math.max(1, (ratio + Math.max(1, measured)) / 2))
 }
+
+/**
+ * Whether a non-interactive launch reads its prompts as a stream (`--input-format stream-json`, as T3 Code and the
+ * Agent SDK launch Claude Code): a long-lived session, unlike a one-shot `-p` run. `args` is the process's argv.
+ */
+export function readsStreamInput(args: readonly string[]): boolean {
+  return args.some((a, i) => a === '--input-format=stream-json' || (a === '--input-format' && args[i + 1] === 'stream-json'))
+}

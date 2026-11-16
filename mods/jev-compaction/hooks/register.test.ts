@@ -21,6 +21,8 @@ type Setup = {
   rows?: unknown[]
   // never answer a fetch
   hang?: boolean
+  // an SDK or stream-json session (T3 Code), not the REPL
+  headless?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -45,6 +47,8 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const toasts: string[] = []
   const logs: string[] = []
   const compactCalls: any[] = []
+  // `/compact` run through `$.command.run`, as the mod does in an SDK session, with what the compaction came to
+  const ran: { args: unknown; result: { messages?: Message[]; skip?: string } }[] = []
   const rows = mock.session(on)
   const stored = { get: () => rows.appended().map((r) => r.message as any) }
   mock.env(on, setup.env ?? { JEV_COMPACTION_API_KEY: KEY, HOME: '/home/u' })
@@ -79,9 +83,14 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('command.register', () => ({ value: undefined as never }))
+  // The host runs `/compact` in an SDK session: the session.compact chain with trigger `manual`, this plugin's hook included.
+  on('command.run', { command: 'compact' }, async (_$: any, e: any) => {
+    ran.push({ args: e.args, result: await compact($, 'manual') })
+    return {}
+  })
   on('session.start', () => ({ cwd: '/work' }))
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
-  return { requests, toasts, logs, compactCalls, usage, clock, stored }
+  await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
+  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -485,13 +494,6 @@ test('pre-scoring waits until about a batch of questions is unscored', async ($,
   expect(requests).toEqual([])
 })
 
-test('/jev-compact now says it is unavailable in a headless session', async ($, on) => {
-  await boot($, on)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: false } as never)
-  const { text } = await $.command.run({ command: 'jev-compact', args: 'now' } as never)
-  expect(text).toMatch(/not available in a non-interactive/)
-})
-
 test('a turn that did not end in an answer neither compacts nor pre-scores', async ($, on) => {
   const { compactCalls, requests, usage } = await boot($, on, { rows: transcript() })
   usage.tokens = 450_000
@@ -502,12 +504,87 @@ test('a turn that did not end in an answer neither compacts nor pre-scores', asy
   expect(requests).toEqual([])
 })
 
-test('a session that is not interactive is left alone', async ($, on) => {
-  const { compactCalls, usage } = await boot($, on)
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: false } as never)
+// ---- SDK / stream-json sessions (T3 Code) --------------------------------------------------------------------
+
+const bootHeadless = ($: any, on: any, setup: Setup = {}) => boot($, on, { ...setup, headless: true })
+
+test('stream-json: a turn end at the trigger runs /compact through the host command, judged as periodic', { options: OLD }, async ($, on) => {
+  const { ran, compactCalls, usage, toasts } = await bootHeadless($, on, { p: 0 })
+  usage.tokens = 399_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(0)
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(false)
+  expect(ran[0]!.result.messages!.length).toBeLessThan(transcript().length)
+  expect(compactCalls.length).toBe(0)
+  expect(toasts.at(-1)).toMatch(/compacted ~410k to ~\d+k? tokens/)
+})
+
+test('stream-json: the periodic compaction defers like an interactive one instead of falling back to the built-in summary', { options: OLD }, async ($, on) => {
+  const { ran, usage, toasts } = await bootHeadless($, on, { p: 1 })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.skip).toMatch(/deferred/)
+  expect(toasts.at(-1)).toMatch(/deferred/)
+  // the regrowth guard holds as in an interactive session
+  usage.tokens = 440_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+})
+
+test('stream-json: at or above the hard limit a result that stays above it runs the built-in summary', { options: { ...OLD, hardTokens: 420_000 } }, async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { p: 1 })
   usage.tokens = 450_000
   await $.turn.complete(reply())
-  expect(compactCalls.length).toBe(0)
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+})
+
+const T3_ARGS = ['claude', '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json', '--resume=abc', ''].join('\u0000')
+const ONE_SHOT_ARGS = ['claude', '-p', '--output-format', 'stream-json', '--verbose', 'hello', ''].join('\u0000')
+
+test('stream-json: a session launched as T3 Code launches it compacts; a one-shot -p run is left alone', { options: OLD }, async ($, on) => {
+  const t3 = await bootHeadless($, on, { p: 0, files: { '/proc/self/cmdline': T3_ARGS } })
+  t3.usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(t3.ran.length).toBe(1)
+})
+
+test('stream-json: a one-shot -p run never compacts at its turn end, and /jev-compact now says so', { options: OLD }, async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { p: 0, files: { '/proc/self/cmdline': ONE_SHOT_ARGS } })
+  usage.tokens = 450_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(0)
+  const { text } = await $.command.run({ command: 'jev-compact', args: 'now' } as never)
+  expect(text).toMatch(/one-shot/)
+})
+
+test('stream-json: a /compact the person sends keeps the manual policy', { options: OLD }, async ($, on) => {
+  await bootHeadless($, on, { p: 1 })
+  expect(isBuiltin(await compact($, 'manual'))).toBe(true)
+})
+
+test('stream-json: /jev-compact now compacts at the next turn end', async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { p: 1 })
+  usage.tokens = 100_000
+  const { text } = await $.command.run({ command: 'jev-compact', args: 'now' } as never)
+  expect(text).toContain('next turn ends')
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.skip).toMatch(/deferred/)
+})
+
+test('stream-json: rotation stays interactive only', { options: { rotate: true, rotateHighTurns: 1, rotateHighTokens: 100_000 } }, async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { p: 1 })
+  usage.tokens = 150_000
+  await $.turn.complete(reply())
+  await $.turn.complete(reply())
+  const { text } = await $.command.run({ command: 'jev-compact', args: 'rotate' } as never)
+  expect(text).toMatch(/not available in a non-interactive/)
+  expect(ran.length).toBe(0)
 })
 
 // ---- compression on entry (session.append) ----------------------------------------------------------------

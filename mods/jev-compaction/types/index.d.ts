@@ -57,6 +57,8 @@ declare module 'claude-code' {
       ratio: number
       // whether the session is interactive, kept so a hot reload knows
       interactive: boolean
+      // a one-shot `-p` run (non-interactive, no `--input-format stream-json`): no periodic compaction there
+      oneShot: boolean
       // every prompt of the person this session (since install, or backfilled from the transcript)
       ledger: JevCompactionLedgerEntry[]
       rotation: JevCompactionRotation

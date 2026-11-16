@@ -5,7 +5,7 @@ import { rewriteRow } from './entry'
 import type { EntryRow, Judge } from './entry'
 import { jevAsker } from './jev'
 import { DEFAULT_KEY_FILE, keyFromFile, redact } from './key'
-import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, failure, guardAfter, judge, rawFreed, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
+import { DEFAULT_RATIO, DEFAULTS, calibrate, estimateAfter, failure, guardAfter, judge, rawFreed, readsStreamInput, resolveConfig, shouldTrigger, thresholdsFor } from './policy'
 import type { Config, Verdict } from './policy'
 import { buildRotation, handoffFile, isRule, lastRotationOf, ledgerFromPrompt, ledgerFromRow, lineSplitter, parseHandover, promptsFile, REQUEST_MARKER, rotationDue, standingRules, unfinishedShells, verifyRotation } from './rotate'
 import type { LedgerEntry, RotationInput } from './rotate'
@@ -15,6 +15,7 @@ import type { CompactResult, Protect } from './types'
 const SCORES = { plugin: 'jev-compaction', key: 'scores' } as const
 const STATS = { plugin: 'jev-compaction', key: 'stats' } as const
 const INTERACTIVE = { plugin: 'jev-compaction', key: 'interactive' } as const
+const ONE_SHOT = { plugin: 'jev-compaction', key: 'oneShot' } as const
 const GUARD = { plugin: 'jev-compaction', key: 'guard' } as const
 const RATIO = { plugin: 'jev-compaction', key: 'ratio' } as const
 const LEDGER = { plugin: 'jev-compaction', key: 'ledger' } as const
@@ -40,8 +41,16 @@ let compacting = false
 let cachedKey: string | undefined
 let isNow = false
 let nowAt = 0
-// Whether the session is interactive: undefined until known (a hot reload re-reads it from $.state).
+// Whether the session is interactive: undefined until known (a hot reload re-reads it from $.state). An SDK or
+// stream-json session (T3 Code, `-p`) is not: there `$.session.compact()` is refused and the mod runs the host's
+// `/compact` command instead (see compactBetweenTurns).
 let interactive: boolean | undefined
+// A one-shot `-p` run: a compaction at its end would add a second `result` to the output a caller reads, so the
+// periodic trigger leaves it alone. Undefined until known.
+let oneShot: boolean | undefined
+// When this module started a `/compact` through `$.command.run` in a non-interactive session: the compaction that
+// follows arrives with trigger `manual` and is the mod's own periodic one, so it gets the soft policy.
+let commandAt = 0
 let prescoreAt = 0
 let prescoring = false
 // Set by `/jev-compact now`: $.session.compact() is refused inside a command, and from a timer the engine skips this
@@ -167,12 +176,16 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
   if (e.agentId !== undefined || e.trigger === 'precompute' || !Array.isArray(e.messages)) return next(e)
   const now = isNow && Date.now() - nowAt < NOW_VALID_MS && (e.trigger === 'plugin' || e.trigger === 'manual')
   isNow = false
+  // In a non-interactive session the mod's periodic compaction comes through `/compact`, so as `manual`.
+  const ours = e.trigger === 'manual' && commandAt > 0 && Date.now() - commandAt < NOW_VALID_MS
+  commandAt = 0
+  const trigger = ours ? 'plugin' : e.trigger
   // The user asked for something specific: that is the built-in summary's job.
   if (e.instructions) return next(e)
   // The list may be cut. A soft compaction waits (the engine compacts at its own limit) unless the context is at or
   // above the hard limit; auto and manual, which must produce something, fall back.
   if (e.messages.length >= TRANSCRIPT_CAP) {
-    if (e.trigger !== 'plugin' && !now) return next(e)
+    if (trigger !== 'plugin' && !now) return next(e)
     const usage = await $.session.usage().then((u) => u.context, () => undefined)
     return usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard ? next(e) : { skip: 'jev-compaction: transcript over 4096 messages' }
   }
@@ -185,11 +198,11 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
     key = await resolveKey($)
     if (!key) throw new Error('no Jev API key (environment or key file)')
     done = await attempt($, e, key, usage.tokens, usage.window)
-    verdict = judge({ trigger: e.trigger, isNow: now, ...done, minFreedTokens: config.minFreedTokens })
+    verdict = judge({ trigger, isNow: now, ...done, minFreedTokens: config.minFreedTokens })
   } catch (err) {
     const text = redact(message(err), key)
     if (/\((401|403)\)/.test(text)) cachedKey = undefined
-    verdict = failure(now ? 'plugin' : e.trigger, text, usage?.tokens, usage && thresholdsFor(config, usage.window).hard)
+    verdict = failure(now ? 'plugin' : trigger, text, usage?.tokens, usage && thresholdsFor(config, usage.window).hard)
   }
   const requests = done?.result.stats.requests ?? 0
   try {
@@ -215,11 +228,31 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
   return next(e)
 }
 
+/**
+ * Compacts between turns. Interactive: `$.session.compact()` (trigger `plugin`). An SDK or stream-json session
+ * (T3 Code runs every agent that way) refuses that call ("compaction here runs inside a turn (a /compact prompt)"),
+ * but runs the host's own `/compact` through `$.command.run`: the same `session.compact` chain, trigger `manual`,
+ * which onCompact recognises by `commandAt` and judges as the periodic compaction it is.
+ */
+async function compactBetweenTurns($: EngineInterface): Promise<void> {
+  interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
+  if (interactive) {
+    await $.session.compact()
+    return
+  }
+  commandAt = Date.now()
+  try {
+    await $.command.run({ command: 'compact', args: '' })
+  } finally {
+    commandAt = 0
+  }
+}
+
 // `session.measure` fires while the turn still runs, where `$.session.compact()` rejects; `turn.complete` is after it.
 async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Next<'turn.complete'>) {
   if ((e as { agentId?: string }).agentId !== undefined || e.reason !== 'answer') return next(e)
-  interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
-  if (!interactive) return next(e)
+  oneShot ??= (await $.state.get(ONE_SHOT)).value ?? false
+  if (oneShot) return next(e)
   if (compacting) return next(e)
   compacting = true
   try {
@@ -251,7 +284,7 @@ async function onTurnComplete($: EngineInterface, e: TurnCompleteInput, next: Ne
           nowAt = Date.now()
         }
         lastApplied = undefined
-        await $.session.compact()
+        await compactBetweenTurns($)
         await $.state.set(GUARD, guardAfter(tokens, lastApplied))
       } else if (tokens >= t.trigger - config.prescoreMarginTokens && tokens < t.trigger && tokens >= prescoreAt + config.prescoreEveryTokens && !prescoring) {
         // Off the critical path: the turn is not held open while Jev answers.
@@ -387,8 +420,8 @@ async function onCommand($: EngineInterface, args: string) {
     }
   }
   if (word === 'now') {
-    interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
-    if (!interactive) return { text: 'jev-compaction: /jev-compact now is not available in a non-interactive (headless) session.' }
+    oneShot ??= (await $.state.get(ONE_SHOT)).value ?? false
+    if (oneShot) return { text: 'jev-compaction: /jev-compact now is not available in a one-shot (-p) run.' }
     nowPending = true
     return { text: 'jev-compaction: will compact when your next turn ends (the host does not allow it from inside a command).' }
   }
@@ -608,6 +641,9 @@ export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: 
 /** The rotation's part of a main turn end; true when it acted, so no periodic compaction runs at the same end. */
 async function rotationTurn($: EngineInterface, tokens: number | undefined): Promise<boolean> {
   if (await isRotationOff($)) return false
+  // Rotation asks the model for its handover with a mod-submitted prompt, unproven in an SDK session: interactive only.
+  interactive ??= (await $.state.get(INTERACTIVE)).value ?? false
+  if (!interactive) return false
   const rot = await readRotation($)
   rot.turns++
   if (tokens !== undefined && tokens >= config.rotateHighTokens) rot.highTurns++
@@ -660,7 +696,8 @@ const activeThresholds = (c: Config) =>
 export const register: Register = (on, options) => {
   config = resolveConfig(options)
   compacting = isNow = nowPending = false
-  interactive = undefined
+  commandAt = 0
+  interactive = oneShot = undefined
   prescoreAt = 0
   prescoring = false
   measuring = undefined
@@ -671,6 +708,17 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     interactive = (e as { isInteractive?: boolean }).isInteractive !== false
     await $.state.set(INTERACTIVE, interactive)
+    // Non-interactive is either a long-lived SDK / stream-json session (T3 Code) or a one-shot `-p` run; only the
+    // launch arguments tell them apart. Unreadable (no /proc): counted as a stream session.
+    oneShot = false
+    if (!interactive) {
+      try {
+        oneShot = !readsStreamInput((await $.fs.read('/proc/self/cmdline')).split('\u0000'))
+      } catch {
+        oneShot = false
+      }
+    }
+    await $.state.set(ONE_SHOT, oneShot)
     $.ui.log(`jev-compaction: ${activeThresholds(config)}`)
     try {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now), show totals (stats), or rotate the session (rotate [dry])', argumentHint: 'now | stats | rotate [dry]' })
