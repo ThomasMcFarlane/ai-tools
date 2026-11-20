@@ -80,3 +80,19 @@ A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person o
 | 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | done | claude | repo-ready | | 2026-11-12 12:00 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/89 (cf946bc)<br>262 tests; whole-branch review; a fresh agent ran three sessions from the skill alone<br>Design and plan in docs/superpowers (specs, plans) |
 | 22 | Release repo-ready 0.1.0 | done | claude | | 9.21 | 2026-11-12 01:00 ICT | Released repo-ready-v0.1.0 (run 43072568860); checksum OK<br>Installed on hq0 at ~/.local/bin/repo-ready<br>Skill added to shared-skills in ThomasMcFarlane/.ais#95 |
 | 23 | Close the remaining map-edit and identity gaps in repo-ready | todo | | | 9.21 | | From the final review; each needs a deliberate map edit or a rare setup<br>Paths moved onto an active folder let an area be dropped later<br>"Files gone" reads the git index, not committed files<br>An older-key history is hidden once another checkout starts a higher-priority one<br>State-folder guard does not follow symlinks |
+
+## 10. Shopper agent
+
+ETA: 2026-11-21 18:00 ICT
+
+
+
+A price comparison agent CLI (`agents/shopper`) on a shared `@ai-tools/agent-kit`, with site adapters, scheduled watches and skills.
+
+
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+
+|---|---|---|---|---|---|---|---|
+
+| 26 | Shopper agent, adapters, watches and skill | in_progress | claude | shopper-agent | | 2026-11-21 18:00 ICT | PR https://github.com/ThomasMcFarlane/ai-tools/pull/95<br>Adapters: lazada-th, aliexpress, jib, advice, ihavecpu; bnn and shopee-th need the user browser<br>Skill in shared-skills: ThomasMcFarlane/.ais#131 |

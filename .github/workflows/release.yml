@@ -1,14 +1,15 @@
 name: Release
 
-# Each CLI tool is released on its own version, tagged <tool>-v<version>
+# Each CLI (tools/<name> or agents/<name>) is released on its own version, tagged <tool>-v<version>
 # (for example dns-checker-v0.2.0). Two ways to release:
 #   1. Push a tag matching <tool>-v*.
 #   2. Run this workflow manually with `tool` and `version` inputs (version without the
 #      leading v). The tag <tool>-v<version> is then created on the dispatched commit
 #      once the build and tests pass. Tags pushed with GITHUB_TOKEN do not trigger other
 #      workflows, so the whole release runs inside this single workflow.
-# The version must equal the version in tools/<tool>/package.json. When adding a tool
-# with a build:bin script, extend the tag patterns and the `tool` choices below.
+# The version must equal the version in tools/<tool>/package.json or
+# agents/<tool>/package.json. When adding a CLI with a build:bin script, extend the tag
+# patterns and the `tool` choices below.
 
 on:
   push:
@@ -16,6 +17,7 @@ on:
       - 'dns-checker-v*'
       - 'gh-watcher-v*'
       - 'repo-ready-v*'
+      - 'shopper-v*'
   workflow_dispatch:
     inputs:
       tool:
@@ -26,6 +28,7 @@ on:
           - dns-checker
           - gh-watcher
           - repo-ready
+          - shopper
       version:
         description: 'Version to release, without the leading v (for example 0.2.0)'
         required: true
@@ -51,6 +54,7 @@ jobs:
       contents: read
     outputs:
       tool: ${{ steps.resolve.outputs.tool }}
+      dir: ${{ steps.resolve.outputs.dir }}
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
@@ -85,13 +89,21 @@ jobs:
             echo "::error::version must look like 0.2.0 or 0.2.0-rc.1, got '$version'"
             exit 1
           fi
-          if ! printf '%s' "$tool" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || ! grep -q '"build:bin"' "tools/$tool/package.json" 2>/dev/null; then
-            echo "::error::'$tool' is not a tool under tools/ with a build:bin script"
+          dir=""
+          if printf '%s' "$tool" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
+            for root in tools agents; do
+              if grep -q '"build:bin"' "$root/$tool/package.json" 2>/dev/null; then
+                dir="$root/$tool"
+              fi
+            done
+          fi
+          if [ -z "$dir" ]; then
+            echo "::error::'$tool' is not a CLI under tools/ or agents/ with a build:bin script"
             exit 1
           fi
-          package_version=$(node -p "require('./tools/$tool/package.json').version")
+          package_version=$(node -p "require('./$dir/package.json').version")
           if [ "$version" != "$package_version" ]; then
-            echo "::error::version $version does not match tools/$tool/package.json ($package_version); bump package.json through a PR first"
+            echo "::error::version $version does not match $dir/package.json ($package_version); bump package.json through a PR first"
             exit 1
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -107,6 +119,7 @@ jobs:
             *) prerelease=false ;;
           esac
           echo "tool=$tool" >> "$GITHUB_OUTPUT"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
@@ -139,6 +152,7 @@ jobs:
       contents: read
     env:
       TOOL: ${{ needs.prepare.outputs.tool }}
+      TOOL_DIR: ${{ needs.prepare.outputs.dir }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -154,7 +168,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir release-assets
-          cp "tools/$TOOL"/bin/* release-assets/
+          cp "$TOOL_DIR"/bin/* release-assets/
           cd release-assets
           expected=5
           count=$(ls | wc -l)

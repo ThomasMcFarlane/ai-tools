@@ -54,3 +54,18 @@ gh-watcher wait --repo octo-org/hello-world --pr 17 --json
 | 124  | Timeout               |
 
 All three CLIs support `--json` on every result-printing command. Prefer `--json` when an agent consumes the output.
+
+## Shopping (shopper)
+
+`shopper` compares prices and variants across online shops. The CLI fetches, parses, filters and ranks with fixed code. You plan the queries, judge relevance and report. Build it with `npm install && npm run build -w @ai-tools/agent-kit -w @ai-tools/shopper`; the binary is then at `<repo>/agents/shopper/dist/cli.js`. Use it when the user wants to buy, price-check, compare or watch the price of a product.
+
+- Start: `shopper defaults show --json` and `shopper learn list --json`. Apply both.
+- Search: `shopper search <query...> --json` (flags `--sites`, `--condition`, `--max-price`, `--limit`, `--include-oos`).
+- Read real variants and prices: `shopper listing <url> --json`. Always do this for marketplaces such as AliExpress.
+- Report a table: price, shop and site, stock, condition, variant, link, time seen. Report only what the CLI printed in this run. Never invent a price, a link or an alternative.
+- If the output has `conditionUnresolved`, ask the user which conditions to allow, then search again with `--condition`.
+- Sites in the mode `user-browser` (`needsUserBrowser`) need the logged-in browser of the user. The CLI never opens them. Ask first. Then run `shopper script <site> search` in a tab that the user already has open, save the JSON and run `shopper parse <site> search --url <tab url> --file <snapshot.json> --json`. Never open a tab or navigate the browser of the user.
+- Learn: `shopper learn add --kind block|selector|method|correction|note --key <key> --value <json> [--site <id>] [--expires 24h] [--evidence <text>]`. At the end run `shopper learn flush`.
+- Watches: `shopper watch add|list|show|edit|remove|run|history`. A systemd user timer from `shopper watch timer --write` runs `shopper watch run-due --notify`. Alerts go to `SHOPPER_NOTIFY_CMD`. Scheduled runs skip `user-browser` sites.
+- Environment: `AGENTS_MEMORY_DIR`, `AGENTS_STATE_DIR`, `AGENTS_MEMORY_PERSIST`, `AGENTS_MEMORY_READONLY`, `AGENTS_BROWSER_PROFILE_DIR`, `SHOPPER_DEFAULTS`, `SHOPPER_NOTIFY_CMD`.
+- Exit codes: `0` ok, `1` nothing found, `2` error. On `2`, read the message and fix the call.

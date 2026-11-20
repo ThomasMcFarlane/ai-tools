@@ -26,8 +26,23 @@ const singleTarget = singleTargetFromEnv();
 let renamed = 0;
 let alreadyFinal = 0;
 
-for (const tool of readdirSync('tools')) {
-  const binDir = join('tools', tool, 'bin');
+function listCliDirs() {
+  const dirs = [];
+  for (const root of ['tools', 'agents']) {
+    let names;
+    try {
+      names = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      dirs.push({ tool: name, binDir: join(root, name, 'bin') });
+    }
+  }
+  return dirs;
+}
+
+for (const { tool, binDir } of listCliDirs()) {
   let entries;
   try {
     entries = readdirSync(binDir, { withFileTypes: true });
@@ -62,7 +77,7 @@ for (const tool of readdirSync('tools')) {
 }
 
 if (renamed === 0 && alreadyFinal === 0) {
-  console.error('no pkg binaries found under tools/*/bin');
+  console.error('no pkg binaries found under tools/*/bin or agents/*/bin');
   process.exit(1);
 }
 console.log(

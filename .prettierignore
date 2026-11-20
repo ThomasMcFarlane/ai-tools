@@ -1,2 +1,4 @@
 mods/
 actions/**/fixture/
+agents/*/test/fixtures/
+agents/*/*.schema.json

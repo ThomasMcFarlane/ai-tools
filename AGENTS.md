@@ -11,6 +11,8 @@ ai-tools/
 │   ├── gh-watcher/    # @ai-tools/gh-watcher: GitHub Actions status/wait/watch CLI
 │   ├── repo-ready/    # @ai-tools/repo-ready: repository readiness quiz engine CLI (map, sessions, levels, charts)
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check: TASKS.md format check CLI
+├── agents/
+│   └── shopper/       # @ai-tools/shopper: price comparison agent CLI (rules in agents/PRINCIPLES.md)
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin (docked TASKS.md pane); checked with `claude plugin validate`, excluded from eslint/tsc/vitest
 │   ├── plan-view/     # Claude Code plugin (docked markdown view of Claude's plan files); same checks
@@ -23,12 +25,13 @@ ai-tools/
 │   └── tasks-board-check/  # composite GitHub Action with a committed bundled dist/
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
 ├── packages/
-│   └── hooks/         # @ai-tools/hooks: shared exec/webhook/file/notify hook library
+│   ├── hooks/         # @ai-tools/hooks: shared exec/webhook/file/notify hook library
+│   └── agent-kit/     # @ai-tools/agent-kit: memory, learnings, HTTP and headless browser helpers for agents
 ├── skills/            # installable skills/prompts for AI platforms (see skills/README.md)
 └── .github/           # CI workflows
 ```
 
-Tool source layout (dns-checker, gh-watcher and repo-ready): `src/core/` (engine and stores) and `src/cli/` (commander program). Tests live in `test/` and run offline with injected dependencies.
+Tool source layout (dns-checker, gh-watcher, repo-ready and agents/shopper): `src/core/` (engine and stores) and `src/cli/` (commander program). Tests live in `test/` and run offline with injected dependencies.
 
 ## Commands
 
@@ -42,7 +45,7 @@ npm run lint                                  # eslint .
 npm run format                                # prettier --write .
 ```
 
-`npm run build:bin` packages each CLI as a self-contained native binary under `tools/<tool>/bin/` (no Node needed at runtime); release automation lives in `.github/workflows/release.yml`; each CLI is released on its own `<tool>-v<version>` tag, and the version must match `tools/<tool>/package.json`.
+`npm run build:bin` packages each CLI as a self-contained native binary under `tools/<tool>/bin/` or `agents/<tool>/bin/` (no Node needed at runtime); release automation lives in `.github/workflows/release.yml`; each CLI is released on its own `<tool>-v<version>` tag, and the version must match `tools/<tool>/package.json` or `agents/<tool>/package.json`.
 
 ## Conventions
 
@@ -56,4 +59,5 @@ npm run format                                # prettier --write .
 - Exit code conventions (repo-ready has no `124`, because it never waits): `0` success or match, `1` no match or not found, `2` error, `124` timeout.
 - Every result-printing command supports `--json`.
 - Watcher state belongs under `ai-tools/<name>` in the XDG state directory, overridable via `AI_TOOLS_<NAME>_STATE_DIR`.
+- Before you add or change an agent in `agents/`, read `agents/README.md` and `agents/PRINCIPLES.md`. Agents never touch the browser of the user.
 - Before touching a tool, read that tool's documentation: `tools/dns-checker/`, `tools/gh-watcher/` and `tools/repo-ready/` follow the patterns described in the root README ("Adding a tool"), and the CLI surface is the contract. Verify flags against `node tools/<tool>/dist/cli.js <command> --help` rather than guessing.

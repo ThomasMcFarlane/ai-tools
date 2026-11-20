@@ -1,0 +1,30 @@
+{
+  "base": "11,799.00",
+  "skus": [
+    {
+      "skuId": "25339641580",
+      "options": {
+        "Capacity": "8GB"
+      },
+      "price": "6,950.00",
+      "disabled": false
+    },
+    {
+      "skuId": "25339641581",
+      "options": {
+        "Capacity": "16GB"
+      },
+      "price": "11,799.00",
+      "disabled": false
+    },
+    {
+      "skuId": "25339641582",
+      "options": {
+        "Capacity": "32GB"
+      },
+      "price": "22,999.00",
+      "disabled": false
+    }
+  ],
+  "disabled": false
+}

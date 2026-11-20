@@ -1,0 +1,209 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ShopperWatches",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "number",
+      "const": 1,
+      "description": "Schema version. Always 1."
+    },
+    "watches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,40}$",
+            "description": "Unique watch id."
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Search query sent to the shops."
+          },
+          "spec": {
+            "type": "object",
+            "properties": {
+              "include": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Case-insensitive regexes. A title must match every one."
+              },
+              "exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Case-insensitive regexes. A title that matches any one is dropped."
+              }
+            },
+            "additionalProperties": false,
+            "default": {}
+          },
+          "sites": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Site ids. null uses the sites of the defaults."
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "new",
+                    "used",
+                    "refurbished",
+                    "unknown"
+                  ]
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Allowed conditions. null uses the condition rules of the defaults."
+          },
+          "maxPrice": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Price threshold in the watch currency."
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "ISO 4217 code. null uses the currency of the defaults."
+          },
+          "interval": {
+            "type": "string",
+            "default": "6h"
+          },
+          "notify": {
+            "type": "object",
+            "properties": {
+              "on": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "new",
+                    "price_drop",
+                    "back_in_stock",
+                    "threshold",
+                    "scanner_failing"
+                  ]
+                },
+                "default": [
+                  "new",
+                  "price_drop",
+                  "back_in_stock",
+                  "threshold",
+                  "scanner_failing"
+                ]
+              },
+              "minDropPercent": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 0
+              }
+            },
+            "additionalProperties": false,
+            "default": {}
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastRunAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lastStatus": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "changes",
+                  "error",
+                  "baseline"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "id",
+          "query",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "additionalProperties": false
+}

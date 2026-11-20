@@ -1,0 +1,45 @@
+{
+  "name": "@ai-tools/shopper",
+  "version": "0.1.0",
+  "description": "Price comparison agent CLI for online shops",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "shopper": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "defaults.schema.json",
+    "watches.schema.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:bin": "pkg --no-bytecode --out-path bin -t ${PKG_TARGETS:-node22-linux-x64,node22-linux-arm64,node22-macos-x64,node22-macos-arm64,node22-win-x64} .",
+    "schema": "tsc -p tsconfig.build.json && node dist/cli.js defaults schema > defaults.schema.json && node dist/cli.js watch schema > watches.schema.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-tools/agent-kit": "^0.1.0",
+    "commander": "^12.1.0",
+    "linkedom": "^0.18.5",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}
