@@ -35,7 +35,7 @@ ETA: 2026-10-25 03:30 ICT
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 24 | Numeric board IDs, <epic>.<task> references, cleanup PR self-merge | done | claude | board-numeric-ids | | 2026-10-24 23:00 ICT | Lint rule numeric-id, renumbering in the format agent prompt, agent merges the cleanup PR when CI is green; ships as tasks-board-check-v3 and tasks-board 0.7.0. Done in #51 (642c550); tagged tasks-board-check-v3.0.0, tasks-board-check-v3 and tasks-board-v0.7.0; skill docs in ThomasMcFarlane/.ais#82. Was 10. |
-| 11 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated |
+| 25 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated.<br>Was 11. |
 | 12 | Fix the failing pane-label target test | done | claude | pane-label-test | | 2026-10-25 03:30 ICT | Test stale since #41 (42a78a5): pane auto-opens only after a render reports the sidebar layout<br>Test-only fix: mount AbovePrompt with isFullscreen before asserting<br>claude plugin test 111 pass, 0 fail |
 | 13 | Fix fixer edge cases: trailing prose tables, empty surplus cells, short rows | done | claude | fixboard-edges | | 2026-10-25 03:00 ICT | Done in #55 (6846c92)<br>Tags tasks-board-check-v4.0.1, tasks-board-check-v4, tasks-board-v0.8.1 |
 
@@ -71,7 +71,7 @@ ETA: 2026-11-06 18:30 ICT
 | 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | done | claude | | 8.19 | 2026-11-06 18:30 ICT | Released gh-watcher-v0.5.0 (run 42209707033); checksum OK<br>Installed on hq0; 0.4.0 kept as gh-watcher.v0.4.0<br>Skill doc updated in ThomasMcFarlane/.ais |
 
 ## 9. repo-ready readiness quiz tool and skills
-ETA: 2026-11-19 18:00 ICT
+ETA: 2026-12-15 18:00 ICT
 
 A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person on a repository's design, track every answer, and report a readiness level per design area.
 
