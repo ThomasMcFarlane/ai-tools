@@ -133,7 +133,7 @@ export const shopperDefaultsSchema = z
       .object({
         userBrowserSites: z
           .array(z.string())
-          .default(['shopee-th', 'bnn'])
+          .default(['shopee-th', 'bnn', 'facebook-marketplace'])
           .describe('Sites the CLI never fetches. The user supplies the page from an open tab.'),
       })
       .default({}),
@@ -174,7 +174,7 @@ export function builtinDefaults(adapterIds: string[]): Record<string, unknown> {
       showShop: true,
       timeZones: ['UTC'],
     },
-    browser: { userBrowserSites: ['shopee-th', 'bnn'] },
+    browser: { userBrowserSites: ['shopee-th', 'bnn', 'facebook-marketplace'] },
     watch: {
       interval: '6h',
       notifyOn: [...WATCH_EVENTS],

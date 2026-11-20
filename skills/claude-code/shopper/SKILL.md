@@ -13,7 +13,7 @@ Use these instructions when the user wants to buy something, shop for it, price-
 
 - **Deterministic first.** The CLI fetches, parses, filters, ranks and records. You choose queries, judge whether a listing is the item that the user asked for, judge whether a variant matches, and talk to the user.
 - **Report only what the CLI returned in this run.** Never report a listing or a price that the CLI did not print. Never invent an alternative from a spec sheet. Never use a price from a search snippet.
-- **Never open the browser of the user on your own.** See "Sites that need the browser of the user".
+- **Never take over the browser of the user.** Use only tabs that you create. See "Sites that need the browser of the user".
 - **Failures are failures.** Say which sites you skipped or which failed, and why.
 
 ## Requirements
@@ -55,17 +55,16 @@ If the output has `conditionUnresolved: true`, no condition rule fits the query.
 
 ## Sites that need the browser of the user
 
-Some sites show results only to a logged-in user. The output marks them `needsUserBrowser`, and `shopper sites` shows the mode `user-browser`. The CLI never opens them.
+Some sites show results only to a logged-in user. The output marks them `needsUserBrowser`, and `shopper sites` shows the mode `user-browser`. The CLI never opens them. Shopee Thailand (`shopee-th`), Banana IT (`bnn`) and Facebook Marketplace (`facebook-marketplace`) are such sites. The browser of the user holds the login. Facebook needs a personal profile, not a Page.
 
-1. Ask the user first. Say which site and why.
-2. If the user agrees, use a tab that the user already has open. Adopt that tab. Do not open a new one.
-3. Move the tab to the search page with JavaScript in that tab, for example `location.assign('<searchUrl>')`. The `searchUrl` is in the output.
-4. Print the script with `shopper script <site> search`. Run it in the tab with the JavaScript tool of your browser integration.
-5. Save the returned JSON to a file in a working folder outside the repository.
-6. Run `shopper parse <site> search --url <tab url> --file <snapshot.json> --json`. Report only what this command prints.
-7. For one product page, use `shopper script <site> listing` and `shopper parse <site> listing --url <tab url> --file <snapshot.json> --json`.
+1. Open your own new tab with the browser extension. Use the `tabs_create` tool with the `searchUrl` from the output. Create it in the tab group of your session. Never ask the user to open a tab.
+2. Print the script with `shopper script <site> search`. Run it in your tab with the `javascript` tool of the extension.
+3. Save the returned JSON to a file in a working folder outside the repository.
+4. Run `shopper parse <site> search --url <tab url> --file <snapshot.json> --json`. Report only what this command prints.
+5. For one product page, move your own tab with `location.assign('<item url>')`. Print the script with `shopper script <site> listing`, run it in the tab, and use `shopper parse <site> listing --url <tab url> --file <snapshot.json> --json`.
+6. Close your tab when the work in it is done.
 
-Never open a new tab and never navigate the browser of the user with a tab-create or navigate tool. This takes the focus from the user. Never type a password, solve a captcha or work around a block. Keep marketplace pages that can take the focus, such as AliExpress, in the headless browser of the CLI.
+Work only in tabs that you created. Never navigate, adopt or take over an existing tab of the user, unless the user asks you to. The CLI itself never drives the browser of the user. Never type a password, solve a captcha or work around a block. If the tab shows a login page, tell the user. AliExpress stays in the headless browser of the CLI.
 
 ## Learn and improve
 

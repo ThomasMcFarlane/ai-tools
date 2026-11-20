@@ -69,7 +69,7 @@ export interface SiteAdapter {
   domains: string[];
   defaultMode: FetchMode;
   selectors: Record<string, string>;
-  searchUrl(query: string, opts: { page?: number }): string;
+  searchUrl(query: string, opts: { page?: number; city?: string }): string;
   parseSearch(snap: PageSnapshot, ctx: ParseCtx): SearchHit[];
   parseListing(snap: PageSnapshot, ctx: ParseCtx): Listing;
   detectBlock(snap: PageSnapshot): string | null;

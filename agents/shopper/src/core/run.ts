@@ -189,11 +189,15 @@ export function resolveSites(
   return { ids: ids.filter((id) => known.has(id)), unknown: ids.filter((id) => !known.has(id)) };
 }
 
-export function userBrowserHint(adapter: SiteAdapter, query: string): NeedsUserBrowser {
+export function userBrowserHint(
+  adapter: SiteAdapter,
+  query: string,
+  city?: string,
+): NeedsUserBrowser {
   return {
     site: adapter.id,
     name: adapter.name,
-    searchUrl: adapter.searchUrl(query, {}),
+    searchUrl: adapter.searchUrl(query, city === undefined ? {} : { city }),
     scriptCommand: `shopper script ${adapter.id} search`,
     parseCommand: `shopper parse ${adapter.id} search --url '<tab url>' --file <snapshot.json>`,
   };
@@ -251,7 +255,9 @@ export async function runSearch(opts: SearchOptions, deps: RunDeps): Promise<Sea
     const adapter = deps.adapters.find((candidate) => candidate.id === id) as SiteAdapter;
     const mode = effectiveMode(adapter, opts.defaults, deps.learnings, now);
     if (mode === 'user-browser') {
-      output.needsUserBrowser.push(userBrowserHint(adapter, opts.query));
+      output.needsUserBrowser.push(
+        userBrowserHint(adapter, opts.query, opts.defaults.location.city),
+      );
       output.sites[id] = { status: 'needs-user-browser', count: 0, ms: 0, mode };
       continue;
     }
@@ -307,7 +313,12 @@ async function searchSite(
   output: SearchOutput,
 ): Promise<SearchHit[] | null> {
   const request = {
-    url: adapter.searchUrl(opts.query, { page: 1 }),
+    url: adapter.searchUrl(
+      opts.query,
+      opts.defaults.location.city === undefined
+        ? { page: 1 }
+        : { page: 1, city: opts.defaults.location.city },
+    ),
     mode,
     ...(adapter.searchScript === undefined ? {} : { script: adapter.searchScript }),
     ...(adapter.cookies === undefined

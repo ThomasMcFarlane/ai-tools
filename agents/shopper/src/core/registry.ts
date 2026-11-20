@@ -1,6 +1,7 @@
 import { advice } from './adapters/advice.js';
 import { aliexpress } from './adapters/aliexpress.js';
 import { bnn } from './adapters/bnn.js';
+import { facebookMarketplace } from './adapters/facebook-marketplace.js';
 import { ihavecpu } from './adapters/ihavecpu.js';
 import { jib } from './adapters/jib.js';
 import { lazadaTh } from './adapters/lazada-th.js';
@@ -15,6 +16,7 @@ export const ADAPTERS: readonly SiteAdapter[] = [
   ihavecpu,
   bnn,
   shopeeTh,
+  facebookMarketplace,
 ];
 
 export function listAdapters(): SiteAdapter[] {
