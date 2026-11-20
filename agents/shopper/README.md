@@ -101,7 +101,7 @@ The first run of a watch is a baseline. It reports only `threshold` events. A la
 - `new`: the listing was in none of the last 5 non-empty runs of that site. A listing that is absent for one run and then returns is not `new`. It can still give a `price_drop`, `back_in_stock` or `threshold` event against its last known state.
 - `price_drop`: the price is lower by more than `notify.minDropPercent`.
 - `back_in_stock`: the stock was `out_of_stock` and is now `in_stock` or `low_stock`.
-- `threshold`: the price is at or below `maxPrice` now, and it was above it, missing or the listing was new.
+- `threshold`: the price is at or below `maxPrice` now, and it was above the `maxPrice` of the previous run, missing or the listing was new. Raising `maxPrice` alerts listings that now fall under it once. Lowering it does not alert. A history line from before this rule has no `maxPrice`, so the current one applies.
 - `scanner_failing`: a site failed or returned no listings 3 runs in a row. The run reports it once. The run that follows the recovery reports a note.
 
 A site that fails keeps its last hits as the known state. When it works again, its old listings do not count as `new`. The key of a listing is the site plus the URL without query string and fragment.

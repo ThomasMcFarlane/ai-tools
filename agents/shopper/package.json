@@ -1,6 +1,6 @@
 {
   "name": "@ai-tools/shopper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Price comparison agent CLI for online shops",
   "type": "module",
   "license": "MIT",

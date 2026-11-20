@@ -308,6 +308,8 @@ export async function runWatch(
     events,
     notified: delivered,
     specHash: hash,
+    maxPrice: watch.maxPrice,
+    currency,
   };
   appendHistory(file, line);
   recordRun(deps.paths.watchesFile, watch.id, now, status);

@@ -52,6 +52,10 @@ export interface PreviousState {
   hasHistory: boolean;
   recent: Record<string, SearchHit[][]>;
   failures: Record<string, number>;
+  /** maxPrice of the previous run. Undefined means unknown (old history line). */
+  maxPrice?: number | null;
+  /** Currency of the previous run's maxPrice, when known. */
+  maxPriceCurrency?: string;
 }
 
 export const EMPTY_PREVIOUS: PreviousState = { hasHistory: false, recent: {}, failures: {} };
@@ -171,6 +175,13 @@ export function diffRun(input: DiffInput): WatchEvent[] {
   const queryIdParams = options.queryIdParams ?? {};
   const { currency, maxPrice } = options;
   const events: WatchEvent[] = [];
+  const priorMax =
+    previous.maxPrice === undefined ||
+    (previous.maxPrice !== null &&
+      previous.maxPriceCurrency !== undefined &&
+      previous.maxPriceCurrency !== currency)
+      ? maxPrice
+      : previous.maxPrice;
   const current = dedupe(input.hits, queryIdParams, currency);
 
   const hitCounts = new Map<string, number>();
@@ -213,7 +224,7 @@ export function diffRun(input: DiffInput): WatchEvent[] {
     if (old.stock === 'out_of_stock' && (hit.stock === 'in_stock' || hit.stock === 'low_stock')) {
       events.push(eventFor('back_in_stock', key, hit, old));
     }
-    if (nowAtThreshold && !atOrBelow(old.price, maxPrice, currency)) {
+    if (nowAtThreshold && !atOrBelow(old.price, priorMax, currency)) {
       events.push(eventFor('threshold', key, hit, old));
     }
   }

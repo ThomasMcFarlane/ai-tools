@@ -278,6 +278,31 @@ describe('back_in_stock', () => {
   });
 });
 
+describe('threshold changes', () => {
+  const at = (maxPrice: number | null | undefined) => ({
+    ...previous([priced('x', 100)]),
+    ...(maxPrice === undefined ? {} : { maxPrice }),
+  });
+
+  it('fires when the threshold is raised over a known price', () => {
+    expect(types(run([priced('x', 100)], at(50), { maxPrice: 150 }))).toEqual(['threshold']);
+  });
+
+  it('stays quiet when the threshold is unchanged or lowered', () => {
+    expect(run([priced('x', 100)], at(150), { maxPrice: 150 })).toEqual([]);
+    expect(run([priced('x', 100)], at(200), { maxPrice: 150 })).toEqual([]);
+  });
+
+  it('treats a null previous threshold as not reached', () => {
+    expect(types(run([priced('x', 100)], at(null), { maxPrice: 150 }))).toEqual(['threshold']);
+  });
+
+  it('treats an unknown previous threshold as the current one', () => {
+    expect(run([priced('x', 100)], at(undefined), { maxPrice: 150 })).toEqual([]);
+    expect(types(run([priced('x', 200)], at(undefined), { maxPrice: 150 }))).toEqual([]);
+  });
+});
+
 describe('threshold', () => {
   const options = { maxPrice: 100 };
 
