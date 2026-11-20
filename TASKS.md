@@ -95,4 +95,4 @@ A price comparison agent CLI (`agents/shopper`) on a shared `@ai-tools/agent-kit
 
 |---|---|---|---|---|---|---|---|
 
-| 26 | Shopper agent, adapters, watches and skill | done | claude | shopper-agent | | 2026-11-21 03:30 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/95 and #96 (threshold fix)<br>Released shopper-v0.1.0 and v0.1.1, installed on hq0<br>Skill in shared-skills 0.3.2 (ThomasMcFarlane/.ais#131), all identities updated<br>bnn and shopee-th need the user browser; AliExpress item pages block headless |
+| 26 | Shopper agent, adapters, watches and skill | done | claude | shopper-agent | | 2026-11-21 03:30 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/95 and #96 (threshold fix)<br>Released shopper-v0.1.0 and v0.1.1, installed on hq0<br>Skill in shared-skills 0.3.2 (ThomasMcFarlane/.ais#131), all identities updated<br>bnn and shopee-th need the user browser; AliExpress item pages block headless<br>Facebook Marketplace adapter in https://github.com/ThomasMcFarlane/ai-tools/pull/97, released shopper-v0.2.0, skill in shared-skills 0.3.3 |
