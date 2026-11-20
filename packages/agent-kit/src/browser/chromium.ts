@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { delimiter, join } from 'node:path';
+import { pidAlive } from '../memory/learnings.js';
 import { resolveCacheDir, type PathOptions } from '../memory/paths.js';
 import { CdpClient, browserWebSocketUrl, type WebSocketFactory } from './cdp.js';
 
@@ -84,6 +86,58 @@ export function resolveProfileDir(opts: PathOptions = {}): string {
   const fromEnv = env.AGENTS_BROWSER_PROFILE_DIR;
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv;
   return join(resolveCacheDir(opts), 'chromium-profile');
+}
+
+export const STALE_RUN_AGE_MS = 24 * 3_600_000;
+
+export function runProfileDir(baseDir: string, pid: number, random: string): string {
+  return join(baseDir, `run-${pid}-${random}`);
+}
+
+export interface RunDirEntry {
+  name: string;
+  mtimeMs: number;
+}
+
+export function staleRunDirs(
+  entries: RunDirEntry[],
+  nowMs: number,
+  isAlive: (pid: number) => boolean,
+  maxAgeMs: number = STALE_RUN_AGE_MS,
+): string[] {
+  const stale: string[] = [];
+  for (const entry of entries) {
+    const match = /^run-(\d+)-[A-Za-z0-9]+$/.exec(entry.name);
+    if (match === null) continue;
+    if (nowMs - entry.mtimeMs <= maxAgeMs) continue;
+    if (isAlive(Number(match[1]))) continue;
+    stale.push(entry.name);
+  }
+  return stale;
+}
+
+export function cleanStaleRunDirs(
+  baseDir: string,
+  nowMs: number = Date.now(),
+  isAlive: (pid: number) => boolean = pidAlive,
+): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(baseDir);
+  } catch {
+    return [];
+  }
+  const entries: RunDirEntry[] = [];
+  for (const name of names) {
+    try {
+      entries.push({ name, mtimeMs: statSync(join(baseDir, name)).mtimeMs });
+    } catch {
+      continue;
+    }
+  }
+  const removed = staleRunDirs(entries, nowMs, isAlive);
+  for (const name of removed) rmSync(join(baseDir, name), { recursive: true, force: true });
+  return removed;
 }
 
 export function shouldUseScope(
@@ -208,14 +262,45 @@ class Semaphore {
   }
 }
 
+export function normaliseUserAgent(userAgent: string): string {
+  return userAgent.replace(/HeadlessChrome/g, 'Chrome');
+}
+
+export interface SessionOptions {
+  keepUserAgent?: boolean;
+  lang?: string;
+}
+
 export class BrowserSession {
   private readonly tabs = new Semaphore(MAX_TABS);
+  private userAgent: Promise<string | null> | null = null;
 
   constructor(
     readonly client: CdpClient,
     readonly pid: number | null,
     private readonly child: ChildProcess | null,
+    private readonly runDir: string | null = null,
+    private readonly options: SessionOptions = {},
   ) {}
+
+  private pageUserAgent(): Promise<string | null> {
+    this.userAgent ??= this.client
+      .send<{ userAgent?: string }>('Browser.getVersion')
+      .then((version) =>
+        typeof version.userAgent === 'string' ? normaliseUserAgent(version.userAgent) : null,
+      )
+      .catch(() => null);
+    return this.userAgent;
+  }
+
+  private async applyUserAgent(sessionId: string): Promise<void> {
+    if (this.options.keepUserAgent === true) return;
+    const userAgent = await this.pageUserAgent();
+    if (userAgent === null) return;
+    const params = { userAgent, acceptLanguage: this.options.lang ?? 'en-US' };
+    await this.client.send('Network.setUserAgentOverride', params, sessionId);
+    await this.client.send('Emulation.setUserAgentOverride', params, sessionId);
+  }
 
   async newPage(): Promise<Page> {
     await this.tabs.acquire();
@@ -227,6 +312,7 @@ export class BrowserSession {
         targetId,
         flatten: true,
       });
+      await this.applyUserAgent(sessionId);
       return new Page(this.client, targetId, sessionId, () => this.tabs.release());
     } catch (error) {
       this.tabs.release();
@@ -235,6 +321,14 @@ export class BrowserSession {
   }
 
   async close(): Promise<void> {
+    try {
+      await this.stop();
+    } finally {
+      if (this.runDir !== null) rmSync(this.runDir, { recursive: true, force: true });
+    }
+  }
+
+  private async stop(): Promise<void> {
     try {
       await this.client.send('Browser.close');
     } catch {
@@ -261,6 +355,7 @@ export class BrowserSession {
 }
 
 export interface LaunchOptions extends PathOptions {
+  lang?: string;
   profileDir?: string;
   binary?: string;
   scoped?: boolean;
@@ -314,43 +409,55 @@ export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSe
       'no Chromium found: install chromium or google-chrome, or set AGENTS_CHROMIUM',
     );
   }
-  const profileDir = opts.profileDir ?? resolveProfileDir(opts);
+  const baseDir = opts.profileDir ?? resolveProfileDir(opts);
+  mkdirSync(baseDir, { recursive: true });
+  cleanStaleRunDirs(baseDir);
+  const profileDir = runProfileDir(baseDir, process.pid, randomBytes(4).toString('hex'));
   mkdirSync(profileDir, { recursive: true });
   const args = buildChromiumArgs({
     profileDir,
     noSandbox: env.AGENTS_BROWSER_NO_SANDBOX === '1',
+    ...(opts.lang === undefined ? {} : { lang: opts.lang }),
   });
   const timeoutMs = opts.startTimeoutMs ?? 20_000;
   const wantScope = opts.scoped ?? shouldUseScope(env);
-  let started: { child: ChildProcess; port: number };
-  if (wantScope) {
-    try {
-      started = await startChild(
-        buildLaunchCommand({ binary, args, scoped: true }),
-        profileDir,
-        timeoutMs,
-      );
-    } catch {
+  try {
+    let started: { child: ChildProcess; port: number };
+    if (wantScope) {
+      try {
+        started = await startChild(
+          buildLaunchCommand({ binary, args, scoped: true }),
+          profileDir,
+          timeoutMs,
+        );
+      } catch {
+        started = await startChild(
+          buildLaunchCommand({ binary, args, scoped: false }),
+          profileDir,
+          timeoutMs,
+        );
+      }
+    } else {
       started = await startChild(
         buildLaunchCommand({ binary, args, scoped: false }),
         profileDir,
         timeoutMs,
       );
     }
-  } else {
-    started = await startChild(
-      buildLaunchCommand({ binary, args, scoped: false }),
-      profileDir,
-      timeoutMs,
-    );
-  }
-  try {
-    const wsUrl = await browserWebSocketUrl(started.port);
-    const connectOptions = opts.factory === undefined ? {} : { factory: opts.factory };
-    const client = await CdpClient.connect(wsUrl, connectOptions);
-    return new BrowserSession(client, started.child.pid ?? null, started.child);
+    try {
+      const wsUrl = await browserWebSocketUrl(started.port);
+      const connectOptions = opts.factory === undefined ? {} : { factory: opts.factory };
+      const client = await CdpClient.connect(wsUrl, connectOptions);
+      return new BrowserSession(client, started.child.pid ?? null, started.child, profileDir, {
+        keepUserAgent: env.AGENTS_BROWSER_KEEP_UA === '1',
+        lang: opts.lang ?? 'en-US',
+      });
+    } catch (error) {
+      if (started.child.exitCode === null) started.child.kill('SIGKILL');
+      throw error;
+    }
   } catch (error) {
-    if (started.child.exitCode === null) started.child.kill('SIGKILL');
+    rmSync(profileDir, { recursive: true, force: true });
     throw error;
   }
 }

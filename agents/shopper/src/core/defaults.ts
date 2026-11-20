@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { CONDITIONS, FETCH_MODES } from './types.js';
 
-const regexString = z.string().refine(
+export const regexString = z.string().refine(
   (value) => {
     try {
       new RegExp(value, 'i');
@@ -14,7 +14,7 @@ const regexString = z.string().refine(
   { message: 'must be a valid regular expression' },
 );
 
-const conditionSchema = z.enum(CONDITIONS as unknown as [string, ...string[]]);
+export const conditionSchema = z.enum(CONDITIONS as unknown as [string, ...string[]]);
 
 export const WATCH_EVENTS = [
   'new',
@@ -34,7 +34,7 @@ export function parseInterval(text: string): number | null {
   return Number(match[1]) * (INTERVAL_UNITS[match[2] as string] as number);
 }
 
-const intervalSchema = z
+export const intervalSchema = z
   .string()
   .refine((value) => parseInterval(value) !== null, {
     message: 'use a number and a unit: 15m, 6h or 1d',
@@ -133,7 +133,7 @@ export const shopperDefaultsSchema = z
       .object({
         userBrowserSites: z
           .array(z.string())
-          .default(['shopee-th'])
+          .default(['shopee-th', 'bnn'])
           .describe('Sites the CLI never fetches. The user supplies the page from an open tab.'),
       })
       .default({}),
@@ -174,7 +174,7 @@ export function builtinDefaults(adapterIds: string[]): Record<string, unknown> {
       showShop: true,
       timeZones: ['UTC'],
     },
-    browser: { userBrowserSites: ['shopee-th'] },
+    browser: { userBrowserSites: ['shopee-th', 'bnn'] },
     watch: {
       interval: '6h',
       notifyOn: [...WATCH_EVENTS],

@@ -14,7 +14,7 @@ describe('defaults schema', () => {
     const parsed = shopperDefaultsSchema.parse(builtinDefaults(['a', 'b']));
     expect(parsed.currency).toBe('THB');
     expect(parsed.sites.preferred).toEqual(['a', 'b']);
-    expect(parsed.browser.userBrowserSites).toEqual(['shopee-th']);
+    expect(parsed.browser.userBrowserSites).toEqual(['shopee-th', 'bnn']);
   });
 
   it('fills every default from a minimal file', () => {

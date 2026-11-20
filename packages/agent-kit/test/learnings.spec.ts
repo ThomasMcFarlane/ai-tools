@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -149,30 +149,87 @@ describe('journal', () => {
 });
 
 describe('flushLearnings', () => {
+  const pendingOf = (state: string) => join(state, 'demo', 'pending.jsonl');
+  const flushing = (state: string) =>
+    existsSync(join(state, 'demo'))
+      ? readdirSync(join(state, 'demo')).filter((n) => n.endsWith('.flushing'))
+      : [];
+
   it('does nothing when nothing is pending', () => {
     const { opts } = setup();
     expect(flushLearnings('demo', opts).status).toBe('empty');
   });
 
-  it('runs AGENTS_MEMORY_PERSIST with placeholders and truncates pending', () => {
+  it('runs AGENTS_MEMORY_PERSIST on a claimed file with placeholders and removes it', () => {
     const sink = join(tempDir(), 'sink.txt');
     const { opts, state } = setup({
-      AGENTS_MEMORY_PERSIST: `cat {file} >> ${sink}; echo {agent} >> ${sink}`,
+      AGENTS_MEMORY_PERSIST: `cat {file} >> ${sink}; echo {agent} {file} >> ${sink}`,
     });
     appendLearning('demo', { kind: 'note', key: 'n', value: 'hello' }, opts);
     const result = flushLearnings('demo', opts);
     expect(result).toMatchObject({ status: 'persisted', lines: 1, method: 'command' });
     const text = readFileSync(sink, 'utf8');
     expect(text).toContain('"hello"');
-    expect(text.trim().endsWith('demo')).toBe(true);
-    expect(readFileSync(join(state, 'demo', 'pending.jsonl'), 'utf8')).toBe('');
+    expect(text).toMatch(/demo .*pending\.\d+\.\d+.*\.flushing/);
+    expect(existsSync(pendingOf(state))).toBe(false);
+    expect(flushing(state)).toEqual([]);
   });
 
-  it('keeps pending when the persist command fails', () => {
-    const { opts, state } = setup({ AGENTS_MEMORY_PERSIST: 'exit 3' });
-    appendLearning('demo', { kind: 'note', key: 'n', value: 'x' }, opts);
-    expect(() => flushLearnings('demo', opts)).toThrow(FlushError);
-    expect(readFileSync(join(state, 'demo', 'pending.jsonl'), 'utf8')).not.toBe('');
+  it('keeps lines appended during a flush for the next flush', () => {
+    const sink = join(tempDir(), 'sink.txt');
+    const { opts, state } = setup();
+    const env = {
+      AGENTS_MEMORY_PERSIST: `cat {file} >> ${sink}; echo '${JSON.stringify(entry({ key: 'late', value: 'late' }))}' >> ${pendingOf(state)}`,
+    };
+    appendLearning('demo', { kind: 'note', key: 'first', value: 'first' }, { ...opts, env });
+    flushLearnings('demo', { ...opts, env });
+    expect(readFileSync(sink, 'utf8')).not.toContain('late');
+    expect(readFileSync(pendingOf(state), 'utf8')).toContain('"late"');
+    const again = flushLearnings('demo', {
+      ...opts,
+      env: { AGENTS_MEMORY_PERSIST: `cat {file} >> ${sink}` },
+    });
+    expect(again.lines).toBe(1);
+    expect(readFileSync(sink, 'utf8')).toContain('"late"');
+  });
+
+  it('restores the claimed lines in front of new ones when the command fails', () => {
+    const { opts, state } = setup();
+    const env = {
+      AGENTS_MEMORY_PERSIST: `echo '${JSON.stringify(entry({ key: 'late', value: 'late' }))}' >> ${pendingOf(state)}; exit 3`,
+    };
+    appendLearning('demo', { kind: 'note', key: 'n', value: 'x' }, { ...opts, env });
+    expect(() => flushLearnings('demo', { ...opts, env })).toThrow(FlushError);
+    const text = readFileSync(pendingOf(state), 'utf8');
+    expect(text).toContain('"x"');
+    expect(text).toContain('"late"');
+    expect(flushing(state)).toEqual([]);
+  });
+
+  it('picks up leftover files from a crashed run', () => {
+    const sink = join(tempDir(), 'sink.txt');
+    const { opts, state } = setup({ AGENTS_MEMORY_PERSIST: `cat {file} >> ${sink}` });
+    mkdirSync(join(state, 'demo'), { recursive: true });
+    writeFileSync(
+      join(state, 'demo', 'pending.999999999.1.flushing'),
+      `${JSON.stringify(entry({ value: 'old' }))}\n`,
+    );
+    appendLearning('demo', { kind: 'note', key: 'n', value: 'fresh' }, opts);
+    const result = flushLearnings('demo', opts);
+    expect(result.lines).toBe(2);
+    const text = readFileSync(sink, 'utf8');
+    expect(text).toContain('"old"');
+    expect(text).toContain('"fresh"');
+    expect(flushing(state)).toEqual([]);
+  });
+
+  it('leaves a leftover file of a live process alone', () => {
+    const { opts, state } = setup();
+    mkdirSync(join(state, 'demo'), { recursive: true });
+    const other = join(state, 'demo', `pending.${process.ppid}.1.flushing`);
+    writeFileSync(other, `${JSON.stringify(entry({}))}\n`);
+    expect(flushLearnings('demo', opts).status).toBe('empty');
+    expect(existsSync(other)).toBe(true);
   });
 
   it('appends to the durable file when no command is set', () => {
@@ -181,16 +238,36 @@ describe('flushLearnings', () => {
     const result = flushLearnings('demo', opts);
     expect(result.method).toBe('append');
     expect(readFileSync(join(mem, 'demo', 'learnings.jsonl'), 'utf8')).toContain('"note"');
-    expect(readFileSync(join(state, 'demo', 'pending.jsonl'), 'utf8')).toBe('');
+    expect(existsSync(pendingOf(state))).toBe(false);
+    expect(flushing(state)).toEqual([]);
   });
 
-  it('fails with a hint when the durable directory is not writable', () => {
+  it('refuses a direct append when AGENTS_MEMORY_READONLY=1 and keeps pending', () => {
+    const { opts, mem, state } = setup({ AGENTS_MEMORY_READONLY: '1' });
+    appendLearning('demo', { kind: 'note', key: 'n', value: 'x' }, opts);
+    expect(() => flushLearnings('demo', opts)).toThrow(/AGENTS_MEMORY_PERSIST/);
+    expect(existsSync(join(mem, 'demo', 'learnings.jsonl'))).toBe(false);
+    expect(readFileSync(pendingOf(state), 'utf8')).toContain('"x"');
+  });
+
+  it('still runs the persist command when AGENTS_MEMORY_READONLY=1', () => {
+    const sink = join(tempDir(), 'sink.txt');
+    const { opts } = setup({
+      AGENTS_MEMORY_READONLY: '1',
+      AGENTS_MEMORY_PERSIST: `cat {file} >> ${sink}`,
+    });
+    appendLearning('demo', { kind: 'note', key: 'n', value: 'x' }, opts);
+    expect(flushLearnings('demo', opts).method).toBe('command');
+  });
+
+  it('fails with a hint when the durable directory is not writable and restores pending', () => {
     const { opts, state } = setup();
     const blocker = join(tempDir(), 'file');
     writeFileSync(blocker, 'x');
     const bad = { ...opts, memoryDir: join(blocker, 'sub') };
     appendLearning('demo', { kind: 'note', key: 'n', value: 'x' }, bad);
     expect(() => flushLearnings('demo', bad)).toThrow(/AGENTS_MEMORY_PERSIST/);
-    expect(readFileSync(join(state, 'demo', 'pending.jsonl'), 'utf8')).not.toBe('');
+    expect(readFileSync(pendingOf(state), 'utf8')).toContain('"x"');
+    expect(flushing(state)).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import {
+  COMMON_BLOCK_PATTERNS,
   detectBlockWith,
   hitsFromCards,
   hostMatches,
@@ -12,13 +13,29 @@ const DOMAINS = ['bnn.in.th'];
 
 const URL_BLOCKS: BlockPattern[] = [];
 
+const HTML_BLOCKS: BlockPattern[] = [
+  {
+    test: /<title>\s*Just a moment|Performing security verification|cf-turnstile|challenge-platform/i,
+    reason: 'Cloudflare challenge page',
+  },
+  { test: /<title>\s*(?:Attention Required|Access denied)/i, reason: 'access denied' },
+];
+
+const PAGE_SCRIPT = `(() => {
+  const copy = document.body.cloneNode(true);
+  copy.querySelectorAll('script, style, svg, noscript').forEach((el) => el.remove());
+  return { url: location.href, html: copy.outerHTML.slice(0, 400000) };
+})()`;
+
 export const bnn: SiteAdapter = {
   id: ID,
   name: 'Banana IT',
   country: 'TH',
   currency: 'THB',
   domains: DOMAINS,
-  defaultMode: 'http',
+  defaultMode: 'user-browser',
+  searchScript: PAGE_SCRIPT,
+  listingScript: PAGE_SCRIPT,
   selectors: {
     'search.card': '[class*="product-item"], [class*="product-card"]',
     'search.link': 'a[href]',
@@ -41,7 +58,7 @@ export const bnn: SiteAdapter = {
     return listingFromSelectors(snap, ctx, ID);
   },
   detectBlock(snap) {
-    return detectBlockWith(snap, URL_BLOCKS);
+    return detectBlockWith(snap, URL_BLOCKS, [...HTML_BLOCKS, ...COMMON_BLOCK_PATTERNS]);
   },
   matchesUrl(url) {
     return hostMatches(url, DOMAINS);

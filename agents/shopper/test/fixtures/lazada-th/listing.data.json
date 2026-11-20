@@ -1,0 +1,12 @@
+{
+  "base": "24,230.00",
+  "skus": [
+    {
+      "skuId": "25931560736",
+      "options": {},
+      "price": "24,230.00",
+      "disabled": false
+    }
+  ],
+  "disabled": false
+}

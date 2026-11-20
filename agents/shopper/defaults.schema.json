@@ -68,9 +68,16 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["new", "used", "refurbished", "unknown"]
+            "enum": [
+              "new",
+              "used",
+              "refurbished",
+              "unknown"
+            ]
           },
-          "default": ["new"]
+          "default": [
+            "new"
+          ]
         },
         "rules": {
           "type": "array",
@@ -85,21 +92,32 @@
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "enum": ["new", "used", "refurbished", "unknown"]
+                  "enum": [
+                    "new",
+                    "used",
+                    "refurbished",
+                    "unknown"
+                  ]
                 }
               },
               "note": {
                 "type": "string"
               }
             },
-            "required": ["match", "allow"],
+            "required": [
+              "match",
+              "allow"
+            ],
             "additionalProperties": false
           },
           "default": []
         },
         "unmatched": {
           "type": "string",
-          "enum": ["use-default", "ask"],
+          "enum": [
+            "use-default",
+            "ask"
+          ],
           "default": "use-default",
           "description": "What to do when no rule matches the query. ask keeps every condition and flags the result so the model asks the user."
         }
@@ -112,7 +130,11 @@
       "properties": {
         "style": {
           "type": "string",
-          "enum": ["cheapest", "value", "premium"],
+          "enum": [
+            "cheapest",
+            "value",
+            "premium"
+          ],
           "default": "cheapest"
         },
         "max": {
@@ -154,7 +176,9 @@
             "type": "string"
           },
           "minItems": 1,
-          "default": ["UTC"],
+          "default": [
+            "UTC"
+          ],
           "description": "IANA time zones for printed timestamps. The first zone comes first."
         }
       },
@@ -169,7 +193,10 @@
           "items": {
             "type": "string"
           },
-          "default": ["shopee-th"],
+          "default": [
+            "shopee-th",
+            "bnn"
+          ],
           "description": "Sites the CLI never fetches. The user supplies the page from an open tab."
         }
       },
@@ -187,9 +214,21 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["new", "price_drop", "back_in_stock", "threshold", "scanner_failing"]
+            "enum": [
+              "new",
+              "price_drop",
+              "back_in_stock",
+              "threshold",
+              "scanner_failing"
+            ]
           },
-          "default": ["new", "price_drop", "back_in_stock", "threshold", "scanner_failing"]
+          "default": [
+            "new",
+            "price_drop",
+            "back_in_stock",
+            "threshold",
+            "scanner_failing"
+          ]
         },
         "minDropPercent": {
           "type": "number",
@@ -198,7 +237,10 @@
           "default": 0
         },
         "notifyCommand": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Shell command that gets the message on stdin. SHOPPER_NOTIFY_CMD overrides it."
         },
@@ -220,6 +262,8 @@
       "description": "Free text rules for the model."
     }
   },
-  "required": ["version"],
+  "required": [
+    "version"
+  ],
   "additionalProperties": false
 }

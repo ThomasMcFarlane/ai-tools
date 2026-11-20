@@ -1,6 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { agentPaths, type PathOptions } from './paths.js';
 
@@ -155,23 +163,73 @@ export interface FlushResult {
   target: string | null;
 }
 
-export function flushLearnings(agent: string, opts: LearningsOptions = {}): FlushResult {
-  const env = opts.env ?? process.env;
-  const paths = agentPaths(agent, opts);
-  const pending = existsSync(paths.pendingLearnings)
-    ? readFileSync(paths.pendingLearnings, 'utf8')
-    : '';
-  const lines = pending.split('\n').filter((line) => line.trim() !== '').length;
-  if (lines === 0) {
-    return { status: 'empty', lines: 0, method: 'none', target: null };
+const FLUSHING = /^pending\.(\d+)\..*\.flushing$/;
+
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
-  const command = env.AGENTS_MEMORY_PERSIST;
+}
+
+function countLines(text: string): number {
+  return text.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+function claimFiles(stateDir: string, pendingFile: string): string[] {
+  const claimed: string[] = [];
+  const stamp = Date.now();
+  let index = 0;
+  const claim = (from: string): void => {
+    const target = join(
+      stateDir,
+      `pending.${process.pid}.${stamp}${index === 0 ? '' : `-${index}`}.flushing`,
+    );
+    try {
+      renameSync(from, target);
+      claimed.push(target);
+      index += 1;
+    } catch {
+      return;
+    }
+  };
+  if (existsSync(stateDir)) {
+    for (const name of readdirSync(stateDir).sort()) {
+      const match = FLUSHING.exec(name);
+      if (match === null) continue;
+      const pid = Number(match[1]);
+      if (pid !== process.pid && pidAlive(pid)) continue;
+      claim(join(stateDir, name));
+    }
+  }
+  if (existsSync(pendingFile)) claim(pendingFile);
+  return claimed;
+}
+
+function restore(files: string[], pendingFile: string): void {
+  for (const file of files) {
+    try {
+      const text = readFileSync(file, 'utf8');
+      if (text !== '') appendFileSync(pendingFile, text.endsWith('\n') ? text : `${text}\n`);
+      rmSync(file, { force: true });
+    } catch {
+      continue;
+    }
+  }
+}
+
+function persistFile(
+  agent: string,
+  file: string,
+  command: string | undefined,
+  paths: ReturnType<typeof agentPaths>,
+  env: NodeJS.ProcessEnv,
+  text: string,
+): 'command' | 'append' {
   if (command !== undefined && command !== '') {
-    const filled = command
-      .split('{agent}')
-      .join(agent)
-      .split('{file}')
-      .join(paths.pendingLearnings);
+    const filled = command.split('{agent}').join(agent).split('{file}').join(file);
     const result = spawnSync('/bin/sh', ['-c', filled], { encoding: 'utf8', env });
     if (result.status !== 0) {
       const detail = (result.stderr ?? '').trim();
@@ -179,18 +237,57 @@ export function flushLearnings(agent: string, opts: LearningsOptions = {}): Flus
         `AGENTS_MEMORY_PERSIST failed with exit ${result.status ?? 'signal'}${detail === '' ? '' : `: ${detail}`}`,
       );
     }
-    writeFileSync(paths.pendingLearnings, '');
-    return { status: 'persisted', lines, method: 'command', target: null };
+    return 'command';
   }
   try {
     mkdirSync(dirname(paths.durableLearnings), { recursive: true });
-    appendFileSync(paths.durableLearnings, pending.endsWith('\n') ? pending : `${pending}\n`);
+    appendFileSync(paths.durableLearnings, text.endsWith('\n') ? text : `${text}\n`);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new FlushError(
       `memory directory ${paths.memoryDir} is not writable (${reason}); set AGENTS_MEMORY_PERSIST to a command that stores {file}, or set AGENTS_MEMORY_DIR to a writable directory`,
     );
   }
-  writeFileSync(paths.pendingLearnings, '');
-  return { status: 'persisted', lines, method: 'append', target: paths.durableLearnings };
+  return 'append';
+}
+
+export function flushLearnings(agent: string, opts: LearningsOptions = {}): FlushResult {
+  const env = opts.env ?? process.env;
+  const paths = agentPaths(agent, opts);
+  const command = env.AGENTS_MEMORY_PERSIST;
+  const hasCommand = command !== undefined && command !== '';
+  if (!hasCommand && env.AGENTS_MEMORY_READONLY === '1') {
+    throw new FlushError(
+      'the memory directory is read-only (AGENTS_MEMORY_READONLY=1); set AGENTS_MEMORY_PERSIST to a command that stores {file}',
+    );
+  }
+  const claimed = claimFiles(paths.stateDir, paths.pendingLearnings);
+  let total = 0;
+  let method: FlushResult['method'] = 'none';
+  const done = new Set<string>();
+  try {
+    for (const file of claimed) {
+      const text = readFileSync(file, 'utf8');
+      const lines = countLines(text);
+      if (lines > 0) {
+        method = persistFile(agent, file, command, paths, env, text);
+        total += lines;
+      }
+      rmSync(file, { force: true });
+      done.add(file);
+    }
+  } catch (error) {
+    restore(
+      claimed.filter((file) => !done.has(file)),
+      paths.pendingLearnings,
+    );
+    throw error;
+  }
+  if (total === 0) return { status: 'empty', lines: 0, method: 'none', target: null };
+  return {
+    status: 'persisted',
+    lines: total,
+    method,
+    target: method === 'append' ? paths.durableLearnings : null,
+  };
 }

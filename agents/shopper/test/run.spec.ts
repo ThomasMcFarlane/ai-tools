@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Learning, NewLearning } from '@ai-tools/agent-kit';
 import { builtinDefaults, shopperDefaultsSchema } from '../src/core/defaults.js';
 import { UserBrowserRequiredError, type FetchRequest, type Fetcher } from '../src/core/fetcher.js';
-import { ADAPTERS } from '../src/core/registry.js';
 import {
   BlockedError,
   defaultRunDeps,
@@ -11,37 +10,14 @@ import {
   runSearch,
 } from '../src/core/run.js';
 import type { PageSnapshot, SiteAdapter } from '../src/core/types.js';
+import { fakeAdapter } from './helpers/fake-adapter.js';
 import { FIXTURE_NOW } from './helpers/fixture.js';
 
 const NOW = new Date(FIXTURE_NOW);
-const defaults = shopperDefaultsSchema.parse(builtinDefaults(ADAPTERS.map((a) => a.id)));
+const defaults = shopperDefaultsSchema.parse(builtinDefaults(['alpha', 'beta', 'gamma']));
 
 function card(href: string, title: string, price: string): string {
   return `<div class="card"><a class="t" href="${href}">${title}</a><span class="pr">${price}</span></div>`;
-}
-
-function fakeAdapter(id: string, mode: SiteAdapter['defaultMode']): SiteAdapter {
-  return {
-    ...ADAPTERS[2]!,
-    id,
-    name: id,
-    domains: [`${id}.example.com`],
-    defaultMode: mode,
-    selectors: {
-      'search.card': '.card',
-      'search.link': 'a.t',
-      'search.title': 'a.t',
-      'search.price': '.pr',
-    },
-    searchUrl: (query) => `https://${id}.example.com/s?q=${encodeURIComponent(query)}`,
-    matchesUrl: (url) => url.includes(`${id}.example.com`),
-    detectBlock: (snap) => (snap.html.includes('CAPTCHA') ? 'captcha page' : null),
-    parseSearch: ADAPTERS[2]!.parseSearch,
-    parseListing: ADAPTERS[2]!.parseListing,
-    cookies: undefined,
-    searchScript: undefined,
-    listingScript: undefined,
-  };
 }
 
 class FakeFetcher implements Fetcher {

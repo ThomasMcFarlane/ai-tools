@@ -18,6 +18,8 @@ import { createFetcher, type Fetcher } from '../core/fetcher.js';
 import { ADAPTERS } from '../core/registry.js';
 import { defaultRunDeps, type RunDeps } from '../core/run.js';
 import type { SiteAdapter } from '../core/types.js';
+import type { SpawnFn } from '../core/watch/notify.js';
+import type { ExecInfo } from '../core/watch/timer.js';
 
 export const AGENT = 'shopper';
 
@@ -31,6 +33,8 @@ export interface Deps {
   now: () => Date;
   makeFetcher: () => Fetcher;
   adapters: readonly SiteAdapter[];
+  spawn?: SpawnFn;
+  exec?: ExecInfo;
 }
 
 export function defaultDeps(): Deps {

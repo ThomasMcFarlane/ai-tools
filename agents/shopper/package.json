@@ -20,12 +20,13 @@
   },
   "files": [
     "dist",
-    "defaults.schema.json"
+    "defaults.schema.json",
+    "watches.schema.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "build:bin": "pkg --no-bytecode --out-path bin -t ${PKG_TARGETS:-node22-linux-x64,node22-linux-arm64,node22-macos-x64,node22-macos-arm64,node22-win-x64} .",
-    "schema": "tsc -p tsconfig.build.json && node dist/cli.js defaults schema > defaults.schema.json",
+    "schema": "tsc -p tsconfig.build.json && node dist/cli.js defaults schema > defaults.schema.json && node dist/cli.js watch schema > watches.schema.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },

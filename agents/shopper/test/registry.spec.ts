@@ -18,8 +18,9 @@ describe('registry', () => {
     expect(adapterForUrl('https://example.com/')).toBeNull();
   });
 
-  it('sets only shopee-th to user-browser mode', () => {
+  it('sets only shopee-th and bnn to user-browser mode', () => {
     expect(ADAPTERS.filter((a) => a.defaultMode === 'user-browser').map((a) => a.id)).toEqual([
+      'bnn',
       'shopee-th',
     ]);
   });

@@ -9,6 +9,7 @@ import { registerLearnCommands } from './learn-commands.js';
 import { registerPageCommands } from './page-commands.js';
 import { registerSearchCommands, toExitMessage } from './search-commands.js';
 import { registerSitesCommand } from './sites-command.js';
+import { registerWatchCommands } from './watch.js';
 
 export function buildProgram(ctx: Ctx): Command {
   const { deps } = ctx;
@@ -29,6 +30,7 @@ export function buildProgram(ctx: Ctx): Command {
   registerDefaultsCommands(program, ctx);
   registerLearnCommands(program, ctx);
   registerPageCommands(program, ctx);
+  registerWatchCommands(program, ctx);
   return program;
 }
 

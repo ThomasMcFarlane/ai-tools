@@ -24,10 +24,10 @@ Agents prefer scripted, testable tools over model reasoning.
 ## Browser safety
 
 - Never open a tab or navigate in the browser of the user.
-- The CLI starts its own headless browser with its own profile, and closes it at the end of the run. It limits the memory of that browser when the system allows it.
+- The CLI starts its own headless browser with its own profile, and closes it at the end of the run. Each run uses its own temporary profile folder, so two runs at once never collide. The kit deletes the folder at the end and removes stale ones of dead runs. It limits the memory of that browser when the system allows it.
 - A site that needs the login of the user has the fetch mode `user-browser`. The CLI never fetches it.
 - For such a site, ask the user first. Then run the in-page script in a tab that the user already has open. Pass the result to the CLI parse command. Report only what the parse command prints.
-- Never type a password, solve a captcha or work around a block. Record the block and move on.
+- Never type a password or solve a captcha. Do not defeat a challenge or a block with tricks. A plain browser identity (a normal user agent) is allowed. Record the block and use the next method.
 
 ## Reporting
 
