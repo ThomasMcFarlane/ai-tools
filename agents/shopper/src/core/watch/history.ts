@@ -30,6 +30,8 @@ export interface HistoryLine {
   events: WatchEvent[];
   notified: boolean;
   specHash?: string;
+  maxPrice?: number | null;
+  currency?: string;
 }
 
 function isHistoryLine(value: unknown): value is HistoryLine {
@@ -111,11 +113,17 @@ export function consecutiveFailures(lines: HistoryLine[]): Record<string, number
 }
 
 export function previousState(lines: HistoryLine[]): PreviousState {
-  return {
+  const state: PreviousState = {
     hasHistory: lines.length > 0,
     recent: recentSnapshots(lines),
     failures: consecutiveFailures(lines),
   };
+  const last = lines.at(-1);
+  if (last !== undefined && last.maxPrice !== undefined) {
+    state.maxPrice = last.maxPrice;
+    if (last.currency !== undefined) state.maxPriceCurrency = last.currency;
+  }
+  return state;
 }
 
 export function rotateHistory(file: string, now: Date): string | null {

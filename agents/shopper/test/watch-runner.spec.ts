@@ -184,6 +184,42 @@ describe('runWatch', () => {
     expect((await runWatch(watch, env.deps, { notify: false })).events).toEqual([]);
   });
 
+  it('alerts once per listing when the threshold is raised, never when lowered', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram', maxPrice: 3000, on: ['threshold'] });
+    let current = watch;
+    const run = async () => (await runWatch(current, env.deps, { notify: false })).events;
+    setPage(env.world, 'a', [fakeHit('a', 'RAM', 3400), fakeHit('a', 'RAM2', 3200)]);
+    expect(await run()).toEqual([]);
+    advance(env.world, 6);
+    current = editWatch(env.deps.paths.watchesFile, watch.id, { maxPrice: 3500 }, env.deps.now());
+    expect((await run()).map((e) => e.type)).toEqual(['threshold', 'threshold']);
+    advance(env.world, 6);
+    expect(await run()).toEqual([]);
+    advance(env.world, 6);
+    current = editWatch(env.deps.paths.watchesFile, watch.id, { maxPrice: 3300 }, env.deps.now());
+    expect(await run()).toEqual([]);
+  });
+
+  it('reads history lines without maxPrice as unknown', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram', maxPrice: 3500, on: ['threshold'] });
+    const run = async () => (await runWatch(watch, env.deps, { notify: false })).events;
+    setPage(env.world, 'a', [fakeHit('a', 'RAM', 4000)]);
+    await run();
+    const file = historyFile(env.deps.paths, watch.id);
+    const stripped = readHistory(file).map((line) => {
+      const copy: Record<string, unknown> = { ...line };
+      delete copy.maxPrice;
+      delete copy.currency;
+      return copy;
+    });
+    writeFileSync(file, stripped.map((l) => `${JSON.stringify(l)}\n`).join(''));
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM', 3400)]);
+    expect((await run()).map((e) => e.type)).toEqual(['threshold']);
+  });
+
   it('uses the watch currency and sites', async () => {
     const env = setup(['a', 'b']);
     setPage(env.world, 'a', [fakeHit('a', 'RAM', 1)]);
