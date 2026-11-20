@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -206,6 +206,55 @@ describe('watch add, list, show, edit, remove', () => {
     expect(await exec(['watch', 'edit', 'one', '--enable', '--disable'])).toBe(2);
     expect(await exec(['watch', 'edit', 'nope', '--enable'])).toBe(2);
     expect(await exec(['watch', 'edit', 'one', '--interval', '1m'])).toBe(2);
+  });
+
+  it('rotates the history when an edit changes what the watch looks for', async () => {
+    setPage(world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await exec(['watch', 'add', 'ram', '--sites', 'a']);
+    await exec(['watch', 'run', 'ram']);
+    const history = join(dir, 'state', 'shopper', 'history');
+    expect(readdirSync(history)).toEqual(['ram.jsonl']);
+
+    out.length = 0;
+    expect(await exec(['watch', 'edit', 'ram', '--interval', '1d', '--max-price', '50'])).toBe(0);
+    expect(out).toEqual(['updated ram']);
+    expect(readdirSync(history)).toEqual(['ram.jsonl']);
+
+    for (const change of [
+      ['--include', 'one'],
+      ['--exclude', 'pro'],
+      ['--sites', 'a,b'],
+      ['--condition', 'used'],
+      ['--currency', 'USD'],
+    ]) {
+      await exec(['watch', 'run', 'ram']);
+      out.length = 0;
+      expect(await exec(['watch', 'edit', 'ram', ...change])).toBe(0);
+      expect(out[0]).toContain('history rotated');
+      expect(readdirSync(history).filter((name) => name.endsWith('.jsonl.old'))).not.toHaveLength(
+        0,
+      );
+      expect(existsSync(join(history, 'ram.jsonl'))).toBe(false);
+      world.clock.now = new Date(world.clock.now.getTime() + 1000);
+    }
+    expect(readdirSync(history).filter((name) => name.endsWith('.jsonl.old'))).toHaveLength(5);
+    const run = await json(['watch', 'run', 'ram']);
+    expect(run.value).toMatchObject({ baseline: true, status: 'baseline' });
+  });
+
+  it('deletes the history on remove unless --keep-history is given', async () => {
+    setPage(world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await exec(['watch', 'add', 'one', '--sites', 'a']);
+    await exec(['watch', 'add', 'two', '--sites', 'a']);
+    await exec(['watch', 'run', 'one']);
+    await exec(['watch', 'run', 'two']);
+    const history = join(dir, 'state', 'shopper', 'history');
+    expect(readdirSync(history).sort()).toEqual(['one.jsonl', 'two.jsonl']);
+    expect(await exec(['watch', 'remove', 'one'])).toBe(0);
+    expect(readdirSync(history)).toEqual(['two.jsonl']);
+    expect(await exec(['watch', 'remove', 'two', '--keep-history'])).toBe(0);
+    expect(readdirSync(history)).toEqual(['two.jsonl']);
+    expect(await exec(['watch', 'add', 'two', '--id', 'two', '--sites', 'a'])).toBe(0);
   });
 
   it('removes a watch', async () => {

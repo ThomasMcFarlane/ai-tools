@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -229,5 +229,47 @@ describe('notifier with a real shell command', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain('timed out');
+  });
+});
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+  } catch {
+    return true;
+  }
+}
+
+describe.skipIf(process.platform === 'win32')('timeout kills the whole process group', () => {
+  it('returns at the timeout and leaves no live process behind', async () => {
+    const shellPid = join(dir, 'shell.pid');
+    const sleepPid = join(dir, 'sleep.pid');
+    const started = Date.now();
+    const result = await notify({
+      watchId: 'x',
+      events: [NEW],
+      message: 'm',
+      command: `echo $$ > '${shellPid}'; sleep 6 & echo $! > '${sleepPid}'; sleep 6 | cat`,
+      quietUnchanged: true,
+      env: process.env,
+      spawn: shellSpawn,
+      print: null,
+      timeoutMs: 500,
+    });
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('timed out');
+    expect(existsSync(shellPid) && existsSync(sleepPid)).toBe(true);
+    const pids = [shellPid, sleepPid].map((file) => Number(readFileSync(file, 'utf8').trim()));
+    const deadline = Date.now() + 1000;
+    while (pids.some(alive) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(pids.filter(alive)).toEqual([]);
   });
 });

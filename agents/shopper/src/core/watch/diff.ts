@@ -36,13 +36,25 @@ export function siteFailed(status: string): boolean {
   return status === 'error' || status === 'blocked' || status === 'skipped';
 }
 
+export type OutcomeKind = 'ok' | 'empty' | 'failed' | 'ignored';
+
+export function outcomeKind(status: string, hitCount: number): OutcomeKind {
+  if (status === 'needs-user-browser') return 'ignored';
+  if (siteFailed(status)) return 'failed';
+  if (status === 'empty') return 'empty';
+  if (status === 'ok') return hitCount > 0 ? 'ok' : 'empty';
+  return 'ignored';
+}
+
+export const RECENT_RUNS = 5;
+
 export interface PreviousState {
   hasHistory: boolean;
-  bySite: Record<string, SearchHit[]>;
+  recent: Record<string, SearchHit[][]>;
   failures: Record<string, number>;
 }
 
-export const EMPTY_PREVIOUS: PreviousState = { hasHistory: false, bySite: {}, failures: {} };
+export const EMPTY_PREVIOUS: PreviousState = { hasHistory: false, recent: {}, failures: {} };
 
 export interface DiffOptions {
   maxPrice: number | null;
@@ -161,15 +173,22 @@ export function diffRun(input: DiffInput): WatchEvent[] {
   const events: WatchEvent[] = [];
   const current = dedupe(input.hits, queryIdParams, currency);
 
-  const before = new Map<string, Map<string, SearchHit>>();
-  for (const [site, hits] of Object.entries(previous.bySite)) {
-    before.set(site, dedupe(hits, queryIdParams, currency));
+  const hitCounts = new Map<string, number>();
+  for (const hit of input.hits) hitCounts.set(hit.site, (hitCounts.get(hit.site) ?? 0) + 1);
+
+  const known = new Map<string, Map<string, SearchHit>>();
+  for (const [site, snapshots] of Object.entries(previous.recent)) {
+    const lookup = new Map<string, SearchHit>();
+    for (const snapshot of snapshots) {
+      for (const [key, hit] of dedupe(snapshot, queryIdParams, currency)) lookup.set(key, hit);
+    }
+    known.set(site, lookup);
   }
 
   for (const [key, hit] of current) {
     const siteOutcome = input.sites[hit.site];
-    if (siteOutcome !== undefined && !siteSucceeded(siteOutcome.status)) continue;
-    const knownSite = before.get(hit.site);
+    if (siteOutcome !== undefined && outcomeKind(siteOutcome.status, 1) !== 'ok') continue;
+    const knownSite = known.get(hit.site);
     const nowAtThreshold = atOrBelow(hit.price, maxPrice, currency);
     if (knownSite === undefined) {
       if (nowAtThreshold) events.push(eventFor('threshold', key, hit));
@@ -201,9 +220,11 @@ export function diffRun(input: DiffInput): WatchEvent[] {
 
   for (const [site, outcome] of Object.entries(input.sites)) {
     const streak = previous.failures[site] ?? 0;
-    if (siteFailed(outcome.status)) {
+    const kind = outcomeKind(outcome.status, hitCounts.get(site) ?? 0);
+    if (kind === 'failed' || kind === 'empty') {
       if (streak + 1 === FAILURE_STREAK) {
-        const reason = outcome.reason === undefined ? '' : `: ${outcome.reason}`;
+        const detail = outcome.reason ?? (kind === 'empty' ? 'no listings' : undefined);
+        const reason = detail === undefined ? '' : `: ${detail}`;
         events.push({
           type: 'scanner_failing',
           key: `scanner ${site}`,
@@ -215,7 +236,7 @@ export function diffRun(input: DiffInput): WatchEvent[] {
           note: `failed ${FAILURE_STREAK} runs in a row${reason}`,
         });
       }
-    } else if (siteSucceeded(outcome.status) && streak >= FAILURE_STREAK) {
+    } else if (kind === 'ok' && streak >= FAILURE_STREAK) {
       events.push({
         type: 'scanner_failing',
         key: `scanner ${site}`,

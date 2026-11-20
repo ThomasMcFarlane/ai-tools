@@ -1,9 +1,9 @@
-import { realpathSync } from 'node:fs';
+import { realpathSync, rmSync } from 'node:fs';
 import type { Command } from 'commander';
 import { WATCH_EVENTS } from '../core/defaults.js';
 import { ShopperError } from '../core/types.js';
 import { formatSeen, renderTable, truncate } from './output.js';
-import { readHistory } from '../core/watch/history.js';
+import { readHistory, rotateHistory } from '../core/watch/history.js';
 import { resolveNotifyCommand, shellSpawn, summaryLine } from '../core/watch/notify.js';
 import {
   isDue,
@@ -21,6 +21,7 @@ import {
   historyFile,
   readWatches,
   removeWatch,
+  specHash,
   watchesJsonSchema,
   watchPaths,
   type Watch,
@@ -64,6 +65,7 @@ interface WatchFlags extends StoreFlags {
   limit?: string;
   every?: string;
   write?: boolean;
+  keepHistory?: boolean;
   json?: boolean;
 }
 
@@ -344,17 +346,34 @@ export function registerWatchCommands(program: Command, ctx: Ctx): void {
   ).action((id: string, flags: WatchFlags) => {
     const input = parseWatchFlags(flags, deps);
     delete input.id;
-    const updated = editWatch(paths(flags).watchesFile, id, input, deps.now());
-    deps.print(flags.json === true ? JSON.stringify(updated, null, 2) : `updated ${updated.id}`);
+    const where = paths(flags);
+    const before = findWatch(readWatches(where.watchesFile), id);
+    const updated = editWatch(where.watchesFile, id, input, deps.now());
+    const rotated =
+      specHash(before) === specHash(updated)
+        ? null
+        : rotateHistory(historyFile(where, id), deps.now());
+    if (flags.json === true) {
+      deps.print(JSON.stringify(updated, null, 2));
+      return;
+    }
+    deps.print(
+      rotated === null
+        ? `updated ${updated.id}`
+        : `updated ${updated.id}: history rotated, the next run is a baseline`,
+    );
   });
 
   watch
     .command('remove <id>')
-    .description('remove a watch and keep its history file')
+    .description('remove a watch and delete its history file')
+    .option('--keep-history', 'keep the history file')
     .option('--memory-dir <dir>', 'memory directory')
     .option('--json', 'print JSON')
     .action((id: string, flags: WatchFlags) => {
-      const removed = removeWatch(paths(flags).watchesFile, id);
+      const where = paths(flags);
+      const removed = removeWatch(where.watchesFile, id);
+      if (flags.keepHistory !== true) rmSync(historyFile(where, id), { force: true });
       deps.print(
         flags.json === true ? JSON.stringify({ removed: removed.id }) : `removed ${removed.id}`,
       );

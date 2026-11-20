@@ -1,11 +1,18 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { ShopperDefaults } from '../defaults.js';
 import { parseInterval } from '../defaults.js';
 import { runSearch, type RunDeps, type SearchOutput } from '../run.js';
 import type { Condition, SearchHit } from '../types.js';
-import { diffRun, mergeEvents, siteFailed, type SiteOutcome, type WatchEvent } from './diff.js';
+import {
+  EMPTY_PREVIOUS,
+  diffRun,
+  mergeEvents,
+  siteFailed,
+  type SiteOutcome,
+  type WatchEvent,
+} from './diff.js';
 import {
   appendHistory,
   pendingEvents,
@@ -19,7 +26,14 @@ import {
   type NotifyResult,
   type SpawnFn,
 } from './notify.js';
-import { historyFile, readWatches, recordRun, type Watch, type WatchPaths } from './store.js';
+import {
+  historyFile,
+  readWatches,
+  recordRun,
+  specHash,
+  type Watch,
+  type WatchPaths,
+} from './store.js';
 
 export const LOCK_STALE_MS = 2 * 3_600_000;
 const NO_LIMIT = Number.MAX_SAFE_INTEGER;
@@ -68,6 +82,21 @@ interface LockContent {
   token: string;
 }
 
+export interface LockOptions {
+  staleMs?: number;
+  isAlive?: (pid: number) => boolean;
+  afterTakeover?: () => void;
+}
+
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 function readLock(file: string): LockContent | null {
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<LockContent>;
@@ -80,10 +109,9 @@ function readLock(file: string): LockContent | null {
   return null;
 }
 
-function lockStartedAt(file: string): number | null {
-  const content = readLock(file);
-  if (content !== null) {
-    const time = new Date(content.startedAt).getTime();
+function lockStartedAt(file: string, held: LockContent | null): number | null {
+  if (held !== null) {
+    const time = new Date(held.startedAt).getTime();
     if (!Number.isNaN(time)) return time;
   }
   try {
@@ -93,7 +121,9 @@ function lockStartedAt(file: string): number | null {
   }
 }
 
-export function acquireLock(file: string, now: Date, staleMs: number = LOCK_STALE_MS): Lock | null {
+export function acquireLock(file: string, now: Date, options: LockOptions = {}): Lock | null {
+  const staleMs = options.staleMs ?? LOCK_STALE_MS;
+  const isAlive = options.isAlive ?? pidAlive;
   mkdirSync(dirname(file), { recursive: true });
   const content: LockContent = {
     pid: process.pid,
@@ -105,9 +135,16 @@ export function acquireLock(file: string, now: Date, staleMs: number = LOCK_STAL
     writeFileSync(file, body, { flag: 'wx' });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    const started = lockStartedAt(file);
-    if (started !== null && now.getTime() - started <= staleMs) return null;
-    writeFileSync(file, body);
+    const held = readLock(file);
+    const started = lockStartedAt(file, held);
+    const dead = held !== null && typeof held.pid === 'number' && !isAlive(held.pid);
+    const stale = started === null || now.getTime() - started > staleMs;
+    if (!dead && !stale) return null;
+    const temp = `${file}.${content.token}.tmp`;
+    writeFileSync(temp, body);
+    renameSync(temp, file);
+    options.afterTakeover?.();
+    if (readLock(file)?.token !== content.token) return null;
   }
   return {
     release: () => {
@@ -152,13 +189,15 @@ function queryIdParams(deps: WatchDeps): Record<string, readonly string[]> {
   return params;
 }
 
-function historySites(output: SearchOutput): Record<string, SiteOutcome> {
+function historySites(output: SearchOutput, hits: SearchHit[]): Record<string, SiteOutcome> {
   const sites: Record<string, SiteOutcome> = {};
   for (const [id, report] of Object.entries(output.sites)) {
     if (report.status === 'needs-user-browser') continue;
+    const count = hits.filter((hit) => hit.site === id).length;
+    const status = report.status === 'ok' && count === 0 ? 'empty' : report.status;
     sites[id] = {
-      status: report.status,
-      count: report.count,
+      status,
+      count: status === 'ok' || status === 'empty' ? count : report.count,
       ...(report.reason === undefined ? {} : { reason: report.reason }),
     };
   }
@@ -197,10 +236,13 @@ export async function runWatch(
   );
 
   const hits = output.hits.filter((hit) => matchesSpec(hit.title, watch.spec)).map(stripRaw);
-  const sites = historySites(output);
+  const sites = historySites(output, hits);
   const file = historyFile(deps.paths, watch.id);
   const lines = readHistory(file);
-  const previous = previousState(lines);
+  const hash = specHash(watch);
+  const lastHash = lines.at(-1)?.specHash;
+  const previous =
+    lastHash !== undefined && lastHash !== hash ? EMPTY_PREVIOUS : previousState(lines);
   const events = diffRun({
     hits,
     sites,
@@ -254,7 +296,7 @@ export async function runWatch(
       print: deps.print,
     });
   }
-  const delivered = opts.notify ? notified?.ok === true : pending.length === 0;
+  const delivered = opts.notify && notified?.ok === true;
 
   const line: HistoryLine = {
     v: 1,
@@ -265,6 +307,7 @@ export async function runWatch(
     errors,
     events,
     notified: delivered,
+    specHash: hash,
   };
   appendHistory(file, line);
   recordRun(deps.paths.watchesFile, watch.id, now, status);

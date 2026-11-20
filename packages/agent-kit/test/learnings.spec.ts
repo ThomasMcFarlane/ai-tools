@@ -10,6 +10,7 @@ import {
   liveBlock,
   parseExpiry,
   parseLearningLines,
+  shellQuote,
   readLearnings,
   type Learning,
 } from '../src/index.js';
@@ -173,6 +174,31 @@ describe('flushLearnings', () => {
     expect(text).toMatch(/demo .*pending\.\d+\.\d+.*\.flushing/);
     expect(existsSync(pendingOf(state))).toBe(false);
     expect(flushing(state)).toEqual([]);
+  });
+
+  it('quotes a file path with a space and a dollar sign for the persist command', () => {
+    const base = tempDir();
+    const state = join(base, 'my state $HOME');
+    const mem = tempDir();
+    const sink = join(tempDir(), 'sink.txt');
+    const opts = {
+      memoryDir: mem,
+      stateDir: state,
+      env: {
+        AGENTS_MEMORY_PERSIST: `cat {file} >> '${sink}'; echo {agent} >> '${sink}'; echo "$AGENTS_PERSIST_AGENT" >> '${sink}'; test -f "$AGENTS_PERSIST_FILE" && echo env-file-ok >> '${sink}'`,
+      },
+      now: () => new Date('2026-11-21T10:00:00.000Z'),
+    };
+    appendLearning('demo', { kind: 'note', key: 'n', value: 'hello' }, opts);
+    expect(flushLearnings('demo', opts)).toMatchObject({ status: 'persisted', method: 'command' });
+    const text = readFileSync(sink, 'utf8');
+    expect(text).toContain('"hello"');
+    expect(text).toContain('demo\ndemo\nenv-file-ok');
+  });
+
+  it('quotes shell values', () => {
+    expect(shellQuote('a b')).toBe("'a b'");
+    expect(shellQuote("it's $x")).toBe("'it'\\''s $x'");
   });
 
   it('keeps lines appended during a flush for the next flush', () => {

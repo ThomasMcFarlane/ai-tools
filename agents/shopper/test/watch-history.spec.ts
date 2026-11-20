@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendHistory,
   consecutiveFailures,
-  lastSuccessfulHits,
+  recentSnapshots,
+  rotateHistory,
   parseHistory,
   pendingEvents,
   previousState,
@@ -72,6 +73,17 @@ describe('history file', () => {
   });
 });
 
+describe('rotation', () => {
+  it('renames the file so the next run starts fresh', () => {
+    appendHistory(file, line(1, { a: { status: 'ok' } }, ['a1']));
+    const target = rotateHistory(file, new Date('2026-11-21T01:02:03.456Z'));
+    expect(target).toBe(join(dir, 'nested', 'x.2026-11-21T01-02-03-456Z.jsonl.old'));
+    expect(readHistory(file)).toEqual([]);
+    expect(readHistory(target as string)).toHaveLength(1);
+    expect(rotateHistory(file, new Date())).toBeNull();
+  });
+});
+
 describe('notified flag', () => {
   const ev = (key: string, price: number) => ({
     type: 'new' as const,
@@ -105,39 +117,55 @@ describe('notified flag', () => {
 });
 
 describe('previous state', () => {
-  it('returns the hits of the last successful run per site', () => {
+  it('returns the recent non-empty snapshots per site', () => {
     const lines = [
       line(1, { a: { status: 'ok' }, b: { status: 'ok' } }, ['a1', 'b1']),
       line(2, { a: { status: 'ok' }, b: { status: 'error' } }, ['a2']),
     ];
-    const hits = lastSuccessfulHits(lines);
-    expect(hits.a?.map((entry) => entry.title)).toEqual(['a2']);
-    expect(hits.b?.map((entry) => entry.title)).toEqual(['b1']);
+    const recent = recentSnapshots(lines);
+    expect(recent.a?.map((hits) => hits.map((entry) => entry.title))).toEqual([['a1'], ['a2']]);
+    expect(recent.b?.map((hits) => hits.map((entry) => entry.title))).toEqual([['b1']]);
   });
 
-  it('treats an empty result as a success with no hits', () => {
-    const hits = lastSuccessfulHits([
+  it('does not let an empty result replace a snapshot', () => {
+    const recent = recentSnapshots([
       line(1, { a: { status: 'ok' } }, ['a1']),
       line(2, { a: { status: 'empty' } }),
+      line(3, { a: { status: 'ok' } }),
     ]);
-    expect(hits.a).toEqual([]);
+    expect(recent.a?.map((hits) => hits.map((entry) => entry.title))).toEqual([['a1']]);
+  });
+
+  it('keeps at most the last 5 snapshots', () => {
+    const lines = [1, 2, 3, 4, 5, 6, 7].map((n) => line(n, { a: { status: 'ok' } }, [`a${n}`]));
+    const recent = recentSnapshots(lines);
+    expect(recent.a?.map((hits) => hits[0]?.title)).toEqual(['a3', 'a4', 'a5', 'a6', 'a7']);
+  });
+
+  it('knows a site that only returned empty results, with no snapshot', () => {
+    expect(recentSnapshots([line(1, { a: { status: 'empty' } })])).toEqual({ a: [] });
   });
 
   it('leaves out a site that never succeeded', () => {
-    expect(lastSuccessfulHits([line(1, { a: { status: 'error' } })])).toEqual({});
+    expect(recentSnapshots([line(1, { a: { status: 'error' } })])).toEqual({});
   });
 
-  it('counts consecutive failures and resets them on success', () => {
+  it('counts failures and empty results in a row and resets them on a non-empty run', () => {
     const lines = [
-      line(1, { a: { status: 'error' }, b: { status: 'ok' } }),
+      line(1, { a: { status: 'error' }, b: { status: 'ok' } }, ['b1']),
       line(2, { a: { status: 'blocked' }, b: { status: 'error' } }),
-      line(3, {
-        a: { status: 'skipped' },
-        b: { status: 'ok' },
-        c: { status: 'needs-user-browser' },
-      }),
+      line(
+        3,
+        {
+          a: { status: 'skipped' },
+          b: { status: 'ok' },
+          c: { status: 'needs-user-browser' },
+        },
+        ['b3'],
+      ),
+      line(4, { a: { status: 'empty' }, b: { status: 'ok' } }),
     ];
-    expect(consecutiveFailures(lines)).toEqual({ a: 3, b: 0 });
+    expect(consecutiveFailures(lines)).toEqual({ a: 4, b: 1 });
   });
 
   it('flags a missing history', () => {

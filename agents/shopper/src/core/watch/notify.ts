@@ -19,11 +19,25 @@ export interface SpawnResult {
 
 export type SpawnFn = (request: SpawnRequest) => Promise<SpawnResult>;
 
+function killGroup(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      return;
+    }
+  }
+}
+
 export const shellSpawn: SpawnFn = (request) =>
   new Promise((resolve) => {
     const child = nodeSpawn('/bin/sh', ['-c', request.command], {
       env: request.env,
       stdio: ['pipe', 'ignore', 'pipe'],
+      detached: true,
     });
     let stderr = '';
     let settled = false;
@@ -34,7 +48,10 @@ export const shellSpawn: SpawnFn = (request) =>
       resolve(result);
     };
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      killGroup(child.pid);
+      child.stdin.destroy();
+      child.stderr.destroy();
+      child.unref();
       finish({ code: null, stderr: `notify command timed out after ${request.timeoutMs} ms` });
     }, request.timeoutMs);
     child.stderr.on('data', (chunk: Buffer) => {

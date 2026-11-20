@@ -220,6 +220,10 @@ function restore(files: string[], pendingFile: string): void {
   }
 }
 
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function persistFile(
   agent: string,
   file: string,
@@ -229,8 +233,15 @@ function persistFile(
   text: string,
 ): 'command' | 'append' {
   if (command !== undefined && command !== '') {
-    const filled = command.split('{agent}').join(agent).split('{file}').join(file);
-    const result = spawnSync('/bin/sh', ['-c', filled], { encoding: 'utf8', env });
+    const filled = command
+      .split('{agent}')
+      .join(shellQuote(agent))
+      .split('{file}')
+      .join(shellQuote(file));
+    const result = spawnSync('/bin/sh', ['-c', filled], {
+      encoding: 'utf8',
+      env: { ...env, AGENTS_PERSIST_FILE: file, AGENTS_PERSIST_AGENT: agent },
+    });
     if (result.status !== 0) {
       const detail = (result.stderr ?? '').trim();
       throw new FlushError(

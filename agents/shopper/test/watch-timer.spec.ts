@@ -27,7 +27,9 @@ afterEach(() => {
 describe('service unit', () => {
   it('has the required settings and an absolute ExecStart', () => {
     const text = renderService({ every: '15m', exec: ['/opt/shopper/shopper'] });
-    expect(text).toContain('[Service]\nType=oneshot\nNice=19\nMemoryHigh=2G\nMemoryMax=3G\n');
+    expect(text).toContain(
+      '[Service]\nType=oneshot\nNice=19\nMemoryHigh=2G\nMemoryMax=3G\nTimeoutStartSec=20min\n',
+    );
     expect(text).toContain('EnvironmentFile=-%h/.config/ai-tools/shopper-watch.env\n');
     expect(text).toContain('ExecStart=/opt/shopper/shopper watch run-due --notify\n');
   });

@@ -147,6 +147,7 @@ export function shouldUseScope(
 ): boolean {
   if (platform !== 'linux') return false;
   if (env.AGENTS_BROWSER_CGROUP === '0') return false;
+  if (env.INVOCATION_ID !== undefined && env.INVOCATION_ID !== '') return false;
   return findOnPath('systemd-run', env, exists) !== null;
 }
 
@@ -262,6 +263,17 @@ class Semaphore {
   }
 }
 
+export const SCOPE_START_TIMEOUT_MS = 8000;
+
+export function killProcessGroup(pid: number | null | undefined): void {
+  if (pid === null || pid === undefined) return;
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    return;
+  }
+}
+
 export function normaliseUserAgent(userAgent: string): string {
   return userAgent.replace(/HeadlessChrome/g, 'Chrome');
 }
@@ -274,6 +286,7 @@ export interface SessionOptions {
 export class BrowserSession {
   private readonly tabs = new Semaphore(MAX_TABS);
   private userAgent: Promise<string | null> | null = null;
+  private readonly cleanups: Array<() => void> = [];
 
   constructor(
     readonly client: CdpClient,
@@ -282,6 +295,10 @@ export class BrowserSession {
     private readonly runDir: string | null = null,
     private readonly options: SessionOptions = {},
   ) {}
+
+  onClose(cleanup: () => void): void {
+    this.cleanups.push(cleanup);
+  }
 
   private pageUserAgent(): Promise<string | null> {
     this.userAgent ??= this.client
@@ -324,6 +341,7 @@ export class BrowserSession {
     try {
       await this.stop();
     } finally {
+      for (const cleanup of this.cleanups.splice(0)) cleanup();
       if (this.runDir !== null) rmSync(this.runDir, { recursive: true, force: true });
     }
   }
@@ -397,8 +415,28 @@ async function startChild(
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
-  if (child.exitCode === null) child.kill('SIGKILL');
+  if (child.exitCode === null) killProcessGroup(child.pid);
   throw new BrowserError(`browser did not report a DevTools port within ${timeoutMs} ms`);
+}
+
+function guardSession(session: BrowserSession, pid: number | null, profileDir: string): void {
+  const onExit = (): void => {
+    killProcessGroup(pid);
+    rmSync(profileDir, { recursive: true, force: true });
+  };
+  const onSigint = (): void => shutDown(130);
+  const onSigterm = (): void => shutDown(143);
+  const shutDown = (code: number): void => {
+    void session.close().finally(() => process.exit(code));
+  };
+  process.on('exit', onExit);
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+  session.onClose(() => {
+    process.off('exit', onExit);
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+  });
 }
 
 export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSession> {
@@ -428,7 +466,7 @@ export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSe
         started = await startChild(
           buildLaunchCommand({ binary, args, scoped: true }),
           profileDir,
-          timeoutMs,
+          Math.min(timeoutMs, SCOPE_START_TIMEOUT_MS),
         );
       } catch {
         started = await startChild(
@@ -448,12 +486,20 @@ export async function launchBrowser(opts: LaunchOptions = {}): Promise<BrowserSe
       const wsUrl = await browserWebSocketUrl(started.port);
       const connectOptions = opts.factory === undefined ? {} : { factory: opts.factory };
       const client = await CdpClient.connect(wsUrl, connectOptions);
-      return new BrowserSession(client, started.child.pid ?? null, started.child, profileDir, {
-        keepUserAgent: env.AGENTS_BROWSER_KEEP_UA === '1',
-        lang: opts.lang ?? 'en-US',
-      });
+      const session = new BrowserSession(
+        client,
+        started.child.pid ?? null,
+        started.child,
+        profileDir,
+        {
+          keepUserAgent: env.AGENTS_BROWSER_KEEP_UA === '1',
+          lang: opts.lang ?? 'en-US',
+        },
+      );
+      guardSession(session, started.child.pid ?? null, profileDir);
+      return session;
     } catch (error) {
-      if (started.child.exitCode === null) started.child.kill('SIGKILL');
+      killProcessGroup(started.child.pid);
       throw error;
     }
   } catch (error) {

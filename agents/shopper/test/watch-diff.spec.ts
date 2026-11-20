@@ -35,9 +35,20 @@ function previous(
   failures: Record<string, number> = {},
   sites: string[] = ['a'],
 ): PreviousState {
-  const bySite: Record<string, SearchHit[]> = {};
-  for (const site of sites) bySite[site] = hits.filter((entry) => entry.site === site);
-  return { hasHistory: true, bySite, failures };
+  const recent: Record<string, SearchHit[][]> = {};
+  for (const site of sites) {
+    const own = hits.filter((entry) => entry.site === site);
+    recent[site] = own.length > 0 ? [own] : [];
+  }
+  return { hasHistory: true, recent, failures };
+}
+
+function runs(
+  snapshots: SearchHit[][],
+  failures: Record<string, number> = {},
+  site = 'a',
+): PreviousState {
+  return { hasHistory: true, recent: { [site]: snapshots }, failures };
 }
 
 function run(
@@ -107,13 +118,16 @@ describe('new', () => {
     expect(events[0]).toMatchObject({ title: 'fresh', site: 'a', stock: 'in_stock' });
   });
 
-  it('fires again when the site returned zero hits last time', () => {
-    const events = run([priced('x', 10)], previous([]));
-    expect(types(events)).toEqual(['new']);
+  it('fires for a site that was reachable but empty before', () => {
+    expect(types(run([priced('x', 10)], previous([])))).toEqual(['new']);
+  });
+
+  it('baselines a site that was never seen', () => {
+    expect(run([priced('x', 10)], { hasHistory: true, recent: {}, failures: {} })).toEqual([]);
   });
 
   it('lists the same listing once when a site repeats it', () => {
-    const events = run([priced('dup', 90), priced('dup', 80)], previous([]));
+    const events = run([priced('dup', 90), priced('dup', 80)], previous([priced('seed', 1000)]));
     expect(events).toHaveLength(1);
     expect(events[0]?.price?.amount).toBe(80);
   });
@@ -153,6 +167,62 @@ describe('failed sites', () => {
       },
     );
     expect(events.map((event) => event.site)).toEqual(['a', 'b']);
+  });
+});
+
+describe('churn and empty results', () => {
+  const x = (amount: number, extra: Partial<SearchHit> = {}) => priced('x', amount, extra);
+  const y = priced('y', 50);
+
+  it('does not call a listing new when it was absent for one run and is back', () => {
+    const before = runs([[x(100), y], [y]]);
+    expect(run([x(100), y], before)).toEqual([]);
+  });
+
+  it('still reports a price drop for a listing that came back cheaper', () => {
+    const before = runs([[x(100), y], [y]]);
+    const events = run([x(80), y], before);
+    expect(types(events)).toEqual(['price_drop']);
+    expect(events[0]?.previousPrice?.amount).toBe(100);
+  });
+
+  it('still reports back_in_stock and threshold against the last known listing', () => {
+    const before = runs([[x(500, { stock: 'out_of_stock' }), y], [y]]);
+    const events = run([x(90), y], before, { maxPrice: 100 });
+    expect(types(events)).toEqual(['price_drop', 'back_in_stock', 'threshold']);
+  });
+
+  it('reports new only when the key is missing from the last 5 snapshots', () => {
+    const before = runs([[y], [y], [y], [y], [y]]);
+    expect(types(run([x(1), y], before))).toEqual(['new']);
+    const older = runs([[x(1)], [y], [y], [y], [y]]);
+    expect(types(run([x(1), y], older))).toEqual([]);
+  });
+
+  it('treats an empty result as a failure and not as a snapshot', () => {
+    const empty: Record<string, SiteOutcome> = { a: { status: 'empty' } };
+    expect(run([], runs([[x(100)]]), {}, empty)).toEqual([]);
+    const third = run([], runs([[x(100)]], { a: 2 }), {}, empty);
+    expect(types(third)).toEqual(['scanner_failing']);
+    expect(third[0]?.note).toContain('no listings');
+    expect(run([], runs([[x(100)]], { a: 3 }), {}, empty)).toEqual([]);
+  });
+
+  it('treats ok with no hits like an empty result', () => {
+    const events = run([], runs([[x(100)]], { a: 2 }), {}, { a: { status: 'ok' } });
+    expect(types(events)).toEqual(['scanner_failing']);
+  });
+
+  it('gives no false new after empty then normal', () => {
+    const before = runs([[x(100), y]], { a: 1 });
+    expect(run([x(100), y], before)).toEqual([]);
+  });
+
+  it('reports the recovery after three empty runs, without false new events', () => {
+    const before = runs([[x(100), y]], { a: 3 });
+    const events = run([x(100), y], before);
+    expect(types(events)).toEqual(['scanner_failing']);
+    expect(events[0]?.recovered).toBe(true);
   });
 });
 
@@ -212,12 +282,14 @@ describe('threshold', () => {
   const options = { maxPrice: 100 };
 
   it('fires for a new hit at or below the threshold, next to new', () => {
-    const events = run([priced('n', 100)], previous([]), options);
+    const events = run([priced('n', 100)], previous([priced('seed', 1000)]), options);
     expect(types(events)).toEqual(['new', 'threshold']);
   });
 
   it('does not fire for a new hit above the threshold', () => {
-    expect(types(run([priced('n', 101)], previous([]), options))).toEqual(['new']);
+    expect(types(run([priced('n', 101)], previous([priced('seed', 1000)]), options))).toEqual([
+      'new',
+    ]);
   });
 
   it('fires when a known hit crosses the threshold', () => {
@@ -249,7 +321,9 @@ describe('threshold', () => {
   it('is off without maxPrice and for other currencies', () => {
     expect(run([priced('x', 1)], previous([priced('x', 1)]))).toEqual([]);
     const usd = priced('x', 1, { price: { amount: 1, currency: 'USD' } });
-    expect(run([usd], previous([]), options).map((event) => event.type)).toEqual(['new']);
+    expect(
+      run([usd], previous([priced('seed', 1000)]), options).map((event) => event.type),
+    ).toEqual(['new']);
   });
 });
 

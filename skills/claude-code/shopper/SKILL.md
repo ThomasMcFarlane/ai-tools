@@ -45,8 +45,8 @@ Run `shopper --version` once. If the command is missing, stop and tell the user 
 ## Workflow
 
 1. Pick 1 to 3 search queries. Use the words that a shop would use for the item. Add the model number when you know it.
-2. Run `shopper search <query...> --json`. Useful flags: `--sites a,b`, `--condition new,used`, `--max-price N`, `--limit N`, `--include-oos`.
-3. Open the best candidates with `shopper listing <url> --json`. This reads the real variants, SKUs and prices. Always do this for marketplaces, such as AliExpress, where a title can list options that do not exist.
+2. Run `shopper search <query...> --json`. For computer parts, add the part type to the query, for example `ram ddr5 32gb` and not `ddr5 32gb`. Some shops rank whole PC sets first. Useful flags: `--sites a,b`, `--condition new,used`, `--max-price N`, `--limit N`, `--include-oos`.
+3. Open the best candidates with `shopper listing <url> --json`. This reads the real variants, SKUs and prices. Always do this for marketplaces, such as AliExpress, where a title can list options that do not exist. AliExpress item pages often block headless reads. When `listing` reports a block for AliExpress, say that the price per variant could not be read. Never report the price on the search card as the price of a variant.
 4. Filter by judgement. Drop a listing that is a different item, a different size or capacity, an accessory, or a pack that does not match. Keep the reason.
 5. Report a table of the offers that match. Columns: price in the currency of the defaults, shop and site, stock, condition, variant, link, and the time that the CLI saw it. Put the cheapest offer first, unless the budget style says otherwise.
 6. State the sites that you skipped, and the sites that need the browser of the user.
@@ -78,7 +78,7 @@ Record a learning when a deterministic check shows a fact:
 
 Options of `learn add`: `--kind`, `--key`, `--value` (JSON, or plain text stored as a string), `--site`, `--expires` (`24h`, `7d` or an ISO date) and `--evidence`.
 
-At the end of a run, run `shopper learn flush`. It moves the new learnings to the durable memory. It exits with `2` when no store is set. Then tell the user.
+At the end of a run, run `shopper learn flush`. By default it appends the new learnings to the durable memory folder (`$AGENTS_MEMORY_DIR`, or `~/.config/ai-tools/agents`). If `AGENTS_MEMORY_PERSIST` is set, it runs that shell command once instead. The placeholders `{file}` and `{agent}` are shell-quoted. The command also gets them as the environment variables `AGENTS_PERSIST_FILE` and `AGENTS_PERSIST_AGENT`. The command exits with `2` only in these cases: `AGENTS_MEMORY_READONLY=1` is set without `AGENTS_MEMORY_PERSIST`, the memory folder is not writable, or the persist command fails. Then tell the user.
 
 ## Watches
 
@@ -95,6 +95,8 @@ shopper watch history ddr5-32gb-kit --limit 5
 ```
 
 - Without `--sites`, `--condition` and `--currency`, a watch follows the defaults. `--sites all`, `--condition default` and `--currency default` set a value back.
+- A `watch run` without `--notify` keeps its events pending. A later run with `--notify`, such as the timer, delivers them.
+- `shopper watch remove <id>` deletes the history of the watch. Add `--keep-history` to keep it.
 - The first run is a baseline. A later run reports `new`, `price_drop`, `back_in_stock`, `threshold` and `scanner_failing` events.
 - The scheduler is a systemd user timer. It runs `shopper watch run-due --notify`. No model, no CI job and no cron are used.
 

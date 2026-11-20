@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readHistory } from '../src/core/watch/history.js';
@@ -6,13 +14,21 @@ import {
   LOCK_STALE_MS,
   acquireLock,
   isDue,
+  pidAlive,
   matchesSpec,
   nextRunAt,
   runDue,
   runOne,
   runWatch,
 } from '../src/core/watch/runner.js';
-import { addWatch, historyFile, readWatches, type Watch } from '../src/core/watch/store.js';
+import {
+  addWatch,
+  editWatch,
+  historyFile,
+  readWatches,
+  specHash,
+  type Watch,
+} from '../src/core/watch/store.js';
 import {
   START,
   advance,
@@ -278,6 +294,159 @@ describe('runWatch', () => {
   });
 });
 
+describe('churn, empty results and spec changes', () => {
+  const kinds = (events: Array<{ type: string }>) => events.map((event) => event.type);
+
+  it('gives no new event when a listing is absent for one run and then returns', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100), fakeHit('a', 'RAM two', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM two', 100)]);
+    expect(kinds((await runWatch(watch, env.deps, { notify: false })).events)).toEqual([]);
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100), fakeHit('a', 'RAM two', 100)]);
+    expect(kinds((await runWatch(watch, env.deps, { notify: false })).events)).toEqual([]);
+  });
+
+  it('still reports a price drop for a listing that returns cheaper', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100), fakeHit('a', 'RAM two', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM two', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 80), fakeHit('a', 'RAM two', 100)]);
+    const result = await runWatch(watch, env.deps, { notify: false });
+    expect(kinds(result.events)).toEqual(['price_drop']);
+    expect(result.events[0]?.previousPrice?.amount).toBe(100);
+  });
+
+  it('keeps the last non-empty snapshot through an empty run: no false new, no loss', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    advance(env.world, 6);
+    setPage(env.world, 'a', []);
+    const empty = await runWatch(watch, env.deps, { notify: false });
+    expect(empty).toMatchObject({ status: 'ok', events: [] });
+    expect(empty.sites.a?.status).toBe('empty');
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    expect((await runWatch(watch, env.deps, { notify: false })).events).toEqual([]);
+  });
+
+  it('counts empty runs toward scanner_failing and reports the recovery', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    setPage(env.world, 'a', []);
+    const seen: string[][] = [];
+    for (let n = 0; n < 4; n += 1) {
+      advance(env.world, 6);
+      seen.push(kinds((await runWatch(watch, env.deps, { notify: false })).events));
+    }
+    expect(seen).toEqual([[], [], ['scanner_failing'], []]);
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    const back = await runWatch(watch, env.deps, { notify: false });
+    expect(back.events.map((event) => event.recovered)).toEqual([true]);
+  });
+
+  it('treats a site whose hits are all removed by the spec as empty', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram', exclude: ['laptop'] });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM laptop', 100)]);
+    const result = await runWatch(watch, env.deps, { notify: false });
+    expect(result.sites.a).toMatchObject({ status: 'empty', count: 0 });
+  });
+
+  it('stores a spec hash and starts a baseline when it changes', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    const first = readHistory(historyFile(env.deps.paths, 'ram'))[0];
+    expect(first?.specHash).toBe(specHash(watch));
+
+    const edited = editWatch(
+      env.deps.paths.watchesFile,
+      'ram',
+      { include: ['one'] },
+      env.deps.now(),
+    );
+    expect(specHash(edited)).not.toBe(specHash(watch));
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100), fakeHit('a', 'RAM one pro', 50)]);
+    const result = await runWatch(edited, env.deps, { notify: false });
+    expect(result).toMatchObject({ status: 'baseline', baseline: true, events: [] });
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one pro', 40)]);
+    expect(kinds((await runWatch(edited, env.deps, { notify: false })).events)).toEqual([
+      'price_drop',
+    ]);
+  });
+
+  it('does not change the hash for interval, threshold or notify changes', () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    const edited = editWatch(
+      env.deps.paths.watchesFile,
+      'ram',
+      { interval: '1d', maxPrice: 5, on: ['new'], minDropPercent: 3 },
+      env.deps.now(),
+    );
+    expect(specHash(edited)).toBe(specHash(watch));
+  });
+
+  it('keeps old history lines that have no hash', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    const file = historyFile(env.deps.paths, 'ram');
+    const line = JSON.parse(readFileSync(file, 'utf8').trim());
+    delete line.specHash;
+    writeFileSync(file, `${JSON.stringify(line)}\n`);
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 90)]);
+    expect(kinds((await runWatch(watch, env.deps, { notify: false })).events)).toEqual([
+      'price_drop',
+    ]);
+  });
+});
+
+describe('runs without --notify', () => {
+  it('record their events as undelivered, and a later notify run delivers them', async () => {
+    const env = setup();
+    const watch = add(env, { query: 'ram' });
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    advance(env.world, 6);
+    setPage(env.world, 'a', [fakeHit('a', 'RAM one', 100), fakeHit('a', 'RAM two', 100)]);
+    await runWatch(watch, env.deps, { notify: false });
+    expect(readHistory(historyFile(env.deps.paths, 'ram')).map((line) => line.notified)).toEqual([
+      false,
+      false,
+    ]);
+    expect(env.sent).toEqual([]);
+    advance(env.world, 6);
+    const sent = await runWatch(watch, env.deps, { notify: true });
+    expect(sent.events).toEqual([]);
+    expect(sent.message).toContain('RAM two');
+    expect(env.sent).toHaveLength(1);
+    expect(readHistory(historyFile(env.deps.paths, 'ram')).at(-1)?.notified).toBe(true);
+    advance(env.world, 6);
+    expect((await runWatch(watch, env.deps, { notify: true })).message).toBeNull();
+    expect(env.sent).toHaveLength(1);
+  });
+});
+
 describe('undelivered alerts', () => {
   function flaky() {
     const state = { fail: true, calls: [] as string[] };
@@ -422,6 +591,51 @@ describe('lock', () => {
     expect(taken).not.toBeNull();
     taken?.release();
     expect(existsSync(file)).toBe(false);
+  });
+
+  it('takes over at once when the holder process is dead', () => {
+    const env = setup();
+    const file = env.deps.paths.lockFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ pid: 424242, startedAt: START.toISOString(), token: 'dead' }),
+    );
+    const now = new Date(START.getTime() + 1000);
+    expect(acquireLock(file, now, { isAlive: () => true })).toBeNull();
+    const taken = acquireLock(file, now, { isAlive: (pid) => pid !== 424242 });
+    expect(taken).not.toBeNull();
+    expect(JSON.parse(readFileSync(file, 'utf8')).pid).toBe(process.pid);
+    taken?.release();
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('sees its own process as alive and a finished child as dead', async () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    const child = spawn(process.execPath, ['-e', '']);
+    await new Promise((resolve) => child.on('close', resolve));
+    expect(pidAlive(child.pid as number)).toBe(false);
+  });
+
+  it('aborts a takeover when another process wins the rename', () => {
+    const env = setup();
+    const file = env.deps.paths.lockFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ pid: 424242, startedAt: START.toISOString(), token: 'dead' }),
+    );
+    const lock = acquireLock(file, START, {
+      isAlive: () => false,
+      afterTakeover: () =>
+        writeFileSync(
+          file,
+          JSON.stringify({ pid: 1, startedAt: START.toISOString(), token: 'rival' }),
+        ),
+    });
+    expect(lock).toBeNull();
+    expect(JSON.parse(readFileSync(file, 'utf8')).token).toBe('rival');
+    expect(readdirSync(dirname(file)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('judges an unreadable lock by its file time', () => {

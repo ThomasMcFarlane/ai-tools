@@ -96,15 +96,19 @@ The state dir is `AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/ai-tools/agents`, els
 
 ### Events
 
-The first run of a watch is a baseline. It reports only `threshold` events. A later run compares each site with its last successful run.
+The first run of a watch is a baseline. It reports only `threshold` events. A later run compares each site with its last 5 non-empty runs. A run that returns no matching listings does not replace those snapshots. It counts as a failure for `scanner_failing`.
 
-- `new`: the listing was not in the last successful run of that site.
+- `new`: the listing was in none of the last 5 non-empty runs of that site. A listing that is absent for one run and then returns is not `new`. It can still give a `price_drop`, `back_in_stock` or `threshold` event against its last known state.
 - `price_drop`: the price is lower by more than `notify.minDropPercent`.
 - `back_in_stock`: the stock was `out_of_stock` and is now `in_stock` or `low_stock`.
 - `threshold`: the price is at or below `maxPrice` now, and it was above it, missing or the listing was new.
-- `scanner_failing`: a site failed 3 runs in a row. The run reports it once. The run that follows the recovery reports a note.
+- `scanner_failing`: a site failed or returned no listings 3 runs in a row. The run reports it once. The run that follows the recovery reports a note.
 
 A site that fails keeps its last hits as the known state. When it works again, its old listings do not count as `new`. The key of a listing is the site plus the URL without query string and fragment.
+
+### History
+
+Each history line stores a hash of the query, spec, sites, condition and currency. When the hash differs from the last line, the run is a new baseline. `watch edit` that changes one of these fields also renames the history file to `<id>.<time>.jsonl.old`. `watch remove` deletes the history file. Add `--keep-history` to keep it.
 
 ### Notify contract
 
@@ -116,7 +120,7 @@ The command comes from `--notify-cmd`, then the `SHOPPER_NOTIFY_CMD` environment
 - The CLI sends nothing when there are no events and `watch.quietUnchanged` is true.
 - Without a command, `--notify` prints the message to stdout.
 - A command that fails makes the CLI exit with `2`. It prints the error and the message to stderr.
-- A failed alert is not lost. The history line gets `notified: false` and keeps its events. The next `--notify` run sends those events again with its own events, once per type and listing. It then marks the new line `notified: true`. Old lines without the field count as delivered. Pending events make the CLI send a message even when `watch.quietUnchanged` is true.
+- A failed alert is not lost. The history line gets `notified: false` and keeps its events. The next `--notify` run sends those events again with its own events, once per type and listing. It then marks the new line `notified: true`. A run without `--notify` always records its line as `notified: false`, so the next notify run delivers its events. Old lines without the field count as delivered. Pending events make the CLI send a message even when `watch.quietUnchanged` is true.
 
 ### Scheduling
 
@@ -128,9 +132,9 @@ shopper watch timer --write                # write them to ~/.config/systemd/use
 systemctl --user daemon-reload && systemctl --user enable --now shopper-watch.timer
 ```
 
-`--write` uses `$XDG_CONFIG_HOME/systemd/user`. It never runs `systemctl`. The timer starts 5 minutes after boot and then every `--every`. The service is `Type=oneshot` with `Nice=19`, `MemoryHigh=2G` and `MemoryMax=3G`. It reads the optional file `~/.config/ai-tools/shopper-watch.env`. Put `SHOPPER_NOTIFY_CMD`, `AGENTS_MEMORY_DIR` and `AGENTS_STATE_DIR` there. `ExecStart` holds the absolute path of the shopper binary, or of node and `cli.js`, followed by `watch run-due --notify`.
+`--write` uses `$XDG_CONFIG_HOME/systemd/user`. It never runs `systemctl`. The timer starts 5 minutes after boot and then every `--every`. The service is `Type=oneshot` with `Nice=19`, `MemoryHigh=2G`, `MemoryMax=3G` and `TimeoutStartSec=20min`. It reads the optional file `~/.config/ai-tools/shopper-watch.env`. Put `SHOPPER_NOTIFY_CMD`, `AGENTS_MEMORY_DIR` and `AGENTS_STATE_DIR` there. `ExecStart` holds the absolute path of the shopper binary, or of node and `cli.js`, followed by `watch run-due --notify`.
 
-`watch run-due` runs each enabled watch whose `lastRunAt` plus `interval` has passed. It runs them one at a time under the lock file. A lock older than 2 hours counts as stale and the next run takes it over.
+`watch run-due` runs each enabled watch whose `lastRunAt` plus `interval` has passed. It runs them one at a time under the lock file. The lock holds the process id and a token. A run takes over the lock at once when that process is dead, or when the lock is older than 2 hours. The takeover writes a temporary file, renames it over the lock, and aborts if the token it reads back is not its own. An alert command that runs longer than 60 seconds is killed with its whole process group.
 
 User-browser sites, such as `shopee-th`, are never part of a scheduled run. A run lists them as skipped. Use `shopper script` and `shopper parse` with a tab that the user has open to check them.
 
@@ -143,7 +147,7 @@ shopper watch add <query...> [--id] [--include re]... [--exclude re]... [--sites
 shopper watch list [--json]
 shopper watch show <id> [--json]
 shopper watch edit <id> [same flags] [--enable|--disable]
-shopper watch remove <id>
+shopper watch remove <id> [--keep-history]
 shopper watch run <id> [--notify] [--notify-cmd cmd] [--json]
 shopper watch run-due [--notify] [--notify-cmd cmd] [--json]
 shopper watch history <id> [--limit N] [--json]

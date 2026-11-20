@@ -59,6 +59,7 @@ export function renderService(opts: UnitOptions): string {
     'Nice=19',
     'MemoryHigh=2G',
     'MemoryMax=3G',
+    'TimeoutStartSec=20min',
     'EnvironmentFile=-%h/.config/ai-tools/shopper-watch.env',
     `ExecStart=${start}`,
     '',

@@ -10,9 +10,9 @@ import {
 import { dirname } from 'node:path';
 import type { SearchHit } from '../types.js';
 import {
+  RECENT_RUNS,
   mergeEvents,
-  siteFailed,
-  siteSucceeded,
+  outcomeKind,
   type PreviousState,
   type SiteOutcome,
   type WatchEvent,
@@ -29,6 +29,7 @@ export interface HistoryLine {
   errors: Array<{ site: string; message: string }>;
   events: WatchEvent[];
   notified: boolean;
+  specHash?: string;
 }
 
 function isHistoryLine(value: unknown): value is HistoryLine {
@@ -80,23 +81,30 @@ export function appendHistory(file: string, line: HistoryLine, maxBytes = MAX_HI
   renameSync(temp, file);
 }
 
-export function lastSuccessfulHits(lines: HistoryLine[]): Record<string, SearchHit[]> {
-  const bySite: Record<string, SearchHit[]> = {};
+export function recentSnapshots(
+  lines: HistoryLine[],
+  depth: number = RECENT_RUNS,
+): Record<string, SearchHit[][]> {
+  const recent: Record<string, SearchHit[][]> = {};
   for (const line of lines) {
     for (const [site, outcome] of Object.entries(line.sites)) {
-      if (!siteSucceeded(outcome.status)) continue;
-      bySite[site] = line.hits.filter((hit) => hit.site === site);
+      const hits = line.hits.filter((hit) => hit.site === site);
+      const kind = outcomeKind(outcome.status, hits.length);
+      if (kind === 'empty') recent[site] ??= [];
+      if (kind !== 'ok') continue;
+      recent[site] = [...(recent[site] ?? []), hits].slice(-depth);
     }
   }
-  return bySite;
+  return recent;
 }
 
 export function consecutiveFailures(lines: HistoryLine[]): Record<string, number> {
   const failures: Record<string, number> = {};
   for (const line of lines) {
     for (const [site, outcome] of Object.entries(line.sites)) {
-      if (siteFailed(outcome.status)) failures[site] = (failures[site] ?? 0) + 1;
-      else if (siteSucceeded(outcome.status)) failures[site] = 0;
+      const kind = outcomeKind(outcome.status, line.hits.filter((hit) => hit.site === site).length);
+      if (kind === 'failed' || kind === 'empty') failures[site] = (failures[site] ?? 0) + 1;
+      else if (kind === 'ok') failures[site] = 0;
     }
   }
   return failures;
@@ -105,9 +113,17 @@ export function consecutiveFailures(lines: HistoryLine[]): Record<string, number
 export function previousState(lines: HistoryLine[]): PreviousState {
   return {
     hasHistory: lines.length > 0,
-    bySite: lastSuccessfulHits(lines),
+    recent: recentSnapshots(lines),
     failures: consecutiveFailures(lines),
   };
+}
+
+export function rotateHistory(file: string, now: Date): string | null {
+  if (!existsSync(file)) return null;
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const target = file.replace(/\.jsonl$/, `.${stamp}.jsonl.old`);
+  renameSync(file, target);
+  return target;
 }
 
 export function pendingEvents(lines: HistoryLine[]): WatchEvent[] {

@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, utimesSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import {
+  mkdirSync,
+  utimesSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   cleanStaleRunDirs,
   runProfileDir,
@@ -76,6 +85,7 @@ describe('resolution helpers', () => {
     expect(shouldUseScope({ PATH: '/u' }, 'linux', has)).toBe(true);
     expect(shouldUseScope({ PATH: '/u', AGENTS_BROWSER_CGROUP: '0' }, 'linux', has)).toBe(false);
     expect(shouldUseScope({ PATH: '/u' }, 'darwin', has)).toBe(false);
+    expect(shouldUseScope({ PATH: '/u', INVOCATION_ID: 'abc' }, 'linux', has)).toBe(false);
     expect(shouldUseScope({ PATH: '/u' }, 'linux', () => false)).toBe(false);
   });
 });
@@ -171,4 +181,64 @@ describe('BrowserSession user agent', () => {
     expect(calls.some((call) => call.method.includes('UserAgent'))).toBe(false);
     expect(calls.some((call) => call.method === 'Browser.getVersion')).toBe(false);
   });
+});
+
+const DIST = fileURLToPath(new URL('../dist/index.js', import.meta.url));
+const CAN_LAUNCH = resolveChromiumBinary() !== null && existsSync(DIST);
+
+function processGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return true;
+  }
+  try {
+    return /^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!CAN_LAUNCH || process.platform !== 'linux')('termination', () => {
+  it('kills Chromium and removes the run profile when the CLI gets SIGTERM', async () => {
+    const dir = tempDir();
+    const profile = join(dir, 'profile');
+    const script = join(dir, 'launch.mjs');
+    writeFileSync(
+      script,
+      `import { launchBrowser } from ${JSON.stringify(pathToFileURL(DIST).href)};
+const session = await launchBrowser({ profileDir: process.argv[2], scoped: false });
+console.log('pid ' + session.pid);
+setInterval(() => {}, 1000);
+`,
+    );
+    const child = spawn(process.execPath, [script, profile], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, AGENTS_BROWSER_NO_SANDBOX: process.getuid?.() === 0 ? '1' : '0' },
+    });
+    const exited = new Promise<number | null>((resolve) =>
+      child.once('exit', (code) => resolve(code)),
+    );
+    const browserPid = await new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no pid line')), 20_000);
+      let text = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        text += chunk.toString();
+        const match = /pid (\d+)/.exec(text);
+        if (match !== null) {
+          clearTimeout(timer);
+          resolve(Number(match[1]));
+        }
+      });
+    });
+    expect(processGone(browserPid)).toBe(false);
+    child.kill('SIGTERM');
+    expect(await exited).toBe(143);
+    const deadline = Date.now() + 3000;
+    while (!processGone(browserPid) && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+    expect(processGone(browserPid)).toBe(true);
+    expect(existsSync(profile) ? readdirSync(profile) : []).toEqual([]);
+  }, 40_000);
 });

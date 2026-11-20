@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { agentStateDir, type PathOptions } from '@ai-tools/agent-kit';
@@ -282,6 +283,20 @@ export function applyEdit(watch: Watch, patch: WatchInput, now: Date): Watch {
     enabled: patch.enabled ?? watch.enabled,
     updatedAt: now.toISOString(),
   });
+}
+
+export function specHash(
+  watch: Pick<Watch, 'query' | 'spec' | 'sites' | 'condition' | 'currency'>,
+): string {
+  const text = JSON.stringify([
+    watch.query,
+    watch.spec.include,
+    watch.spec.exclude,
+    watch.sites,
+    watch.condition,
+    watch.currency,
+  ]);
+  return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
 
 export function findWatch(data: WatchesFile, id: string): Watch {
