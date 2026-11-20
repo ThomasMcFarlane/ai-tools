@@ -32,19 +32,20 @@ Exit codes: `0` ok, `1` nothing found, `2` error.
 
 ## Sites
 
-| Id           | Site            | Fetch mode   |
-| ------------ | --------------- | ------------ |
-| `lazada-th`  | Lazada Thailand | headless     |
-| `aliexpress` | AliExpress      | headless     |
-| `jib`        | JIB             | http         |
-| `advice`     | Advice IT       | headless     |
-| `ihavecpu`   | iHAVECPU        | http         |
-| `bnn`        | Banana IT       | user-browser |
-| `shopee-th`  | Shopee Thailand | user-browser |
+| Id                     | Site                 | Fetch mode   |
+| ---------------------- | -------------------- | ------------ |
+| `lazada-th`            | Lazada Thailand      | headless     |
+| `aliexpress`           | AliExpress           | headless     |
+| `jib`                  | JIB                  | http         |
+| `advice`               | Advice IT            | headless     |
+| `ihavecpu`             | iHAVECPU             | http         |
+| `bnn`                  | Banana IT            | user-browser |
+| `shopee-th`            | Shopee Thailand      | user-browser |
+| `facebook-marketplace` | Facebook Marketplace | user-browser |
 
-Shopee blocks headless browsers and logged-out profiles. Banana IT shows a Cloudflare challenge to headless browsers. The CLI never fetches these sites. Run `shopper script <site> search` and execute the script in a tab that the user already has open. Pass the result to `shopper parse <site> search --url <tab url>`.
+Shopee and Facebook block headless browsers and logged-out profiles. Banana IT shows a Cloudflare challenge to headless browsers. The CLI never fetches these sites. Run `shopper script <site> search` and execute the script in a tab that the agent opens itself through its browser extension. The agent works only in its own tabs and closes them when done. Pass the result to `shopper parse <site> search --url <tab url>`.
 
-Facebook Marketplace needs a personal profile. It has no adapter in this version.
+Facebook Marketplace needs a logged-in personal profile. A Page profile gets `/marketplace/ineligible`, and the CLI reports that as a block. The search URL has the form `https://www.facebook.com/marketplace/<city>/search?query=<q>`. The city comes from `location.city` in the defaults, in lower case without spaces. Without a city, the URL has no location part. Item URLs are normalised to `https://www.facebook.com/marketplace/item/<id>/`. Cards show no condition, so hits keep `unknown` until a listing page shows the `Condition` row.
 
 ## Defaults
 
@@ -136,7 +137,7 @@ systemctl --user daemon-reload && systemctl --user enable --now shopper-watch.ti
 
 `watch run-due` runs each enabled watch whose `lastRunAt` plus `interval` has passed. It runs them one at a time under the lock file. The lock holds the process id and a token. A run takes over the lock at once when that process is dead, or when the lock is older than 2 hours. The takeover writes a temporary file, renames it over the lock, and aborts if the token it reads back is not its own. An alert command that runs longer than 60 seconds is killed with its whole process group.
 
-User-browser sites, such as `shopee-th`, are never part of a scheduled run. A run lists them as skipped. Use `shopper script` and `shopper parse` with a tab that the user has open to check them.
+User-browser sites, such as `shopee-th`, `bnn` and `facebook-marketplace`, are never part of a scheduled run. A run lists them as skipped. Use `shopper script` and `shopper parse` with a tab that the agent opens to check them.
 
 ### Watch commands
 

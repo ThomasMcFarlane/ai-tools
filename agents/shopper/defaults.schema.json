@@ -195,7 +195,8 @@
           },
           "default": [
             "shopee-th",
-            "bnn"
+            "bnn",
+            "facebook-marketplace"
           ],
           "description": "Sites the CLI never fetches. The user supplies the page from an open tab."
         }

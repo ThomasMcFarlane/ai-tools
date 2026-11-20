@@ -322,13 +322,11 @@ describe('shopper CLI', () => {
     const file = join(dir, 'warn.json');
     writeFileSync(
       file,
-      JSON.stringify({ version: 1, sites: { preferred: ['jib', 'facebook-marketplace'] } }),
+      JSON.stringify({ version: 1, sites: { preferred: ['jib', 'ghost-market'] } }),
     );
     const result = await exec(['defaults', 'validate', file]);
     expect(result.code).toBe(0);
-    expect(out.join('\n')).toContain(
-      "warning: sites.preferred: unknown site 'facebook-marketplace'",
-    );
+    expect(out.join('\n')).toContain("warning: sites.preferred: unknown site 'ghost-market'");
     out.length = 0;
     await exec(['defaults', 'validate', file, '--json']);
     expect(JSON.parse(out.join('\n')).warnings).toHaveLength(1);

@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { ADAPTERS, adapterForUrl, getAdapter } from '../src/core/registry.js';
 import { FIXTURE_NOW, fixtureCtx } from './helpers/fixture.js';
 
-const EXPECTED = ['lazada-th', 'aliexpress', 'jib', 'advice', 'ihavecpu', 'bnn', 'shopee-th'];
+const EXPECTED = [
+  'lazada-th',
+  'aliexpress',
+  'jib',
+  'advice',
+  'ihavecpu',
+  'bnn',
+  'shopee-th',
+  'facebook-marketplace',
+];
 
 describe('registry', () => {
   it('registers every adapter once', () => {
@@ -18,10 +27,11 @@ describe('registry', () => {
     expect(adapterForUrl('https://example.com/')).toBeNull();
   });
 
-  it('sets only shopee-th and bnn to user-browser mode', () => {
+  it('sets only bnn, shopee-th and facebook-marketplace to user-browser mode', () => {
     expect(ADAPTERS.filter((a) => a.defaultMode === 'user-browser').map((a) => a.id)).toEqual([
       'bnn',
       'shopee-th',
+      'facebook-marketplace',
     ]);
   });
 });
@@ -35,7 +45,10 @@ describe.each(ADAPTERS.map((adapter) => [adapter.id, adapter] as const))('%s', (
 
   it('has selectors for cards and prices', () => {
     expect(adapter.selectors['search.card']).toBeTruthy();
-    expect(adapter.selectors['search.price']).toBeTruthy();
+    // Facebook uses obfuscated classes, so it parses prices from the card structure.
+    if (adapter.id !== 'facebook-marketplace') {
+      expect(adapter.selectors['search.price']).toBeTruthy();
+    }
   });
 
   it('returns no hits and no block for an empty page', () => {
