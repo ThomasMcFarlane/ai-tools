@@ -27,10 +27,17 @@ const URL_BLOCKS: BlockPattern[] = [
   { test: /\/checkpoint\//i, reason: 'security checkpoint' },
 ];
 
-const HTML_BLOCKS: BlockPattern[] = [
+const LOGIN_BLOCKS: BlockPattern[] = [
   { test: /id="login_form"|name="pass"|you must log in/i, reason: 'login wall' },
-  ...COMMON_BLOCK_PATTERNS,
 ];
+
+const CODES = 'THB|USD|EUR|GBP|JPY|MYR|PHP';
+const AMOUNT = '\\d[\\d,]*(?:\\.\\d+)?';
+const MONEY_SOURCE = `(?:(?:US\\s*\\$|[$€£¥₱฿]|RM|${CODES})\\s*${AMOUNT}|${AMOUNT}\\s*(?:${CODES}))`;
+
+function hasMarketplaceContent(html: string): boolean {
+  return /\/marketplace\/item\/|<h1[\s>]/i.test(html);
+}
 
 const SEARCH_SCRIPT = `(async () => {
   const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,7 +65,8 @@ const LISTING_SCRIPT = `(() => {
   return { url: location.href, html: copy.outerHTML.slice(0, 400000) };
 })()`;
 
-const PRICE_TOKEN = /(?:฿|THB)\s*\d[\d,]*(?:\.\d+)?/i;
+const PRICE_TOKEN = new RegExp(MONEY_SOURCE, 'i');
+const PRICE_START = new RegExp(`^${MONEY_SOURCE}`, 'i');
 const FREE_LINE = /^free$/i;
 const STATUS_LINE = /^(?:sold|pending)$/i;
 
@@ -73,6 +81,9 @@ export interface FacebookSearchOptions {
 
 export function facebookLocationSlug(city: string | undefined): string | null {
   const slug = (city ?? '')
+    .split(',')[0]!
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
     .toLowerCase()
     .replace(/\s+/g, '')
     .replace(/[^a-z0-9_-]/g, '');
@@ -99,7 +110,7 @@ export function canonicalFacebookUrl(href: string | null | undefined): string | 
 }
 
 function isPriceLine(line: string): boolean {
-  return FREE_LINE.test(line) || PRICE_TOKEN.test(line);
+  return FREE_LINE.test(line) || PRICE_START.test(line);
 }
 
 function priceOfLines(lines: string[], currency: string): SearchHit['price'] {
@@ -138,7 +149,7 @@ function textOfPick(card: ParentNode, ctx: ParseCtx, key: string): string {
   return normaliseText(pick(card, ctx, key)?.textContent);
 }
 
-const PRICE_SOURCE = '(?:(?:฿|THB)\\s*\\d[\\d,]*(?:\\.\\d+)?|Free)';
+const PRICE_SOURCE = `(?:${MONEY_SOURCE}|Free)`;
 const ARIA_LABEL = new RegExp(
   `^(.*), (${PRICE_SOURCE})(?:, reduced from ${PRICE_SOURCE})?, (.+), listing (\\d+)$`,
   'is',
@@ -266,7 +277,10 @@ export const facebookMarketplace: SiteAdapter = {
     return listing;
   },
   detectBlock(snap) {
-    return detectBlockWith(snap, URL_BLOCKS, HTML_BLOCKS);
+    const html = hasMarketplaceContent(snap.html)
+      ? LOGIN_BLOCKS
+      : [...LOGIN_BLOCKS, ...COMMON_BLOCK_PATTERNS];
+    return detectBlockWith(snap, URL_BLOCKS, html);
   },
   matchesUrl(url) {
     return hostMatches(url, DOMAINS) && /\/marketplace\//i.test(url);

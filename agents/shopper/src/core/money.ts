@@ -5,6 +5,9 @@ const SYMBOLS: Array<[RegExp, string]> = [
   [/฿|THB|บาท|baht/i, 'THB'],
   [/€|EUR/i, 'EUR'],
   [/£|GBP/i, 'GBP'],
+  [/¥|JPY/i, 'JPY'],
+  [/\bRM\b\s*\d|MYR/i, 'MYR'],
+  [/₱|PHP/i, 'PHP'],
 ];
 
 const NUMBER = /\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?/g;

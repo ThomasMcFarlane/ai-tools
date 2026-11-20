@@ -41,6 +41,13 @@ describe('facebook-marketplace URLs', () => {
     expect(facebookLocationSlug(undefined)).toBeNull();
   });
 
+  it('folds accents and cuts at the first comma', () => {
+    expect(facebookLocationSlug('Zürich')).toBe('zurich');
+    expect(facebookLocationSlug('São Paulo')).toBe('saopaulo');
+    expect(facebookLocationSlug('Bangkok, Thailand')).toBe('bangkok');
+    expect(facebookLocationSlug('กรุงเทพมหานคร')).toBeNull();
+  });
+
   it('adds the optional filters', () => {
     const url = new URL(
       facebookSearchUrl('ddr5', {
@@ -160,6 +167,35 @@ describe('facebook-marketplace search parsing (real capture)', () => {
     expect(facebookMarketplace.searchScript).toContain('a[href*="/marketplace/item/"]');
     expect(facebookMarketplace.searchScript).toContain('url: location.href');
     expect(facebookMarketplace.listingScript).toContain('html:');
+  });
+});
+
+describe('facebook-marketplace other currencies', () => {
+  const PRICES: Array<[string, number, string]> = [
+    ['$20', 20, 'USD'],
+    ['US$20', 20, 'USD'],
+    ['€15', 15, 'EUR'],
+    ['£10', 10, 'GBP'],
+    ['¥500', 500, 'JPY'],
+    ['RM 30', 30, 'MYR'],
+    ['₱500', 500, 'PHP'],
+    ['20 USD', 20, 'USD'],
+    ['฿1,200', 1200, 'THB'],
+  ];
+
+  it.each(PRICES)('reads %s from an aria-label', (text, amount, currency) => {
+    const html = `<a aria-label="Chair, ${text}, Austin, TX, listing 55" href="/marketplace/item/55/"><span dir="auto">${text}</span><span dir="auto">Chair</span><span dir="auto">Austin, TX</span></a>`;
+    const [hit] = facebookMarketplace.parseSearch({ ...search(), html }, ctx);
+    expect(hit?.price).toEqual({ amount, currency });
+    expect(hit?.title).toBe('Chair');
+  });
+
+  it.each(PRICES)('reads %s from the line fallback', (text, amount, currency) => {
+    const html = `<a href="/marketplace/item/56/"><span dir="auto">${text}</span><span dir="auto">Chair</span><span dir="auto">Austin, TX</span></a>`;
+    const [hit] = facebookMarketplace.parseSearch({ ...search(), html }, ctx);
+    expect(hit?.price).toEqual({ amount, currency });
+    expect(hit?.title).toBe('Chair');
+    expect(hit?.raw).toEqual({ location: 'Austin, TX' });
   });
 });
 
@@ -291,6 +327,19 @@ describe('facebook-marketplace block detection', () => {
     expect(
       facebookMarketplace.detectBlock({ ...snap, html: '<p>You must log in to continue</p>' }),
     ).toBe('login wall');
+  });
+
+  it('ignores generic block words in seller text on an item page', () => {
+    const html =
+      '<h1>Camera</h1><span dir="auto">smoking forbidden, no captcha, too many requests</span>';
+    expect(facebookMarketplace.detectBlock({ ...search(), html })).toBeNull();
+    const cards = `<a href="/marketplace/item/1/">x</a><span>access denied</span>`;
+    expect(facebookMarketplace.detectBlock({ ...search(), html: cards })).toBeNull();
+  });
+
+  it('still flags a captcha page without Marketplace content', () => {
+    const html = '<html><body><div class="g-recaptcha"></div></body></html>';
+    expect(facebookMarketplace.detectBlock({ ...search(), html })).toBe('captcha page');
   });
 
   it('does not flag a result page', () => {
