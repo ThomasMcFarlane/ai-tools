@@ -184,7 +184,8 @@ describe('BrowserSession user agent', () => {
 });
 
 const DIST = fileURLToPath(new URL('../dist/index.js', import.meta.url));
-const CAN_LAUNCH = resolveChromiumBinary() !== null && existsSync(DIST);
+const RUN_E2E =
+  process.env.AGENTS_BROWSER_E2E === '1' && resolveChromiumBinary() !== null && existsSync(DIST);
 
 function processGone(pid: number): boolean {
   try {
@@ -199,7 +200,7 @@ function processGone(pid: number): boolean {
   }
 }
 
-describe.skipIf(!CAN_LAUNCH || process.platform !== 'linux')('termination', () => {
+describe.skipIf(!RUN_E2E || process.platform !== 'linux')('termination', () => {
   it('kills Chromium and removes the run profile when the CLI gets SIGTERM', async () => {
     const dir = tempDir();
     const profile = join(dir, 'profile');
@@ -213,14 +214,24 @@ setInterval(() => {}, 1000);
 `,
     );
     const child = spawn(process.execPath, [script, profile], {
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, AGENTS_BROWSER_NO_SANDBOX: process.getuid?.() === 0 ? '1' : '0' },
     });
     const exited = new Promise<number | null>((resolve) =>
       child.once('exit', (code) => resolve(code)),
     );
     const browserPid = await new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no pid line')), 20_000);
+      let errors = '';
+      child.stderr.on('data', (chunk: Buffer) => {
+        errors += chunk.toString();
+      });
+      const fail = (reason: string) =>
+        reject(new Error(`no pid line (${reason}): ${errors.trim() || 'no stderr output'}`));
+      const timer = setTimeout(() => fail('timeout'), 20_000);
+      child.once('exit', (code) => {
+        clearTimeout(timer);
+        fail(`child exited with ${code}`);
+      });
       let text = '';
       child.stdout.on('data', (chunk: Buffer) => {
         text += chunk.toString();

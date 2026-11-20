@@ -33,7 +33,7 @@ Shared code lives in [`packages/agent-kit`](../packages/agent-kit/). It gives ev
 3. Record what the agent learns with `appendLearning`. Apply it with `effectiveLearnings`.
 4. Use `fetchText` for plain pages. Use `launchBrowser` only when a page needs a browser.
 5. Support `--json` on every command that prints a result. Use exit codes `0` (ok), `1` (nothing found) and `2` (error).
-6. Write tests that run offline. Inject the fetcher, the clock and the memory paths.
+6. Write tests that run offline. Inject the fetcher, the clock and the memory paths. The browser end-to-end test in `packages/agent-kit` runs only when `AGENTS_BROWSER_E2E=1` is set and Chromium is installed.
 7. Add the tag pattern and the `tool` choice to `.github/workflows/release.yml`.
 
 ## Memory
