@@ -13,7 +13,9 @@ Tools that let AI agents check external state, wait for changes, and resume work
 | dns-checker | `@ai-tools/dns-checker` | `dns-checker` | Multi-resolver DNS tooling for agents | DNS lookups across resolvers in the spirit of dnschecker.org, expectation checks, blocking waits, and persistent watchers with hooks                                                         |
 | gh-watcher  | `@ai-tools/gh-watcher`  | `gh-watcher`  | GitHub Actions watcher for agents     | Reads Actions runs and checks through the `gh` CLI, blocks until a target succeeds or fails, and fires hooks when a job step fails or everything succeeds                                    |
 | repo-ready  | `@ai-tools/repo-ready`  | `repo-ready`  | Repository readiness quiz engine      | Stores a map of a repository's design areas and every question, answer, time and score an AI agent records, then computes levels, the verdict, what to ask next and charts. No network calls |
+| shopper     | `@ai-tools/shopper`     | `shopper`     | Price comparison agent for shops      | Fetches, parses, filters and ranks offers across online shops with fixed code. It lives in `agents/` and follows [the agent principles](agents/PRINCIPLES.md)                                |
 | hooks       | `@ai-tools/hooks`       | (library)     | Shared hook machinery                 | The shared `exec` / `webhook` / `file` / `notify` hook library both watcher tools use                                                                                                        |
+| agent-kit   | `@ai-tools/agent-kit`   | (library)     | Shared agent helpers                  | Memory paths, defaults loader, learnings journal, HTTP helper and headless browser launcher for every agent in `agents/`                                                                     |
 
 ## Install
 
@@ -57,7 +59,7 @@ node tools/repo-ready/dist/cli.js --help
 
 ### Releases
 
-Each CLI is released independently, with its own version and a tag named `<tool>-v<version>` (for example `dns-checker-v0.2.0`, `gh-watcher-v0.1.0`, `repo-ready-v0.1.0`). Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. A run lints, typechecks, builds and tests the repository, cross-compiles only that tool for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (five binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests under the title `<tool> <version>`. The workflow fails, without overwriting anything, if a release or tag with that name already exists, or if the version does not match `version` in `tools/<tool>/package.json`: bump `package.json` through a PR first.
+Each CLI is released independently, with its own version and a tag named `<tool>-v<version>` (for example `dns-checker-v0.2.0`, `gh-watcher-v0.1.0`, `repo-ready-v0.1.0`, `shopper-v0.1.0`). Releases are built entirely on GitHub-hosted runners by `.github/workflows/release.yml`. A run lints, typechecks, builds and tests the repository, cross-compiles only that tool for linux-x64, linux-arm64, macos-x64, macos-arm64 and win-x64 (five binaries named `<tool>-<os>-<arch>`, plus `.exe` on Windows), and publishes them with a `checksums.txt` of sha256 digests under the title `<tool> <version>`. The workflow fails, without overwriting anything, if a release or tag with that name already exists, or if the version does not match `version` in `tools/<tool>/package.json` or `agents/<tool>/package.json`: bump `package.json` through a PR first.
 
 To cut a release, either:
 
@@ -188,6 +190,8 @@ ai-tools/
 │   ├── gh-watcher/    # @ai-tools/gh-watcher (CLI, core)
 │   ├── repo-ready/    # @ai-tools/repo-ready (CLI, core)
 │   └── tasks-board-check/  # @ai-tools/tasks-board-check (TASKS.md format check)
+├── agents/
+│   └── shopper/       # @ai-tools/shopper (price comparison agent CLI); see agents/README.md
 ├── mods/
 │   ├── tasks-board/   # Claude Code plugin: docked TASKS.md board pane
 │   ├── plan-view/     # Claude Code plugin: docked markdown preview of Claude's plan and the .md files it mentions
@@ -198,7 +202,8 @@ ai-tools/
 │   └── tasks-board-check/  # GitHub Action: `uses: ThomasMcFarlane/ai-tools/actions/tasks-board-check@tasks-board-check-v2`
 ├── .claude-plugin/    # marketplace.json (marketplace `ai-tools`)
 ├── packages/
-│   └── hooks/         # @ai-tools/hooks (shared exec/webhook/file/notify hooks)
+│   ├── hooks/         # @ai-tools/hooks (shared exec/webhook/file/notify hooks)
+│   └── agent-kit/     # @ai-tools/agent-kit (memory, learnings, HTTP and headless browser helpers for agents)
 ├── skills/            # copy-paste skills and prompts for AI platforms
 └── .github/           # CI workflows
 ```
@@ -226,6 +231,8 @@ Follow the existing conventions:
 - `--json` is supported everywhere a result is printed.
 - Exit codes are documented: `0` success or match, `1` no match or not found, `2` error, `124` timeout (only for tools that wait; `repo-ready` never waits and has no `124`).
 - State lives under `ai-tools/<name>` in the XDG state directory, overridable by `AI_TOOLS_<NAME>_STATE_DIR`.
+
+An agent that needs memory, defaults or a browser goes in `agents/<name>` and uses `@ai-tools/agent-kit`. Read [agents/README.md](agents/README.md) first.
 
 ## License
 

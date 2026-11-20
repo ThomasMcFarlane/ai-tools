@@ -1,0 +1,225 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ShopperDefaults",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "number",
+      "const": 1,
+      "description": "Schema version. Always 1."
+    },
+    "location": {
+      "type": "object",
+      "properties": {
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$",
+          "default": "TH"
+        },
+        "city": {
+          "type": "string"
+        },
+        "postcode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "default": "THB"
+    },
+    "language": {
+      "type": "string",
+      "default": "en"
+    },
+    "sites": {
+      "type": "object",
+      "properties": {
+        "preferred": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Site ids to search. Empty means every adapter. Sites that need the user browser are reported, never fetched."
+        },
+        "blocked": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Site ids never to search."
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "condition": {
+      "type": "object",
+      "properties": {
+        "default": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["new", "used", "refurbished", "unknown"]
+          },
+          "default": ["new"]
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "match": {
+                "type": "string",
+                "description": "Case-insensitive regex tested against the query."
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["new", "used", "refurbished", "unknown"]
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": ["match", "allow"],
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "unmatched": {
+          "type": "string",
+          "enum": ["use-default", "ask"],
+          "default": "use-default",
+          "description": "What to do when no rule matches the query. ask keeps every condition and flags the result so the model asks the user."
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "style": {
+          "type": "string",
+          "enum": ["cheapest", "value", "premium"],
+          "default": "cheapest"
+        },
+        "max": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "includeShipping": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "report": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 10
+        },
+        "onlySeen": {
+          "type": "boolean",
+          "const": true,
+          "default": true
+        },
+        "showStock": {
+          "type": "boolean",
+          "default": true
+        },
+        "showShop": {
+          "type": "boolean",
+          "default": true
+        },
+        "timeZones": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "default": ["UTC"],
+          "description": "IANA time zones for printed timestamps. The first zone comes first."
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "browser": {
+      "type": "object",
+      "properties": {
+        "userBrowserSites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["shopee-th"],
+          "description": "Sites the CLI never fetches. The user supplies the page from an open tab."
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "watch": {
+      "type": "object",
+      "properties": {
+        "interval": {
+          "type": "string",
+          "default": "6h"
+        },
+        "notifyOn": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["new", "price_drop", "back_in_stock", "threshold", "scanner_failing"]
+          },
+          "default": ["new", "price_drop", "back_in_stock", "threshold", "scanner_failing"]
+        },
+        "minDropPercent": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 0
+        },
+        "notifyCommand": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Shell command that gets the message on stdin. SHOPPER_NOTIFY_CMD overrides it."
+        },
+        "quietUnchanged": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send no message when nothing changed."
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Free text rules for the model."
+    }
+  },
+  "required": ["version"],
+  "additionalProperties": false
+}

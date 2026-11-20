@@ -35,7 +35,7 @@ ETA: 2026-10-25 03:30 ICT
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 24 | Numeric board IDs, <epic>.<task> references, cleanup PR self-merge | done | claude | board-numeric-ids | | 2026-10-24 23:00 ICT | Lint rule numeric-id, renumbering in the format agent prompt, agent merges the cleanup PR when CI is green; ships as tasks-board-check-v3 and tasks-board 0.7.0. Done in #51 (642c550); tagged tasks-board-check-v3.0.0, tasks-board-check-v3 and tasks-board-v0.7.0; skill docs in ThomasMcFarlane/.ais#82. Was 10. |
-| 11 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated |
+| 26 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated. Was 11 (duplicate of 3.11). |
 | 12 | Fix the failing pane-label target test | done | claude | pane-label-test | | 2026-10-25 03:30 ICT | Test stale since #41 (42a78a5): pane auto-opens only after a render reports the sidebar layout<br>Test-only fix: mount AbovePrompt with isFullscreen before asserting<br>claude plugin test 111 pass, 0 fail |
 | 13 | Fix fixer edge cases: trailing prose tables, empty surplus cells, short rows | done | claude | fixboard-edges | | 2026-10-25 03:00 ICT | Done in #55 (6846c92)<br>Tags tasks-board-check-v4.0.1, tasks-board-check-v4, tasks-board-v0.8.1 |
 
@@ -80,3 +80,12 @@ A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person o
 | 21 | repo-ready CLI and skills for Claude Code, Codex and OpenCode | done | claude | repo-ready | | 2026-11-12 12:00 ICT | Merged in https://github.com/ThomasMcFarlane/ai-tools/pull/89 (cf946bc)<br>262 tests; whole-branch review; a fresh agent ran three sessions from the skill alone<br>Design and plan in docs/superpowers (specs, plans) |
 | 22 | Release repo-ready 0.1.0 | done | claude | | 9.21 | 2026-11-12 01:00 ICT | Released repo-ready-v0.1.0 (run 43072568860); checksum OK<br>Installed on hq0 at ~/.local/bin/repo-ready<br>Skill added to shared-skills in ThomasMcFarlane/.ais#95 |
 | 23 | Close the remaining map-edit and identity gaps in repo-ready | todo | | | 9.21 | | From the final review; each needs a deliberate map edit or a rare setup<br>Paths moved onto an active folder let an area be dropped later<br>"Files gone" reads the git index, not committed files<br>An older-key history is hidden once another checkout starts a higher-priority one<br>State-folder guard does not follow symlinks |
+
+## 10. Shopper agent
+ETA: 2026-11-21 18:00 ICT
+
+A price comparison agent CLI (`agents/shopper`) on a shared `@ai-tools/agent-kit`, with site adapters and skills.
+
+| ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+|---|---|---|---|---|---|---|---|
+| 25 | Shopper agent, adapters and skill | in_progress | claude | shopper-agent | | 2026-11-21 18:00 ICT | Phase 1: agent-kit, shopper CLI, adapter stubs, release wiring<br>Phase 2: adapters against real fixtures<br>Phase 3: skills for Claude Code, Codex and OpenCode |
