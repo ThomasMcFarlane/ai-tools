@@ -35,7 +35,7 @@ ETA: 2026-10-25 03:30 ICT
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
 | 24 | Numeric board IDs, <epic>.<task> references, cleanup PR self-merge | done | claude | board-numeric-ids | | 2026-10-24 23:00 ICT | Lint rule numeric-id, renumbering in the format agent prompt, agent merges the cleanup PR when CI is green; ships as tasks-board-check-v3 and tasks-board 0.7.0. Done in #51 (642c550); tagged tasks-board-check-v3.0.0, tasks-board-check-v3 and tasks-board-v0.7.0; skill docs in ThomasMcFarlane/.ais#82. Was 10. |
-| 26 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated. Was 11 (duplicate of 3.11). |
+| 25 | Board quality rules: descriptive epic names, concise rows, cell-count fixer | done | claude | | | | Done in #54 (13ac1fe); tags tasks-board-check-v4.0.0, tasks-board-check-v4, tasks-board-v0.8.0; skill in ThomasMcFarlane/.ais#83; 31 boards migrated.<br>Was 11. |
 | 12 | Fix the failing pane-label target test | done | claude | pane-label-test | | 2026-10-25 03:30 ICT | Test stale since #41 (42a78a5): pane auto-opens only after a render reports the sidebar layout<br>Test-only fix: mount AbovePrompt with isFullscreen before asserting<br>claude plugin test 111 pass, 0 fail |
 | 13 | Fix fixer edge cases: trailing prose tables, empty surplus cells, short rows | done | claude | fixboard-edges | | 2026-10-25 03:00 ICT | Done in #55 (6846c92)<br>Tags tasks-board-check-v4.0.1, tasks-board-check-v4, tasks-board-v0.8.1 |
 
@@ -71,7 +71,7 @@ ETA: 2026-11-06 18:30 ICT
 | 20 | Release gh-watcher 0.5.0, install on hq0, update skill doc | done | claude | | 8.19 | 2026-11-06 18:30 ICT | Released gh-watcher-v0.5.0 (run 42209707033); checksum OK<br>Installed on hq0; 0.4.0 kept as gh-watcher.v0.4.0<br>Skill doc updated in ThomasMcFarlane/.ais |
 
 ## 9. repo-ready readiness quiz tool and skills
-ETA: 2026-11-19 18:00 ICT
+ETA: 2026-12-15 18:00 ICT
 
 A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person on a repository's design, track every answer, and report a readiness level per design area.
 
@@ -82,10 +82,17 @@ A CLI plus Claude Code, Codex and OpenCode skills that teach and quiz a person o
 | 23 | Close the remaining map-edit and identity gaps in repo-ready | todo | | | 9.21 | | From the final review; each needs a deliberate map edit or a rare setup<br>Paths moved onto an active folder let an area be dropped later<br>"Files gone" reads the git index, not committed files<br>An older-key history is hidden once another checkout starts a higher-priority one<br>State-folder guard does not follow symlinks |
 
 ## 10. Shopper agent
+
 ETA: 2026-11-21 18:00 ICT
 
-A price comparison agent CLI (`agents/shopper`) on a shared `@ai-tools/agent-kit`, with site adapters and skills.
+
+
+A price comparison agent CLI (`agents/shopper`) on a shared `@ai-tools/agent-kit`, with site adapters, scheduled watches and skills.
+
+
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
+
 |---|---|---|---|---|---|---|---|
-| 25 | Shopper agent, adapters and skill | in_progress | claude | shopper-agent | | 2026-11-21 18:00 ICT | Phase 1: agent-kit, shopper CLI, adapter stubs, release wiring<br>Phase 2: adapters against real fixtures<br>Phase 3: skills for Claude Code, Codex and OpenCode |
+
+| 26 | Shopper agent, adapters, watches and skill | in_progress | claude | shopper-agent | | 2026-11-21 18:00 ICT | PR https://github.com/ThomasMcFarlane/ai-tools/pull/95<br>Adapters: lazada-th, aliexpress, jib, advice, ihavecpu; bnn and shopee-th need the user browser<br>Skill in shared-skills: ThomasMcFarlane/.ais#131 |
