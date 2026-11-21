@@ -11,7 +11,7 @@ It does not talk to GitHub. Each tracked target is followed by one `gh-watcher f
 /plugin install gh-runs@ai-tools
 ```
 
-`gh-watcher` (version 0.2.0 or later, which has `follow`) must be on `PATH`, or set the `watcherPath` option.
+`gh-watcher` (version 0.2.0 or later, which has `follow`) must be on `PATH`, or set the `watcherPath` option. Use version 0.6.0 or later: its checks are conditional requests that share one cache on the host, so the follower started for a `gh-watcher wait` command costs no extra GitHub rate limit while nothing changes.
 
 ## Tracking
 
