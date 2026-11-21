@@ -27,6 +27,19 @@ export interface WaitDeps {
   onPending?: (report: CheckReport, source: WaitSource) => void | Promise<void>;
 }
 
+/** In auto mode, a poll fallback after a failed relay never polls faster than this. */
+export const AUTO_POLL_MIN_MS = 120_000;
+
+/** Mutable note shared by the event and poll paths: set when auto mode fell back because the relay failed. */
+interface FallbackState {
+  minIntervalMs: number;
+}
+
+/** 1 normally; larger while the shared GitHub REST budget is low. Test fakes without the method count as 1. */
+function budgetFactor(client: GhClient): number {
+  return (client as Partial<GhClient>).pollFactor?.() ?? 1;
+}
+
 export type WaitResult =
   | { kind: 'terminal'; report: CheckReport; source: WaitSource }
   | { kind: 'timeout'; source: WaitSource };
@@ -67,10 +80,11 @@ export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {})
   client.setDeadline(deadline);
   const check = (target: WatchTarget): Promise<CheckReport> =>
     collectReport(adhocSpec(options.repo, target), { client });
+  const fallback: FallbackState = { minIntervalMs: 0 };
 
   if (options.source !== 'poll' && options.eventsUrl !== undefined) {
     try {
-      const outcome = await waitWithEvents(options, options.eventsUrl, deadline, client, check, deps, log);
+      const outcome = await waitWithEvents(options, options.eventsUrl, deadline, client, check, deps, log, fallback);
       if (outcome !== undefined) {
         return outcome;
       }
@@ -83,7 +97,7 @@ export async function waitForTerminal(options: WaitOptions, deps: WaitDeps = {})
   } else if (options.source === 'events') {
     throw new Error('--source events needs an events URL (--events-url or GH_WATCHER_EVENTS_URL)');
   }
-  return pollLoop(options, deadline, check, deps);
+  return pollLoop(options, deadline, check, deps, client, fallback);
 }
 
 async function pollLoop(
@@ -91,9 +105,11 @@ async function pollLoop(
   deadline: number,
   check: (target: WatchTarget) => Promise<CheckReport>,
   deps: WaitDeps,
+  client: GhClient,
+  fallback: FallbackState,
 ): Promise<WaitResult> {
   try {
-    return await pollLoopInner(options, deadline, check, deps);
+    return await pollLoopInner(options, deadline, check, deps, client, fallback);
   } catch (error) {
     if (error instanceof RateLimitTimeoutError) {
       return { kind: 'timeout', source: 'poll' };
@@ -107,8 +123,11 @@ async function pollLoopInner(
   deadline: number,
   check: (target: WatchTarget) => Promise<CheckReport>,
   deps: WaitDeps,
+  client: GhClient,
+  fallback: FallbackState,
 ): Promise<WaitResult> {
   const sleep = deps.sleep ?? defaultSleep;
+  const intervalMs = Math.max(options.intervalMs, fallback.minIntervalMs);
   for (;;) {
     const report = await check(options.target);
     if (isTerminal(report)) {
@@ -118,7 +137,7 @@ async function pollLoopInner(
     if (Date.now() >= deadline) {
       return { kind: 'timeout', source: 'poll' };
     }
-    await sleep(Math.min(options.intervalMs, deadline - Date.now()));
+    await sleep(Math.min(intervalMs * budgetFactor(client), deadline - Date.now()));
   }
 }
 
@@ -131,7 +150,14 @@ async function waitWithEvents(
   check: (target: WatchTarget) => Promise<CheckReport>,
   deps: WaitDeps,
   log: (line: string) => void,
+  fallback: FallbackState,
 ): Promise<WaitResult | undefined> {
+  const relayDown = (): void => {
+    if (options.source === 'auto') {
+      log(`gh-watcher: WARNING relay unreachable at ${baseUrl}, polling GitHub`);
+      fallback.minIntervalMs = AUTO_POLL_MIN_MS;
+    }
+  };
   let sha = await client.resolveHeadSha(options.repo, options.target);
   if (sha === undefined) {
     log('gh-watcher: could not resolve the head commit, polling instead');
@@ -159,6 +185,7 @@ async function waitWithEvents(
     after = probe.latest_seq;
   } catch (error) {
     log(`gh-watcher: event source unavailable (${describe(error)}), polling instead`);
+    relayDown();
     return undefined;
   }
 
@@ -174,7 +201,8 @@ async function waitWithEvents(
       return { kind: 'timeout', source: 'events' };
     }
     const polling = needsPolling(report);
-    const recheckMs = polling ? Math.min(options.fallbackMs, options.intervalMs) : options.fallbackMs;
+    const factor = budgetFactor(client);
+    const recheckMs = (polling ? Math.min(options.fallbackMs, options.intervalMs) : options.fallbackMs) * factor;
     const untilFallback = Math.max(0, recheckMs - (now - lastCheck));
     const waitSeconds = Math.min(MAX_EVENT_WAIT_SECONDS, Math.ceil(Math.min(deadline - now, untilFallback) / 1000));
     let response: RunsResponse;
@@ -182,7 +210,8 @@ async function waitWithEvents(
       response = await request(after, waitSeconds);
     } catch (error) {
       log(`gh-watcher: event source failed (${describe(error)}), polling for the rest of the wait`);
-      return pollLoop(options, deadline, check, deps);
+      relayDown();
+      return pollLoop(options, deadline, check, deps, client, fallback);
     }
     let full = false;
     let matching: RunEvent[] = [];

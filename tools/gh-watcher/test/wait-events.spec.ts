@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GhClient, resolveEventsUrl, waitForTerminal, type GhExec, type WaitOptions } from '../src/index.js';
 
+import { CHECK_RUNS, COMMIT_STATUS, restCheckRunsBody, restJobsBody, restRunsBody, restStatusBody, RUN_JOBS, RUNS_LIST } from './rest-fixtures.js';
 const SHA = 'a'.repeat(40);
 const OTHER = 'b'.repeat(40);
 const BASE = 'https://events.invalid';
@@ -25,20 +26,23 @@ function fakeGh(runs: string[]): { client: GhClient; calls: string[][] } {
   const calls: string[][] = [];
   let index = 0;
   const exec: GhExec = async (args) => {
-    if (args[0] === 'api' && /\/commits\/[0-9a-f]{40}\/(check-runs|status)/.test(args[1] ?? '')) {
-      return { stdout: '', stderr: '', code: 0 }; // no external checks; not counted
+    if (args[0] === 'api' && CHECK_RUNS.test(args[1] ?? '')) {
+      return { stdout: restCheckRunsBody([]), stderr: '', code: 0 }; // no external checks; not counted
+    }
+    if (args[0] === 'api' && COMMIT_STATUS.test(args[1] ?? '')) {
+      return { stdout: restStatusBody([]), stderr: '', code: 0 };
     }
     calls.push(args);
     if (args[0] === 'pr') {
       return { stdout: JSON.stringify({ headRefOid: SHA, headRefName: 'x' }), stderr: '', code: 0 };
     }
-    if (args[0] === 'run' && args[1] === 'list') {
+    if (args[0] === 'api' && RUNS_LIST.test(args[1] ?? '')) {
       const stdout = runs[Math.min(index, runs.length - 1)] as string;
       index += 1;
-      return { stdout, stderr: '', code: 0 };
+      return { stdout: restRunsBody(JSON.parse(stdout) as Record<string, unknown>[]), stderr: '', code: 0 };
     }
-    if (args[0] === 'run' && args[1] === 'view') {
-      return { stdout: JSON.stringify({ jobs: [] }), stderr: '', code: 0 };
+    if (args[0] === 'api' && RUN_JOBS.test(args[1] ?? '')) {
+      return { stdout: restJobsBody([]), stderr: '', code: 0 };
     }
     return { stdout: '', stderr: 'unexpected', code: 1 };
   };
@@ -165,8 +169,9 @@ describe('event mode wait', () => {
     const { fetchFn } = fakeFetch((_u, call) => (call === 0 ? { latest_seq: 0 } : new Response('busy', { status: 503 })));
     const result = await waitForTerminal(options(), { ...quiet, log: (l) => logs.push(l), client: gh.client, fetchFn });
     expect(result).toMatchObject({ kind: 'terminal', source: 'poll' });
-    expect(logs).toHaveLength(1);
+    expect(logs).toHaveLength(2);
     expect(logs[0]).toContain('503');
+    expect(logs[1]).toBe('gh-watcher: WARNING relay unreachable at https://events.invalid, polling GitHub');
   });
 
   it.each([
@@ -179,7 +184,8 @@ describe('event mode wait', () => {
     const { fetchFn } = fakeFetch(() => make());
     const result = await waitForTerminal(options(), { ...quiet, log: (l) => logs.push(l), client: gh.client, fetchFn });
     expect(result).toMatchObject({ kind: 'terminal', source: 'poll' });
-    expect(logs).toHaveLength(1);
+    expect(logs).toHaveLength(2);
+    expect(logs[1]).toBe('gh-watcher: WARNING relay unreachable at https://events.invalid, polling GitHub');
   });
 
   it('polls when owner_mode is poll', async () => {

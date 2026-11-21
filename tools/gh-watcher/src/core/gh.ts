@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createQueuedExec, queueDisabled, RateLimitTimeoutError, type QueuedExec } from './queue.js';
+import { createQueuedExec, EtagStore, queueDisabled, RateLimitTimeoutError, type QueuedExec } from './queue.js';
 import type {
   CheckState,
   ExternalCheck,
@@ -17,17 +17,17 @@ import type {
   WatchTarget,
 } from './types.js';
 
-const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
-const DETAILED_RUN_FIELDS = `${RUN_FIELDS},startedAt,updatedAt,attempt`;
+export const MIN_REMAINING_ENV = 'GH_WATCHER_MIN_REMAINING';
+/** Below this many REST calls left in the hour, polling waits slow down. */
+export const DEFAULT_MIN_REMAINING = 500;
+/** Polling waits sleep this many times longer while the budget is low. */
+export const LOW_BUDGET_FACTOR = 4;
+
 const PR_FIELDS =
   'number,url,title,state,isDraft,headRefOid,headRefName,reviewDecision,mergedAt,closedAt,comments,reviews,updatedAt';
 const REVIEW_COMMENT_JQ =
   '.[] | {id: .id, author: .user.login, createdAt: .created_at, path: .path, url: .html_url}';
 
-const CHECK_RUN_JQ =
-  '.check_runs[] | {id: .id, name: .name, status: .status, conclusion: .conclusion, url: .html_url, startedAt: .started_at, completedAt: .completed_at, app: .app.slug}';
-const STATUS_JQ =
-  '.statuses[] | {id: .id, context: .context, state: .state, url: .target_url, updatedAt: .updated_at}';
 /** Check runs created by Actions are already covered by workflow runs. */
 const ACTIONS_APP_SLUG = 'github-actions';
 
@@ -71,6 +71,103 @@ export interface GhClientOptions {
   detailedRuns?: boolean;
   /** Clock for snapshot timestamps; defaults to the system clock. */
   now?: () => Date;
+  /**
+   * Store for conditional requests. Defaults to the shared queue store, except with an injected
+   * `exec` or a disabled queue, where there is none. Pass `null` to switch it off.
+   */
+  etagStore?: EtagStore | null;
+  /** Low-budget threshold; defaults to GH_WATCHER_MIN_REMAINING, else 500. */
+  minRemaining?: number;
+  /** Receives the one-off low-budget notice; defaults to stderr. */
+  log?: (line: string) => void;
+}
+
+export interface HttpResponse {
+  status: number;
+  headers: Map<string, string>;
+  body: string;
+}
+
+/** Split `gh api -i` output into status, lower-cased headers and body; undefined when it has no HTTP header block. */
+export function parseHttpResponse(stdout: string): HttpResponse | undefined {
+  const first = /^HTTP\/\S+ (\d{3})/.exec(stdout);
+  if (first === null) {
+    return undefined;
+  }
+  const match = /\r?\n\r?\n/.exec(stdout);
+  const head = match === null ? stdout : stdout.slice(0, match.index);
+  const body = match === null ? '' : stdout.slice(match.index + match[0].length);
+  const headers = new Map<string, string>();
+  for (const line of head.split(/\r?\n/).slice(1)) {
+    const colon = line.indexOf(':');
+    if (colon > 0) {
+      headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+    }
+  }
+  return { status: Number(first[1]), headers, body };
+}
+
+/** Map an Actions REST workflow run to the shape `normaliseRun` reads. */
+function restRunToGh(raw: unknown, detailed: boolean): unknown {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const mapped: Record<string, unknown> = {
+    databaseId: record['id'],
+    workflowName: record['name'],
+    displayTitle: record['display_title'],
+    status: record['status'],
+    conclusion: record['conclusion'],
+    url: record['html_url'],
+    headSha: record['head_sha'],
+    createdAt: record['created_at'],
+  };
+  if (detailed) {
+    mapped['startedAt'] = record['run_started_at'];
+    mapped['updatedAt'] = record['updated_at'];
+    mapped['attempt'] = record['run_attempt'];
+  }
+  return mapped;
+}
+
+/** Map a REST job to the shape `normaliseJob` reads. */
+function restJobToGh(raw: unknown): unknown {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  return {
+    name: record['name'],
+    status: record['status'],
+    conclusion: record['conclusion'],
+    url: record['html_url'],
+    steps: asArray(record['steps']).map((step) => {
+      const item = (step ?? {}) as Record<string, unknown>;
+      return { name: item['name'], number: item['number'], status: item['status'], conclusion: item['conclusion'] };
+    }),
+  };
+}
+
+/** Map a REST check run to the shape `normaliseCheckRuns` reads (the old jq output). */
+function restCheckRunToGh(raw: unknown): unknown {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  const app = (record['app'] ?? {}) as Record<string, unknown>;
+  return {
+    id: record['id'],
+    name: record['name'],
+    status: record['status'],
+    conclusion: record['conclusion'],
+    url: record['html_url'],
+    startedAt: record['started_at'],
+    completedAt: record['completed_at'],
+    app: app['slug'],
+  };
+}
+
+function restStatusToGh(raw: unknown): unknown {
+  const record = (raw ?? {}) as Record<string, unknown>;
+  return {
+    id: record['id'],
+    context: record['context'],
+    state: record['state'],
+    url: record['target_url'],
+    updatedAt: record['updated_at'],
+  };
 }
 
 /** A hung gh call must not hold queue locks for ever. */
@@ -442,16 +539,87 @@ export function sameRunsKey(saved: string, key: string): boolean {
 
 export class GhClient {
   private readonly exec: GhExec;
-  private readonly runFields: string;
+  private readonly detailed: boolean;
   private readonly now: () => Date;
+  private readonly etags: EtagStore | undefined;
+  private readonly minRemaining: number;
+  private readonly log: (line: string) => void;
+  private remaining: number | undefined;
+  private warnedLow = false;
   private warnedUnavailable = false;
 
   constructor(options?: GhClientOptions) {
     this.exec =
       options?.exec ??
       (queueDisabled() ? spawnGh(options?.ghBin ?? 'gh') : createQueuedExec(spawnGh(options?.ghBin ?? 'gh')));
-    this.runFields = options?.detailedRuns === true ? DETAILED_RUN_FIELDS : RUN_FIELDS;
+    this.detailed = options?.detailedRuns === true;
     this.now = options?.now ?? (() => new Date());
+    if (options?.etagStore !== undefined) {
+      this.etags = options.etagStore ?? undefined;
+    } else {
+      this.etags = options?.exec === undefined && !queueDisabled() ? new EtagStore() : undefined;
+    }
+    const fromEnv = Number(process.env[MIN_REMAINING_ENV]);
+    this.minRemaining =
+      options?.minRemaining ??
+      (process.env[MIN_REMAINING_ENV]?.trim() !== undefined && Number.isFinite(fromEnv) && fromEnv >= 0
+        ? fromEnv
+        : DEFAULT_MIN_REMAINING);
+    this.log = options?.log ?? ((line: string) => process.stderr.write(`${line}\n`));
+  }
+
+  /** True once a response reported fewer REST calls left than the threshold. */
+  isLowBudget(): boolean {
+    return this.remaining !== undefined && this.remaining < this.minRemaining;
+  }
+
+  /** How many times longer polling waits should sleep: 1 normally, 4 while the budget is low. */
+  pollFactor(): number {
+    return this.isLowBudget() ? LOW_BUDGET_FACTOR : 1;
+  }
+
+  private noteBudget(header: string | undefined): void {
+    if (header === undefined) {
+      return;
+    }
+    const value = Number(header);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    this.remaining = value;
+    if (this.isLowBudget() && !this.warnedLow) {
+      this.warnedLow = true;
+      this.log(
+        `gh-watcher: GitHub REST budget low (${value} left, below ${this.minRemaining}), waiting ${LOW_BUDGET_FACTOR}x longer between checks`,
+      );
+    }
+  }
+
+  /**
+   * GET a REST path with `gh api -i`, sending `If-None-Match` when the shared store holds an ETag
+   * for it. A 304 reply costs no rate limit and returns the stored body. The result has the body
+   * as stdout (headers removed); failures come back unchanged.
+   */
+  private async conditionalGet(path: string): Promise<GhExecResult> {
+    const cached = await this.etags?.get(path);
+    const args = ['api', path, '-i', ...(cached === undefined ? [] : ['-H', `If-None-Match: ${cached.etag}`])];
+    const result = await this.exec(args);
+    const parsed = parseHttpResponse(result.stdout);
+    if (parsed === undefined) {
+      return result;
+    }
+    this.noteBudget(parsed.headers.get('x-ratelimit-remaining'));
+    if (parsed.status === 304 && cached !== undefined) {
+      return { stdout: cached.body, stderr: '', code: 0 };
+    }
+    if (result.code !== 0) {
+      return result;
+    }
+    const etag = parsed.headers.get('etag');
+    if (etag !== undefined && etag.length > 0) {
+      await this.etags?.set(path, { etag, body: parsed.body });
+    }
+    return { stdout: parsed.body, stderr: result.stderr, code: 0 };
   }
 
   /** Bound any rate-limit wait by an absolute deadline (epoch ms); undefined lifts the bound. */
@@ -520,9 +688,9 @@ export class GhClient {
 
   async listRuns(repo: string, target: WatchTarget, resolved?: { sha?: string }): Promise<GhRunInfo[]> {
     if (target.kind === 'run') {
-      const result = await this.exec(['run', 'view', String(target.runId), '--repo', repo, '--json', this.runFields]);
-      assertOk(result, `run view ${target.runId}`);
-      return [normaliseRun(parseJson(result.stdout))];
+      const result = await this.conditionalGet(`repos/${repo}/actions/runs/${target.runId}`);
+      assertOk(result, `api actions/runs/${target.runId}`);
+      return [normaliseRun(restRunToGh(parseJson(result.stdout), this.detailed))];
     }
     if (target.kind === 'pr') {
       const prResult = await this.exec([
@@ -539,21 +707,21 @@ export class GhClient {
       const headSha = parsed.headRefOid ?? '';
       if (headSha.length > 0) {
         setResolved(resolved, headSha);
-        return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', headSha), headSha));
+        return latestPerWorkflow(onlySha(await this.listRunsBy(repo, 'head_sha', headSha), headSha));
       }
       // Older gh versions may omit headRefOid: fall back to the newest commit on the head branch.
-      return newestCommitRuns(await this.listRunsBy(repo, '--branch', parsed.headRefName ?? ''));
+      return newestCommitRuns(await this.listRunsBy(repo, 'branch', parsed.headRefName ?? ''));
     }
     if (target.kind === 'branch') {
       const headSha = await this.branchHeadSha(repo, target.branch);
       if (headSha !== undefined) {
         setResolved(resolved, headSha);
-        return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', headSha), headSha));
+        return latestPerWorkflow(onlySha(await this.listRunsBy(repo, 'head_sha', headSha), headSha));
       }
-      return newestCommitRuns(await this.listRunsBy(repo, '--branch', target.branch));
+      return newestCommitRuns(await this.listRunsBy(repo, 'branch', target.branch));
     }
     setResolved(resolved, target.sha);
-    return latestPerWorkflow(onlySha(await this.listRunsBy(repo, '--commit', target.sha), target.sha));
+    return latestPerWorkflow(onlySha(await this.listRunsBy(repo, 'head_sha', target.sha), target.sha));
   }
 
   /**
@@ -577,22 +745,57 @@ export class GhClient {
     if (!isFull(sha)) {
       return { checks: [] };
     }
-    const checkRuns = await this.exec(['api', `repos/${repo}/commits/${sha}/check-runs?per_page=100`, '--paginate', '--jq', CHECK_RUN_JQ]);
+    const checkRuns = await this.conditionalGet(`repos/${repo}/commits/${sha}/check-runs?per_page=100`);
     if (isPermissionError(checkRuns)) {
       return this.degraded(repo, 'check-runs', checkRuns);
     }
     assertOk(checkRuns, `api commits/${sha}/check-runs`);
-    const statuses = await this.exec(['api', `repos/${repo}/commits/${sha}/status?per_page=100`, '--paginate', '--jq', STATUS_JQ]);
+    const checkRunItems = await this.pagedItems(
+      checkRuns,
+      'check_runs',
+      `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+      '.check_runs[]',
+      restCheckRunToGh,
+      `api commits/${sha}/check-runs`,
+    );
+    const statuses = await this.conditionalGet(`repos/${repo}/commits/${sha}/status?per_page=100`);
     if (isPermissionError(statuses)) {
       return this.degraded(repo, 'status', statuses);
     }
     assertOk(statuses, `api commits/${sha}/status`);
-    return {
-      checks: [
-        ...normaliseCheckRuns(parseJsonLines(checkRuns.stdout, `api commits/${sha}/check-runs`)),
-        ...normaliseStatuses(parseJsonLines(statuses.stdout, `api commits/${sha}/status`)),
-      ],
-    };
+    const statusItems = await this.pagedItems(
+      statuses,
+      'statuses',
+      `repos/${repo}/commits/${sha}/status?per_page=100`,
+      '.statuses[]',
+      restStatusToGh,
+      `api commits/${sha}/status`,
+    );
+    return { checks: [...normaliseCheckRuns(checkRunItems), ...normaliseStatuses(statusItems)] };
+  }
+
+  /**
+   * Items of a REST list from its first page. When the page is not the whole list (more than 100
+   * items), the full list is read again with `--paginate`, uncached.
+   */
+  private async pagedItems(
+    first: GhExecResult,
+    key: string,
+    path: string,
+    jq: string,
+    map: (raw: unknown) => unknown,
+    context: string,
+  ): Promise<unknown[]> {
+    const parsed = parseJson<Record<string, unknown>>(first.stdout);
+    const items = asArray(parsed[key]);
+    const total = Number(parsed['total_count']);
+    if (!Number.isFinite(total) || total <= items.length) {
+      return items.map(map);
+    }
+    const all = await this.exec(['api', path, '--paginate', '--jq', jq]);
+    assertOk(all, context);
+    // The paginated jq output is raw REST objects: map them like the first page.
+    return parseJsonLines(all.stdout, context).map(map);
   }
 
   private degraded(repo: string, what: string, result: GhExecResult): ChecksResult {
@@ -623,16 +826,15 @@ export class GhClient {
       if (target.kind === 'branch') {
         return (await this.branchHeadSha(repo, target.branch))?.toLowerCase();
       }
-      const args =
+      const result =
         target.kind === 'pr'
-          ? ['pr', 'view', String(target.number), '--repo', repo, '--json', 'headRefOid']
-          : ['run', 'view', String(target.runId), '--repo', repo, '--json', 'headSha'];
-      const result = await this.exec(args);
+          ? await this.exec(['pr', 'view', String(target.number), '--repo', repo, '--json', 'headRefOid'])
+          : await this.conditionalGet(`repos/${repo}/actions/runs/${target.runId}`);
       if (result.code !== 0) {
         return undefined;
       }
-      const parsed = parseJson<{ headRefOid?: string; headSha?: string }>(result.stdout);
-      const sha = parsed.headRefOid ?? parsed.headSha ?? '';
+      const parsed = parseJson<{ headRefOid?: string; head_sha?: string }>(result.stdout);
+      const sha = parsed.headRefOid ?? parsed.head_sha ?? '';
       return isFull(sha) ? sha.toLowerCase() : undefined;
     } catch (error) {
       if (error instanceof RateLimitTimeoutError) {
@@ -660,18 +862,20 @@ export class GhClient {
     }
   }
 
-  private async listRunsBy(repo: string, flag: string, value: string): Promise<GhRunInfo[]> {
-    const result = await this.exec(['run', 'list', '--repo', repo, flag, value, '--limit', '25', '--json', this.runFields]);
-    assertOk(result, `run list ${value}`);
-    const runs = parseJson<unknown[]>(result.stdout);
-    return runs.map((run) => normaliseRun(run));
+  private async listRunsBy(repo: string, filter: 'head_sha' | 'branch', value: string): Promise<GhRunInfo[]> {
+    const path = `repos/${repo}/actions/runs?${filter}=${encodeURIComponent(value)}&per_page=100`;
+    const result = await this.conditionalGet(path);
+    assertOk(result, `api actions/runs for ${value}`);
+    const parsed = parseJson<{ workflow_runs?: unknown[] }>(result.stdout);
+    return asArray(parsed.workflow_runs).map((run) => normaliseRun(restRunToGh(run, this.detailed)));
   }
 
   async runJobs(repo: string, runId: number): Promise<GhJobInfo[]> {
-    const result = await this.exec(['run', 'view', String(runId), '--repo', repo, '--json', 'jobs']);
-    assertOk(result, `run view ${runId}`);
-    const parsed = parseJson<{ jobs?: unknown[] }>(result.stdout);
-    return (parsed.jobs ?? []).map((job) => normaliseJob(job));
+    const path = `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`;
+    const result = await this.conditionalGet(path);
+    assertOk(result, `api actions/runs/${runId}/jobs`);
+    const items = await this.pagedItems(result, 'jobs', path, '.jobs[]', (job) => job, `api actions/runs/${runId}/jobs`);
+    return items.map((job) => normaliseJob(restJobToGh(job)));
   }
 
   async collectFailures(repo: string, runs: GhRunInfo[]): Promise<FailedStep[]> {

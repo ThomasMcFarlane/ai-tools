@@ -7,6 +7,7 @@ import {
   type WaitOptions,
 } from '../src/index.js';
 
+import { CHECK_RUNS, COMMIT_STATUS, restCheckRunsBody, restJobsBody, restRunsBody, restStatusBody, RUN_JOBS, RUNS_LIST } from './rest-fixtures.js';
 const SHA = 'a'.repeat(40);
 
 function runJson(id: number, status: string, conclusion: string | null): Record<string, unknown> {
@@ -38,19 +39,22 @@ function setup(rounds: { runs: Record<string, unknown>[]; jobs: unknown[] }[]) {
   const calls: string[][] = [];
   let index = 0;
   const exec: GhExec = async (args) => {
-    if (args[0] === 'api' && /\/commits\/[0-9a-f]{40}\/(check-runs|status)/.test(args[1] ?? '')) {
-      return { stdout: '', stderr: '', code: 0 };
+    if (args[0] === 'api' && CHECK_RUNS.test(args[1] ?? '')) {
+      return { stdout: restCheckRunsBody([]), stderr: '', code: 0 };
+    }
+    if (args[0] === 'api' && COMMIT_STATUS.test(args[1] ?? '')) {
+      return { stdout: restStatusBody([]), stderr: '', code: 0 };
     }
     calls.push(args);
     const round = rounds[
-      Math.min(Math.max(index - (args[1] === 'view' ? 1 : 0), 0), rounds.length - 1)
+      Math.min(Math.max(index - (RUN_JOBS.test(args[1] ?? '') ? 1 : 0), 0), rounds.length - 1)
     ] as (typeof rounds)[number];
-    if (args[0] === 'run' && args[1] === 'list') {
+    if (args[0] === 'api' && RUNS_LIST.test(args[1] ?? '')) {
       index += 1;
-      return { stdout: JSON.stringify(round.runs), stderr: '', code: 0 };
+      return { stdout: restRunsBody(round.runs), stderr: '', code: 0 };
     }
-    if (args[0] === 'run' && args[1] === 'view') {
-      return { stdout: JSON.stringify({ jobs: round.jobs }), stderr: '', code: 0 };
+    if (args[0] === 'api' && RUN_JOBS.test(args[1] ?? '')) {
+      return { stdout: restJobsBody(round.jobs), stderr: '', code: 0 };
     }
     return { stdout: JSON.stringify({ headRefOid: SHA }), stderr: '', code: 0 };
   };
@@ -107,7 +111,7 @@ describe('followTarget', () => {
       },
     ]);
     await followTarget(options, { client, sleep: async () => {}, emit: () => {} });
-    const viewed = calls.filter((c) => c[0] === 'run' && c[1] === 'view').map((c) => c[2]);
+    const viewed = calls.filter((c) => RUN_JOBS.test(c[1] ?? '')).map((c) => /runs\/(\d+)\//.exec(c[1] ?? '')?.[1]);
     expect(viewed.filter((id) => id === '1')).toHaveLength(1);
     expect(viewed.filter((id) => id === '2')).toHaveLength(3);
   });

@@ -17,6 +17,7 @@ import {
   type WaitOptions,
 } from '../src/index.js';
 
+import { restCheckRunsBody, restJobsBody, restRunBody, restRunsBody, restStatusBody, RUN_JOBS, RUN_ONE, RUNS_LIST } from './rest-fixtures.js';
 const SHA = 'c'.repeat(40);
 const REPO = 'octo-org/hello-world';
 
@@ -64,7 +65,6 @@ function statusJson(over: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-const lines = (items: Record<string, unknown>[] | undefined): string => (items ?? []).map((i) => JSON.stringify(i)).join('\n');
 
 /** Scripted gh: each scenario is consumed per `run list` call, the last repeating. */
 function fakeGh(scenarios: Scenario[]): { client: GhClient; calls: string[][] } {
@@ -74,21 +74,21 @@ function fakeGh(scenarios: Scenario[]): { client: GhClient; calls: string[][] } 
   const exec: GhExec = async (args) => {
     calls.push(args);
     const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
-    if (args[0] === 'run' && args[1] === 'list') {
+    if (args[0] === 'api' && RUNS_LIST.test(String(args[1]))) {
       index += 1;
-      return ok(JSON.stringify(current().runs ?? []));
+      return ok(restRunsBody(current().runs ?? []));
     }
-    if (args[0] === 'run' && args[1] === 'view') {
-      return ok(JSON.stringify({ jobs: [] }));
+    if (args[0] === 'api' && RUN_JOBS.test(String(args[1]))) {
+      return ok(restJobsBody([]));
     }
     if (args[0] === 'pr') {
       return ok(JSON.stringify({ headRefOid: SHA, headRefName: 'x' }));
     }
     if (args[0] === 'api' && String(args[1]).includes('/check-runs')) {
-      return ok(lines(current().checkRuns));
+      return ok(restCheckRunsBody(current().checkRuns));
     }
     if (args[0] === 'api' && String(args[1]).includes('/status')) {
-      return ok(lines(current().statuses));
+      return ok(restStatusBody(current().statuses));
     }
     return { stdout: '', stderr: 'unexpected', code: 1 };
   };
@@ -155,12 +155,13 @@ describe('external checks: commit statuses', () => {
     expect(report.state).toBe('success');
   });
 
-  it('requests per_page=100 with pagination', async () => {
+  it('requests per_page=100 as one conditional call', async () => {
     const gh = fakeGh([{ statuses: [statusJson({})] }]);
     await collectReport(spec(), { client: gh.client });
     const statusCall = gh.calls.find((c) => String(c[1]).includes('/status'));
     expect(statusCall?.[1]).toBe(`repos/${REPO}/commits/${SHA}/status?per_page=100`);
-    expect(statusCall).toContain('--paginate');
+    expect(statusCall).toContain('-i');
+    expect(statusCall).not.toContain('--paginate');
   });
 });
 
@@ -227,11 +228,11 @@ describe('external checks: check runs', () => {
     const calls: string[][] = [];
     const exec: GhExec = async (args) => {
       calls.push(args);
-      return { stdout: JSON.stringify(runJson(9, 'completed', 'success')), stderr: '', code: 0 };
+      return { stdout: restRunBody(runJson(9, 'completed', 'success')), stderr: '', code: 0 };
     };
     const report = await collectReport({ ...spec(), target: { kind: 'run', runId: 9 } }, { client: new GhClient({ exec }) });
     expect(report.checks).toEqual([]);
-    expect(calls.every((c) => c[0] !== 'api')).toBe(true);
+    expect(calls.every((c) => RUN_ONE.test(c[1] ?? ''))).toBe(true);
   });
 
   it('propagates a gh failure', async () => {
@@ -248,8 +249,8 @@ describe('permission errors', () => {
       if (args[0] === 'api' && String(args[1]).includes('/check-runs')) {
         return { stdout: '', stderr: 'gh: Resource not accessible by integration (HTTP 403)', code: 1 };
       }
-      if (args[0] === 'run' && args[1] === 'list') {
-        return { stdout: JSON.stringify([runJson(1, 'completed', 'success')]), stderr: '', code: 0 };
+      if (args[0] === 'api' && RUNS_LIST.test(String(args[1]))) {
+        return { stdout: restRunsBody([runJson(1, 'completed', 'success')]), stderr: '', code: 0 };
       }
       return { stdout: '', stderr: 'unexpected', code: 1 };
     };
@@ -458,7 +459,7 @@ describe('head lookups', () => {
     );
     expect(result.kind).toBe('timeout');
     const count = (pred: (c: string[]) => boolean): number => gh.calls.filter(pred).length;
-    const runLists = count((c) => c[0] === 'run' && c[1] === 'list');
+    const runLists = count((c) => RUNS_LIST.test(c[1] ?? ''));
     expect(runLists).toBeGreaterThanOrEqual(3);
     // One head lookup in total per check (the initial resolve plus one per re-check).
     expect(count((c) => c[0] === 'pr')).toBe(runLists);
@@ -514,6 +515,6 @@ describe('event mode with external checks', () => {
       fetchFn,
     });
     expect(result).toEqual({ kind: 'timeout', source: 'events' });
-    expect(gh.calls.filter((c) => c[0] === 'run' && c[1] === 'list')).toHaveLength(1);
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? ''))).toHaveLength(1);
   }, 15_000);
 });

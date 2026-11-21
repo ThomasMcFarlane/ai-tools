@@ -3,6 +3,7 @@ import { applyRunEvents } from '../src/core/apply-events.js';
 import type { RunEvent } from '../src/core/events.js';
 import { GhClient, waitForTerminal, type GhExec, type GhRunInfo, type WaitOptions } from '../src/index.js';
 
+import { CHECK_RUNS, COMMIT_STATUS, restCheckRunsBody, restJobsBody, restRunsBody, restStatusBody, RUN_JOBS, RUNS_LIST } from './rest-fixtures.js';
 const SHA = 'a'.repeat(40);
 const BASE = 'https://events.invalid';
 
@@ -36,21 +37,24 @@ function fakeGh(lists: GhRunInfo[] | GhRunInfo[][], jobs: unknown[] = []): { cli
   const sequence = (Array.isArray(lists[0]) || lists.length === 0 ? lists : [lists]) as GhRunInfo[][];
   let index = 0;
   const exec: GhExec = async (args) => {
-    if (args[0] === 'api' && /\/commits\/[0-9a-f]{40}\/(check-runs|status)/.test(args[1] ?? '')) {
-      return { stdout: '', stderr: '', code: 0 }; // no external checks; not counted
+    if (args[0] === 'api' && CHECK_RUNS.test(args[1] ?? '')) {
+      return { stdout: restCheckRunsBody([]), stderr: '', code: 0 }; // no external checks; not counted
+    }
+    if (args[0] === 'api' && COMMIT_STATUS.test(args[1] ?? '')) {
+      return { stdout: restStatusBody([]), stderr: '', code: 0 };
     }
     calls.push(args);
-    if (args[0] === 'run' && args[1] === 'list') {
-      const next = sequence[Math.min(index, sequence.length - 1)];
+    if (args[0] === 'api' && RUNS_LIST.test(args[1] ?? '')) {
+      const next = sequence[Math.min(index, sequence.length - 1)] as GhRunInfo[];
       index += 1;
-      return { stdout: JSON.stringify(next), stderr: '', code: 0 };
+      return { stdout: restRunsBody(next as unknown as Record<string, unknown>[]), stderr: '', code: 0 };
     }
-    if (args[0] === 'run' && args[1] === 'view') {
-      return { stdout: JSON.stringify({ jobs }), stderr: '', code: 0 };
+    if (args[0] === 'api' && RUN_JOBS.test(args[1] ?? '')) {
+      return { stdout: restJobsBody(jobs as unknown[]), stderr: '', code: 0 };
     }
     return { stdout: '', stderr: 'unexpected', code: 1 };
   };
-  return { client: new GhClient({ exec }), calls };
+  return { client: new GhClient({ exec, detailedRuns: true }), calls };
 }
 
 function relay(batches: { latest_seq: number; events?: RunEvent[] }[]): typeof fetch {
@@ -131,7 +135,7 @@ describe('event mode without per-event gh calls', () => {
     const fetchFn = relay([{ latest_seq: 0 }, { latest_seq: 1, events: [event(1, 1, 'A', 'completed', 'success')] }]);
     const result = await waitForTerminal(options({ timeoutMs: 100 }), { ...quiet, client: gh.client, fetchFn });
     expect(result).toEqual({ kind: 'timeout', source: 'events' });
-    expect(gh.calls.filter((c) => c[1] === 'list')).toHaveLength(2);
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? ''))).toHaveLength(2);
   });
 
   it('confirms from an initial none state as well', async () => {
@@ -140,7 +144,7 @@ describe('event mode without per-event gh calls', () => {
     const fetchFn = relay([{ latest_seq: 0 }, { latest_seq: 1, events: [event(1, 1, 'A', 'completed', 'success')] }]);
     const result = await waitForTerminal(options({ timeoutMs: 100 }), { ...quiet, client: gh.client, fetchFn });
     expect(result).toEqual({ kind: 'timeout', source: 'events' });
-    expect(gh.calls.filter((c) => c[1] === 'list')).toHaveLength(2);
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? ''))).toHaveLength(2);
   });
 
   it('does not turn a queued run without attempt into a failure from an event alone', async () => {
@@ -152,7 +156,7 @@ describe('event mode without per-event gh calls', () => {
     ]);
     const result = await waitForTerminal(options({ timeoutMs: 100 }), { ...quiet, client: gh.client, fetchFn });
     expect(result).toEqual({ kind: 'timeout', source: 'events' });
-    expect(gh.calls.filter((c) => c[1] === 'list').length).toBeGreaterThanOrEqual(2);
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? '')).length).toBeGreaterThanOrEqual(2);
   });
 
   it('reaches success only after a confirming gh check, with no gh call for non-terminal events', async () => {
@@ -172,7 +176,7 @@ describe('event mode without per-event gh calls', () => {
       onPending: (report) => void pending.push(report.state),
     });
     expect(result).toMatchObject({ kind: 'terminal', source: 'events', report: { state: 'success' } });
-    expect(gh.calls.filter((c) => c[1] === 'list')).toHaveLength(2); // baseline + confirm
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? ''))).toHaveLength(2); // baseline + confirm
     expect(pending).toEqual(['pending', 'pending']);
   });
 
@@ -190,7 +194,7 @@ describe('event mode without per-event gh calls', () => {
     const result = await waitForTerminal(options(), { ...quiet, client: gh.client, fetchFn });
     expect(result).toMatchObject({ kind: 'terminal', report: { state: 'success' } });
     expect(result.kind === 'terminal' && result.report.runs).toHaveLength(3);
-    expect(gh.calls.filter((c) => c[1] === 'list')).toHaveLength(2);
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? ''))).toHaveLength(2);
   });
 
   it('fetches jobs only when a run reaches failure', async () => {
@@ -204,14 +208,14 @@ describe('event mode without per-event gh calls', () => {
       kind: 'terminal',
       report: { state: 'failure', failedSteps: [{ runId: 1, jobName: 'build', stepName: 'Test', stepNumber: 3 }] },
     });
-    expect(gh.calls.map((c) => c.slice(0, 2).join(' '))).toEqual(['run list', 'run list', 'run view']);
+    expect(gh.calls.map((c) => (RUNS_LIST.test(c[1] ?? '') ? 'runs' : RUN_JOBS.test(c[1] ?? '') ? 'jobs' : 'other'))).toEqual(['runs', 'runs', 'jobs']);
   });
 
   it('calls gh again for an event it cannot map to a run', async () => {
     const gh = fakeGh([ghRun(1, 'CI', 'in_progress', null)]);
     const fetchFn = relay([{ latest_seq: 0 }, { latest_seq: 1, events: [{ seq: 1, head_sha: SHA }] }]);
     await waitForTerminal(options({ timeoutMs: 100 }), { ...quiet, client: gh.client, fetchFn });
-    expect(gh.calls.filter((c) => c[1] === 'list').length).toBeGreaterThanOrEqual(2);
+    expect(gh.calls.filter((c) => RUNS_LIST.test(c[1] ?? '')).length).toBeGreaterThanOrEqual(2);
   });
 
   it('makes no gh call for events of another sha or events that change nothing', async () => {

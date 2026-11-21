@@ -525,3 +525,72 @@ export class GhQueue {
 export function createQueuedExec(inner: GhExec, options?: QueueOptions, env?: NodeJS.ProcessEnv): QueuedExec {
   return new GhQueue(inner, options, env).exec;
 }
+
+export interface EtagEntry {
+  etag: string;
+  body: string;
+}
+
+export interface EtagStoreOptions {
+  dir?: string;
+  now?: () => number;
+}
+
+/** Entries older than this are dropped when the store is first written to in a process. */
+const ETAG_MAX_AGE_MS = 24 * 3_600_000;
+
+/**
+ * Host-wide store of the last ETag and response body per URL, for conditional requests. A 304 reply
+ * does not count against the GitHub rate limit, so a process that finds an entry sends
+ * `If-None-Match` and reuses the stored body. Files sit in the queue state dir, scoped by identity
+ * (host, config dir, token hash), so accounts never share entries. They hold only the ETag and the
+ * response body; no token ever reaches them.
+ */
+export class EtagStore {
+  private readonly dir: string;
+  private readonly scope: string;
+  private readonly now: () => number;
+  private purged = false;
+
+  constructor(options: EtagStoreOptions = {}, env: NodeJS.ProcessEnv = process.env) {
+    this.dir = join(options.dir ?? join(stateDir(), 'queue'), 'etag');
+    this.scope = identityScope(env);
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  private file(url: string): string {
+    return join(this.dir, `${createHash('sha256').update(JSON.stringify([this.scope, url])).digest('hex')}.json`);
+  }
+
+  async get(url: string): Promise<EtagEntry | undefined> {
+    const entry = await readJson<EtagEntry>(this.file(url));
+    if (entry === undefined || typeof entry.etag !== 'string' || typeof entry.body !== 'string' || entry.etag.length === 0) {
+      return undefined;
+    }
+    return entry;
+  }
+
+  async set(url: string, entry: EtagEntry): Promise<void> {
+    try {
+      await mkdir(this.dir, { recursive: true, mode: 0o700 });
+      await writeAtomic(this.file(url), entry);
+      await this.purge();
+    } catch {
+      // A missing store only costs a full request next time.
+    }
+  }
+
+  private async purge(): Promise<void> {
+    if (this.purged) {
+      return;
+    }
+    this.purged = true;
+    for (const name of await readdir(this.dir)) {
+      const file = join(this.dir, name);
+      const info = await stat(file).catch(() => undefined);
+      if (info !== undefined && this.now() - info.mtimeMs > ETAG_MAX_AGE_MS) {
+        await unlink(file).catch(() => undefined);
+      }
+    }
+  }
+}

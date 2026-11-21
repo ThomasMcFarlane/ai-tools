@@ -369,7 +369,8 @@ is `none` (statuses may not have started yet), the wait re-checks with `gh` ever
 (never longer than `--fallback-interval`) instead of waiting for the safety-net interval. The
 outcome `source` stays `"events"` while the relay is healthy, and is `"poll"` only when the wait actually fell back to polling. A purely Actions pending state
 keeps the event path. Each such re-check costs one head lookup (`pr view` or branch API, for
-`--pr`/`--branch`), one `run list`, one check-runs call and one status call.
+`--pr`/`--branch`), one runs list, one check-runs call and one status call. These three REST
+calls are conditional (see "Conditional requests"), so they cost nothing while nothing changed.
 
 `watch run` (the daemon) does not use event mode: it remains poll-only, and so do `pr status` and
 `prEvents` watches. `pr wait` and `pr follow` have their own event mode, below.
@@ -514,8 +515,38 @@ Long-running `watch` commands wait at most 10 minutes per call, then report an e
 | `GH_WATCHER_CACHE_TTL` | `10` | Upper bound in seconds on how long a finished call may be shared with waiting callers (`0` disables sharing). |
 | `GH_WATCHER_MIN_SPACING` | `1` | Minimum seconds between `gh` calls across processes (`0` disables). |
 | `GH_WATCHER_QUEUE` | on | Set to `0`, `off` or `false` to bypass the shared queue entirely. |
+| `GH_WATCHER_MIN_REMAINING` | `500` | Below this many REST calls left, polling waits sleep 4 times longer. |
 
 The state-dir override (`AI_TOOLS_GH_WATCHER_STATE_DIR`) applies to the queue too.
+
+### Conditional requests (0.6.0)
+
+Run lists, single runs, job lists, check runs and commit statuses are read with `gh api -i`
+(one REST call, no workflow look-ups). The ETag and body of each URL are stored under
+`<state dir>/queue/etag/`, scoped by host, config dir and token hash (no token in the files). The
+next call, from any process on the host, sends `If-None-Match`. GitHub answers `304` and does not
+count that call against the rate limit, and the stored body is used. A wait, a `follow` and a
+`status` for the same commit therefore share one set of full responses.
+`GH_WATCHER_QUEUE=off` or an injected executor turns the store off. Entries older than a day are
+removed. The head lookup for `--pr` still uses `gh pr view` (GraphQL, not REST).
+
+### Low budget
+
+Every REST response carries `X-RateLimit-Remaining`. When it falls below
+`GH_WATCHER_MIN_REMAINING` (default `500`), polling waits sleep 4 times longer, and the event-mode
+re-check interval grows the same way. One stderr line says so. The state resets when a response
+shows a higher value.
+
+### Poll fallback
+
+With `--source auto`, a relay that cannot be reached makes the wait poll GitHub. It logs
+`gh-watcher: WARNING relay unreachable at <url>, polling GitHub` and polls no faster than every 2
+minutes. An explicit `--source poll` keeps the given `--interval`.
+
+### `follow` and jobs
+
+`follow` fetches the jobs of a run again only when the status, conclusion, `updatedAt` or attempt
+of that run changed since the last fetch.
 
 ## Targets
 
@@ -529,10 +560,10 @@ considered, so results from superseded commits cannot leak into the aggregate st
 
 | Target | Resolution |
 | --- | --- |
-| `--pr <number>` | `gh pr view <number> --repo R --json headRefName,headRefOid`, then `gh run list --commit <headRefOid> --limit 25`. Falls back to the branch rule below if `headRefOid` is missing. |
-| `--branch <name>` | Branch tip resolved with `gh api repos/R/branches/<name> --jq .commit.sha`, then `gh run list --commit <tip> --limit 25`. If the tip cannot be resolved, falls back to `gh run list --branch <name> --limit 25` and keeps only the commit of the most recently created run. |
-| `--commit <sha>` | `gh run list --commit <sha> --limit 25`. |
-| `--run <id>` | `gh run view <id> --repo R --json ...` (single run). |
+| `--pr <number>` | `gh pr view <number> --repo R --json headRefName,headRefOid`, then `gh api repos/R/actions/runs?head_sha=<headRefOid>&per_page=100`. Falls back to the branch rule below if `headRefOid` is missing. |
+| `--branch <name>` | Branch tip resolved with `gh api repos/R/branches/<name> --jq .commit.sha`, then the same runs call with `head_sha=<tip>`. If the tip cannot be resolved, falls back to `actions/runs?branch=<name>&per_page=100` and keeps only the commit of the most recently created run. |
+| `--commit <sha>` | `gh api repos/R/actions/runs?head_sha=<sha>&per_page=100`. A short sha is resolved to the full sha first. |
+| `--run <id>` | `gh api repos/R/actions/runs/<id>` (single run). |
 
 Within that commit, only the newest run of each workflow name is kept (latest
 `createdAt`, then highest run id), so a re-run that succeeds supersedes the failed
@@ -549,8 +580,8 @@ Actions workflow runs (a `--run` target stays Actions-only). They are reported i
 
 | Source | Call | Notes |
 | --- | --- | --- |
-| Check runs | `gh api repos/R/commits/<sha>/check-runs?per_page=100 --paginate` | Runs whose app is `github-actions` are skipped (workflow runs cover them). The latest run per app and name is kept (by `started_at`, then id). |
-| Commit statuses | `gh api repos/R/commits/<sha>/status?per_page=100 --paginate` | Combined status; one entry per context (the newest wins if a context repeats across pages). |
+| Check runs | `gh api repos/R/commits/<sha>/check-runs?per_page=100` | Runs whose app is `github-actions` are skipped (workflow runs cover them). The latest run per app and name is kept (by `started_at`, then id). |
+| Commit statuses | `gh api repos/R/commits/<sha>/status?per_page=100` | Combined status; one entry per context (the newest wins if a context repeats across pages). |
 
 Each entry is `{kind: "check_run" | "status", name, source, status, conclusion, url, updatedAt?}`.
 `source` is the app slug (check run) or the host of the status target URL, for example `app.terraform.io` (empty when there is none). `status` is `pending`,
@@ -591,7 +622,7 @@ Failure conclusions: `failure`, `cancelled`, `timed_out`, `startup_failure`,
 
 Success conclusions: `success`, `neutral`, `skipped`.
 
-Step-level failure collection: for each failure-like run, `gh run view <id> --json jobs`
+Step-level failure collection: for each failure-like run, `gh api repos/R/actions/runs/<id>/jobs?per_page=100`
 is fetched; for each failure-like job, every step with conclusion `failure` is recorded
 (workflow, job, step name and number). A failed job with no failed steps is reported as
 a job-level failure. Failures are collected only when the aggregate state is `failure`.
@@ -671,7 +702,7 @@ too.
 | --- | --- |
 | `~/.local/state/ai-tools/gh-watcher/watchers.json` | Watch specs and per-watch last-fired edges. |
 | `~/.local/state/ai-tools/gh-watcher/events.jsonl` | One JSON event per line, appended on every check. |
-| `~/.local/state/ai-tools/gh-watcher/queue/` | Shared `gh` queue: response cache, call-slot file, cooldown, lock files. |
+| `~/.local/state/ai-tools/gh-watcher/queue/` | Shared `gh` queue: response cache, call-slot file, cooldown, lock files, `etag/` store. |
 
 Path resolution: `AI_TOOLS_GH_WATCHER_STATE_DIR` overrides the whole directory;
 otherwise `XDG_STATE_HOME` is honoured, defaulting to `~/.local/state` (`%LOCALAPPDATA%`
