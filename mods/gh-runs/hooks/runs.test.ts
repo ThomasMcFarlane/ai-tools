@@ -77,6 +77,7 @@ const line = (over: object = {}) =>
 describe('follower lines', () => {
   test('accepts a well-formed line and refuses the rest', () => {
     expect(parseLine(line())?.source).toBe('events')
+    expect(parseLine(line({ source: 'relay', relaySource: 'webhook' }))?.source).toBe('relay')
     for (const bad of ['', 'nope', '[]', '{}', line({ source: 'x' }), line({ runs: [{ status: 'x' }] }), line({ isFinal: 'no' })]) expect(parseLine(bad)).toBeUndefined()
   })
   test('cuts chunks into whole lines', () => {

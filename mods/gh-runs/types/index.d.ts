@@ -23,7 +23,9 @@ export type FollowLine = {
   state: string
   runs: Run[]
   failedSteps: { runId?: number; jobName: string; stepName: string; stepNumber: number }[]
-  source: 'events' | 'poll'
+  /** gh-watcher 0.7.0 and later always print `relay` and say in `relaySource` how the relay learned the state. */
+  source: 'events' | 'poll' | 'relay'
+  relaySource?: 'webhook' | 'relay-poll'
   checkedAt: string
   isFinal: boolean
   timedOut?: boolean

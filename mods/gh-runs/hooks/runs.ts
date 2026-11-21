@@ -238,7 +238,7 @@ export const parseLine = (text: string): FollowLine | undefined => {
   if (!v || typeof v !== 'object') return undefined
   const o = v as Record<string, unknown>
   if (typeof o.repo !== 'string' || typeof o.state !== 'string' || !Array.isArray(o.runs)) return undefined
-  if (o.source !== 'events' && o.source !== 'poll') return undefined
+  if (o.source !== 'events' && o.source !== 'poll' && o.source !== 'relay') return undefined
   if (typeof o.checkedAt !== 'string' || typeof o.isFinal !== 'boolean') return undefined
   for (const r of o.runs) {
     const run = r as Record<string, unknown> | null
@@ -315,6 +315,10 @@ export const bar = (done: number, total: number, width = 8): { filled: string; e
 }
 
 export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; drop: number; id: string; href?: string }
+
+// gh-watcher 0.7.0 reports `relay` plus `relaySource`; older versions report `events` or `poll`.
+export const lineSource = (line: Pick<FollowLine, 'source' | 'relaySource'>): 'events' | 'poll' =>
+  line.source === 'relay' ? (line.relaySource === 'relay-poll' ? 'poll' : 'events') : line.source
 
 export const sourceNote = (source: 'events' | 'poll'): string => (source === 'events' ? 'webhook' : 'polled')
 

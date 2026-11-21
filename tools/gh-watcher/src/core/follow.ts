@@ -1,4 +1,4 @@
-import { GhClient } from './gh.js';
+import { jobsByRun, type StatusResponse } from './relay.js';
 import { waitForTerminal, type WaitDeps, type WaitOptions, type WaitSource } from './wait.js';
 import type { CheckReport, CheckState, ExternalCheck, FailedCheck, FailedStep, GhJobInfo, GhRunInfo } from './types.js';
 
@@ -14,8 +14,9 @@ export interface FollowLine {
   checks: ExternalCheck[];
   failedSteps: FailedStep[];
   failedChecks: FailedCheck[];
-  checksUnavailable?: string;
   source: WaitSource;
+  relaySource?: 'webhook' | 'relay-poll';
+  warning?: string;
   checkedAt: string;
   isFinal: boolean;
   timedOut?: boolean;
@@ -44,35 +45,13 @@ function shapeJobs(jobs: GhJobInfo[]): GhJobInfo[] {
   }));
 }
 
-/** Follow a target through `waitForTerminal`, emitting one line per check. Jobs of a run are fetched again only when its status, conclusion or updatedAt changed. */
+/** Follow a target through `waitForTerminal`, emitting one line per change (runs, jobs, steps) as the relay reports it. */
 export async function followTarget(options: WaitOptions, deps: FollowDeps): Promise<FollowResult> {
-  const client = deps.client ?? new GhClient({ detailedRuns: true });
-  /** Jobs per run, kept while the run's status, conclusion and updatedAt stay the same. */
-  const fetched = new Map<number, { stamp: string; jobs: GhJobInfo[] }>();
   let last: FollowLine | undefined;
 
-  const build = async (
-    report: CheckReport,
-    source: WaitSource,
-    isFinal: boolean,
-  ): Promise<FollowLine> => {
-    const runs: FollowRun[] = [];
-    for (const run of report.runs) {
-      const stamp = `${run.status}|${run.conclusion ?? ''}|${run.updatedAt ?? ''}|${String(run.attempt ?? '')}`;
-      const known = fetched.get(run.databaseId);
-      let jobs: GhJobInfo[];
-      if (known !== undefined && known.stamp === stamp && (run.updatedAt !== undefined || run.status === 'completed')) {
-        jobs = known.jobs;
-      } else {
-        try {
-          jobs = shapeJobs(await client.runJobs(report.repo, run.databaseId));
-          fetched.set(run.databaseId, { stamp, jobs });
-        } catch {
-          jobs = [];
-        }
-      }
-      runs.push({ ...run, jobs });
-    }
+  const build = (report: CheckReport, snapshot: StatusResponse, isFinal: boolean): FollowLine => {
+    const jobs = jobsByRun(snapshot);
+    const runs: FollowRun[] = report.runs.map((run) => ({ ...run, jobs: shapeJobs(jobs.get(run.databaseId) ?? []) }));
     const line: FollowLine = {
       repo: report.repo,
       targetKey: report.targetKey,
@@ -81,12 +60,15 @@ export async function followTarget(options: WaitOptions, deps: FollowDeps): Prom
       checks: report.checks,
       failedSteps: report.failedSteps,
       failedChecks: report.failedChecks,
-      source,
+      source: 'relay',
       checkedAt: report.checkedAt,
       isFinal,
     };
-    if (report.checksUnavailable !== undefined) {
-      line.checksUnavailable = report.checksUnavailable;
+    if (report.relaySource !== undefined) {
+      line.relaySource = report.relaySource;
+    }
+    if (report.warning !== undefined) {
+      line.warning = report.warning;
     }
     return line;
   };
@@ -96,15 +78,17 @@ export async function followTarget(options: WaitOptions, deps: FollowDeps): Prom
     deps.emit(line);
   };
 
-  const result = await waitForTerminal(options, {
-    ...deps,
-    client,
-    onPending: async (report, source) => {
-      send(await build(report, source, false));
+  const result = await waitForTerminal(
+    { ...options, jobs: true },
+    {
+      ...deps,
+      onPending: (report, snapshot) => {
+        send(build(report, snapshot, false));
+      },
     },
-  });
+  );
   if (result.kind === 'terminal') {
-    send(await build(result.report, result.source, true));
+    send(build(result.report, result.snapshot, true));
     return { exitCode: result.report.state === 'success' ? 0 : 1 };
   }
   const base: FollowLine = last ?? {
@@ -115,10 +99,10 @@ export async function followTarget(options: WaitOptions, deps: FollowDeps): Prom
     checks: [],
     failedSteps: [],
     failedChecks: [],
-    source: result.source,
+    source: 'relay',
     checkedAt: new Date().toISOString(),
     isFinal: false,
   };
-  send({ ...base, source: result.source, isFinal: true, timedOut: true });
+  send({ ...base, isFinal: true, timedOut: true });
   return { exitCode: 124 };
 }

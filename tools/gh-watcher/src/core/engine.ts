@@ -1,7 +1,9 @@
 import { fireHook, type HookEvent, type HookResult } from '@ai-tools/hooks';
-import { aggregateState, failedChecksOf, GhClient, runsKey, sameRunsKey } from './gh.js';
+import { runsKey, sameRunsKey } from './check-state.js';
+import { resolveEventsUrl } from './events.js';
+import { RelaySession, RelayUnreachableError, prStatusToSnapshot, snapshotToReport } from './relay.js';
 import { appendEvent, loadState, saveState } from './store.js';
-import { describePrEvent, diffPr, lastStateToBase, lastStateToReuse, summarisePr, toLastState } from './pr.js';
+import { describePrEvent, diffPr, lastStateToBase, summarisePr, toLastState } from './pr.js';
 import { targetKey } from './types.js';
 import type {
   CheckReport,
@@ -16,8 +18,16 @@ import type {
   PrSnapshot,
 } from './types.js';
 
+/** How long one watch check retries an unreachable relay before it gives up. */
+export const WATCH_RELAY_TIMEOUT_MS = 60_000;
+
 export interface EngineDeps {
-  client?: GhClient;
+  /** Relay base URL (defaults to GH_WATCHER_EVENTS_URL). */
+  eventsUrl?: string;
+  fetchFn?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (line: string) => void;
+  relayTimeoutMs?: number;
   fireHookFn?: typeof fireHook;
   now?: () => Date;
 }
@@ -91,19 +101,32 @@ interface PrCheck {
   next: PrLastState | null | undefined;
 }
 
-async function checkPr(spec: GhWatchSpec, last: PrLastState | null | undefined, client: GhClient): Promise<PrCheck> {
+function session(deps: EngineDeps | undefined): RelaySession {
+  return new RelaySession({
+    baseUrl: resolveEventsUrl(deps?.eventsUrl),
+    fetchFn: deps?.fetchFn,
+    sleep: deps?.sleep,
+    log: deps?.log,
+    deadline: Date.now() + (deps?.relayTimeoutMs ?? WATCH_RELAY_TIMEOUT_MS),
+  });
+}
+
+async function checkPr(spec: GhWatchSpec, last: PrLastState | null | undefined, deps: EngineDeps | undefined): Promise<PrCheck> {
   const wanted = new Set(spec.prEvents ?? []);
-  let number: number | undefined;
-  if (spec.target.kind === 'pr') {
-    number = spec.target.number;
-  } else if (spec.target.kind === 'branch') {
-    number = await client.findPrForBranch(spec.repo, spec.target.branch);
-  }
-  if (number === undefined) {
+  const prTarget =
+    spec.target.kind === 'pr'
+      ? { number: spec.target.number }
+      : spec.target.kind === 'branch'
+        ? { branch: spec.target.branch }
+        : undefined;
+  if (prTarget === undefined) {
     return { matched: [], next: last === undefined ? null : last };
   }
-  const sameNumber = last !== null && last !== undefined && last.number === number;
-  const snapshot = await client.prSnapshot(spec.repo, number, sameNumber ? lastStateToReuse(last) : undefined);
+  const response = await session(deps).prStatus(spec.repo, prTarget, 0, 0);
+  const snapshot = prStatusToSnapshot(response, deps?.now);
+  if (snapshot === undefined) {
+    return { matched: [], next: last === undefined ? null : last };
+  }
   const next = toLastState(snapshot);
   if (last === undefined) {
     return { snapshot, matched: [], next };
@@ -113,31 +136,10 @@ async function checkPr(spec: GhWatchSpec, last: PrLastState | null | undefined, 
   return { snapshot, matched: events.filter((event) => wanted.has(event.kind)), next };
 }
 
+/** Read the current state from the relay (one non-blocking request). */
 export async function collectReport(spec: GhWatchSpec, deps?: EngineDeps): Promise<CheckReport> {
-  const client = deps?.client ?? new GhClient();
-  const now = deps?.now ?? (() => new Date());
-  const checkedAt = now().toISOString();
-  const resolved: { sha?: string } = {};
-  const runs = await client.listRuns(spec.repo, spec.target, resolved);
-  const { checks, unavailable } = await client.listChecks(spec.repo, spec.target, runs, resolved.sha);
-  const state = aggregateState(runs, checks);
-  const failedSteps = state === 'failure' ? await client.collectFailures(spec.repo, runs) : [];
-  const failedChecks = state === 'failure' ? failedChecksOf(checks) : [];
-  const report: CheckReport = {
-    repo: spec.repo,
-    target: spec.target,
-    targetKey: targetKey(spec.target),
-    state,
-    runs,
-    checks,
-    failedSteps,
-    failedChecks,
-    checkedAt,
-  };
-  if (unavailable !== undefined) {
-    report.checksUnavailable = unavailable;
-  }
-  return report;
+  const snapshot = await session(deps).status(spec.target, spec.repo, 0, 0, false);
+  return snapshotToReport(spec.repo, spec.target, snapshot, deps?.now);
 }
 
 async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual: boolean): Promise<GhEvent> {
@@ -174,7 +176,7 @@ async function checkOne(spec: GhWatchSpec, deps: EngineDeps | undefined, manual:
   const successDue =
     wantsCi && report.state === 'success' && spec.triggers.success && (manual || previousState !== 'success');
   const ciDue = failureDue || successDue;
-  const pr = wantsPr ? await checkPr(spec, target.lastPr, deps?.client ?? new GhClient()) : undefined;
+  const pr = wantsPr ? await checkPr(spec, target.lastPr, deps) : undefined;
   const prMatched = pr?.matched ?? [];
   const shouldFire = ciDue || prMatched.length > 0;
   const event: GhEvent = {
@@ -274,9 +276,7 @@ export async function runDaemon(
     running = false;
     controller.abort();
   };
-  const client = deps?.client ?? new GhClient();
-  client.setSignal(controller.signal);
-  const daemonDeps: EngineDeps = { ...deps, client };
+  const daemonDeps: EngineDeps = { ...deps };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   if (opts?.signal?.aborted === true) {
@@ -299,7 +299,10 @@ export async function runDaemon(
             await checkWatch(spec, daemonDeps);
           } catch (error) {
             if (!running) {
-              break; // stopped while a queued wait was pending
+              break; // stopped while a request was pending
+            }
+            if (error instanceof RelayUnreachableError) {
+              continue; // the relay error is already printed; try again at the next interval
             }
             throw error;
           }
@@ -319,7 +322,6 @@ export async function runDaemon(
       });
     }
   } finally {
-    client.setSignal(undefined);
     opts?.signal?.removeEventListener('abort', stop);
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);

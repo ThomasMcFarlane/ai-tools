@@ -2,7 +2,7 @@
 
 A Claude Code mod that shows the GitHub Actions runs you are tracking in a live band above the prompt, removes each run when it ends, and leaves a coloured result row with the run link in the chat history.
 
-It does not talk to GitHub. Each tracked target is followed by one `gh-watcher follow` child process ([tools/gh-watcher](../../tools/gh-watcher/README.md)), and the mod only displays the JSON lines that command prints. gh-watcher gets its updates from webhooks when an event relay is configured, and from `gh` otherwise.
+It does not talk to GitHub. Each tracked target is followed by one `gh-watcher follow` child process ([tools/gh-watcher](../../tools/gh-watcher/README.md)), and the mod only displays the JSON lines that command prints. gh-watcher gets its updates from the event relay only (webhooks). It never polls GitHub, and it needs `GH_WATCHER_EVENTS_URL` to be set.
 
 ## Install
 
@@ -11,7 +11,7 @@ It does not talk to GitHub. Each tracked target is followed by one `gh-watcher f
 /plugin install gh-runs@ai-tools
 ```
 
-`gh-watcher` (version 0.2.0 or later, which has `follow`) must be on `PATH`, or set the `watcherPath` option. Use version 0.6.0 or later: its checks are conditional requests that share one cache on the host, so the follower started for a `gh-watcher wait` command costs no extra GitHub rate limit while nothing changes.
+`gh-watcher` (version 0.2.0 or later, which has `follow`) must be on `PATH`, or set the `watcherPath` option. Use version 0.7.0 or later: it reads state from the relay only, so the follower started for a `gh-watcher wait` command makes no GitHub call. The mod passes no `--source`, `--interval` or `--fallback-interval` flag, because 0.7.0 removed them.
 
 ## Tracking
 
@@ -50,7 +50,7 @@ Every level expands on its own, from the data gh-watcher already prints (no extr
 
 ### Runs, jobs and steps
 
-- Run rows are indented 2: the workflow name linked to the run, `step n/m`, a progress bar of finished steps, the elapsed time and when gh-watcher last reported (`webhook` or `polled`). A queued run shows its status.
+- Run rows are indented 2: the workflow name linked to the run, `step n/m`, a progress bar of finished steps, the elapsed time and when gh-watcher last reported (`webhook`, or `polled` when the relay polls for an owner without webhooks). A queued run shows its status.
 - Job rows are indented 6: a mark, the job name linked to the job, then `│ step n/m` and the current step name; a finished job shows `n/m` steps done.
 - Step rows are indented 10, one per step with its number and name.
 - Marks: green `✓` done, red `✗` failed, spinner in the suggestion colour running, dim `○` queued or pending, dim `-` skipped, yellow `⊘` cancelled (timed out is a yellow `✗`).
@@ -71,7 +71,7 @@ One 250 ms `$.clock.every` tick moves the spinner and the times. It runs only wh
 
 ### How fresh the steps are
 
-The mod shows what gh-watcher last printed and never asks GitHub itself. A new line arrives when gh-watcher checks: on a `workflow_run` webhook for the commit (a run is queued, starts or completes), and on its safety-net re-check (`--fallback-interval`, five minutes by default). GitHub sends no webhook per job or step, so between events the step, progress bar and job stay as they were and only the elapsed time and the `updated ... ago` note move. Without an event relay gh-watcher polls every `--interval` (30 seconds), and steps then move at that pace.
+The mod shows what gh-watcher last printed and never asks GitHub itself. A new line arrives when the relay reports a change: on a `workflow_run` webhook for the commit (a run is queued, starts or completes), or when the relay refreshes its own data. GitHub sends no webhook per job or step, so between events the step, progress bar and job stay as they were and only the elapsed time and the `updated ... ago` note move. For an owner without webhooks the relay polls GitHub itself (and warns), and steps then move at the relay's pace.
 
 ## When a run ends
 

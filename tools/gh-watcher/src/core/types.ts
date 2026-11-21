@@ -87,9 +87,13 @@ export interface CheckReport {
   failedSteps: FailedStep[];
   /** Failed non-Actions checks; empty unless the state is `failure`. */
   failedChecks: FailedCheck[];
-  /** Set when the token could not read check runs or statuses; the state then covers Actions runs only. */
-  checksUnavailable?: string;
   checkedAt: string;
+  /** Always `relay`: the state comes from the relay, never from GitHub directly. */
+  source?: 'relay';
+  /** How the relay learned the state: from a webhook, or by its own polling for owners without webhooks. */
+  relaySource?: 'webhook' | 'relay-poll';
+  /** Warning copied from the relay, for example that it polls GitHub because no webhooks are installed. */
+  warning?: string;
 }
 
 export type Trigger = 'failure' | 'success';
