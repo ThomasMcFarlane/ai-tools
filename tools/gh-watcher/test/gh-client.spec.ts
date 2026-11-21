@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { aggregateState, GhClient, type GhExec, type GhExecResult } from '../src/core/gh.js';
+import { restJobsBody, restRunBody, restRunsBody } from './rest-fixtures.js';
 
-const RUN_FIELDS = 'databaseId,workflowName,displayTitle,status,conclusion,url,headSha,createdAt';
+const NO_RUNS = restRunsBody([]);
+const runsPath = (filter: string, value: string): string =>
+  `repos/octo-org/hello-world/actions/runs?${filter}=${value}&per_page=100`;
 const REPO = 'octo-org/hello-world';
 
 function ok(stdout: string): GhExecResult {
@@ -22,7 +25,7 @@ function fakeExec(responses: GhExecResult[]): { exec: GhExec; calls: string[][] 
   return { exec, calls };
 }
 
-const RUN_JSON = JSON.stringify({
+const RUN_JSON = restRunBody({
   databaseId: 1234567,
   workflowName: 'CI',
   displayTitle: 'build',
@@ -36,13 +39,12 @@ const RUN_JSON = JSON.stringify({
 const SHA1 = 'a'.repeat(40);
 const SHA2 = 'b'.repeat(40);
 
-const RUN_LIST_JSON = JSON.stringify([
+const RUN_LIST_JSON = restRunsBody([
   { databaseId: 2, workflowName: 'CI', displayTitle: 'b2', status: 'completed', conclusion: 'success', url: 'u2', headSha: SHA2, createdAt: '2026-01-02T00:00:00Z' },
   { databaseId: 1, workflowName: 'CI', displayTitle: 'b1', status: 'completed', conclusion: 'failure', url: 'u1', headSha: SHA1, createdAt: '2026-01-01T00:00:00Z' },
 ]);
 
-const JOBS_JSON = JSON.stringify({
-  jobs: [
+const JOBS_JSON = restJobsBody([
     {
       name: 'build',
       status: 'completed',
@@ -54,8 +56,7 @@ const JOBS_JSON = JSON.stringify({
         { name: 'test', number: 3, conclusion: 'skipped' },
       ],
     },
-  ],
-});
+]);
 
 describe('GhClient.listRuns', () => {
   it('views a single run for a run target', async () => {
@@ -63,7 +64,7 @@ describe('GhClient.listRuns', () => {
     const client = new GhClient({ exec });
     const runs = await client.listRuns(REPO, { kind: 'run', runId: 1234567 });
     expect(calls).toEqual([
-      ['run', 'view', '1234567', '--repo', REPO, '--json', RUN_FIELDS],
+      ['api', 'repos/octo-org/hello-world/actions/runs/1234567', '-i'],
     ]);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.databaseId).toBe(1234567);
@@ -76,17 +77,17 @@ describe('GhClient.listRuns', () => {
     const runs = await client.listRuns(REPO, { kind: 'branch', branch: 'main' });
     expect(calls).toEqual([
       ['api', 'repos/octo-org/hello-world/branches/main', '--jq', '.commit.sha'],
-      ['run', 'list', '--repo', REPO, '--commit', SHA2, '--limit', '25', '--json', RUN_FIELDS],
+      ['api', runsPath('head_sha', SHA2), '-i'],
     ]);
     expect(runs.map((run) => run.databaseId)).toEqual([2]);
   });
 
   it('lists commit runs', async () => {
-    const { exec, calls } = fakeExec([ok('[]')]);
+    const { exec, calls } = fakeExec([ok(NO_RUNS)]);
     const client = new GhClient({ exec });
     const runs = await client.listRuns(REPO, { kind: 'commit', sha: 'abc123' });
     expect(calls).toEqual([
-      ['run', 'list', '--repo', REPO, '--commit', 'abc123', '--limit', '25', '--json', RUN_FIELDS],
+      ['api', runsPath('head_sha', 'abc123'), '-i'],
     ]);
     expect(runs).toEqual([]);
   });
@@ -100,7 +101,7 @@ describe('GhClient.listRuns', () => {
     const runs = await client.listRuns(REPO, { kind: 'pr', number: 17 });
     expect(calls).toEqual([
       ['pr', 'view', '17', '--repo', REPO, '--json', 'headRefName,headRefOid'],
-      ['run', 'list', '--repo', REPO, '--commit', SHA2, '--limit', '25', '--json', RUN_FIELDS],
+      ['api', runsPath('head_sha', SHA2), '-i'],
     ]);
     expect(runs.map((run) => run.databaseId)).toEqual([2]);
   });
@@ -116,7 +117,7 @@ describe('GhClient.listRuns', () => {
   });
 
   it('lets a successful re-run supersede the failed attempt of the same workflow', async () => {
-    const list = JSON.stringify([
+    const list = restRunsBody([
       { databaseId: 9, workflowName: 'CI', status: 'completed', conclusion: 'success', headSha: SHA2, createdAt: '2026-01-02T02:00:00Z' },
       { databaseId: 8, workflowName: 'CI', status: 'completed', conclusion: 'failure', headSha: SHA2, createdAt: '2026-01-02T01:00:00Z' },
       { databaseId: 7, workflowName: 'Lint', status: 'completed', conclusion: 'success', headSha: SHA2, createdAt: '2026-01-02T01:00:00Z' },
@@ -128,7 +129,7 @@ describe('GhClient.listRuns', () => {
   });
 
   it('reports pending while the head commit still has a running workflow', async () => {
-    const list = JSON.stringify([
+    const list = restRunsBody([
       { databaseId: 12, workflowName: 'CI', status: 'in_progress', conclusion: null, headSha: SHA2, createdAt: '2026-01-02T00:00:00Z' },
       { databaseId: 5, workflowName: 'CI', status: 'completed', conclusion: 'failure', headSha: SHA1, createdAt: '2026-01-01T00:00:00Z' },
     ]);
@@ -138,13 +139,13 @@ describe('GhClient.listRuns', () => {
   });
 
   it('reports none for a head commit that has no runs yet', async () => {
-    const { exec } = fakeExec([ok(`${SHA2}\n`), ok('[]')]);
+    const { exec } = fakeExec([ok(`${SHA2}\n`), ok(NO_RUNS)]);
     const runs = await new GhClient({ exec }).listRuns(REPO, { kind: 'branch', branch: 'feat/x' });
     expect(aggregateState(runs)).toBe('none');
   });
 
   it('url-encodes branch segments when resolving the branch head', async () => {
-    const { exec, calls } = fakeExec([ok(`${SHA2}\n`), ok('[]')]);
+    const { exec, calls } = fakeExec([ok(`${SHA2}\n`), ok(NO_RUNS)]);
     await new GhClient({ exec }).listRuns(REPO, { kind: 'branch', branch: 'feat/a b' });
     expect(calls[0]).toEqual(['api', 'repos/octo-org/hello-world/branches/feat/a%20b', '--jq', '.commit.sha']);
   });
@@ -155,7 +156,7 @@ describe('GhClient.listRuns', () => {
       ok(RUN_LIST_JSON),
     ]);
     const runs = await new GhClient({ exec }).listRuns(REPO, { kind: 'branch', branch: 'main' });
-    expect(calls[1]).toEqual(['run', 'list', '--repo', REPO, '--branch', 'main', '--limit', '25', '--json', RUN_FIELDS]);
+    expect(calls[1]).toEqual(['api', runsPath('branch', 'main'), '-i']);
     expect(runs.map((run) => run.databaseId)).toEqual([2]);
     expect(aggregateState(runs)).toBe('success');
   });
@@ -169,7 +170,7 @@ describe('GhClient.listRuns', () => {
   });
 
   it('returns an empty list for empty run list output', async () => {
-    const { exec } = fakeExec([ok('[]')]);
+    const { exec } = fakeExec([ok(NO_RUNS)]);
     const client = new GhClient({ exec });
     expect(await client.listRuns(REPO, { kind: 'commit', sha: 'abc123' })).toEqual([]);
   });
@@ -180,7 +181,7 @@ describe('GhClient.runJobs', () => {
     const { exec, calls } = fakeExec([ok(JOBS_JSON)]);
     const client = new GhClient({ exec });
     const jobs = await client.runJobs(REPO, 1234567);
-    expect(calls).toEqual([['run', 'view', '1234567', '--repo', REPO, '--json', 'jobs']]);
+    expect(calls).toEqual([['api', 'repos/octo-org/hello-world/actions/runs/1234567/jobs?per_page=100', '-i']]);
     expect(jobs[0]?.name).toBe('build');
     expect(jobs[0]?.steps).toHaveLength(3);
     expect(jobs[0]?.steps?.[1]).toEqual({ name: 'install', number: 2, conclusion: 'failure' });
@@ -188,7 +189,7 @@ describe('GhClient.runJobs', () => {
 
   it('defaults missing steps to an empty array', async () => {
     const { exec } = fakeExec([
-      ok(JSON.stringify({ jobs: [{ name: 'build', status: 'completed', conclusion: 'failure' }] })),
+      ok(restJobsBody([{ name: 'build', status: 'completed', conclusion: 'failure' }])),
     ]);
     const client = new GhClient({ exec });
     const jobs = await client.runJobs(REPO, 1234567);
@@ -204,7 +205,7 @@ describe('GhClient.collectFailures', () => {
       { databaseId: 111, workflowName: 'CI', displayTitle: 'b', status: 'completed', conclusion: 'failure', url: 'u', headSha: 's' },
       { databaseId: 222, workflowName: 'CI', displayTitle: 'b', status: 'completed', conclusion: 'success', url: 'u', headSha: 's' },
     ]);
-    expect(calls).toEqual([['run', 'view', '111', '--repo', REPO, '--json', 'jobs']]);
+    expect(calls).toEqual([['api', 'repos/octo-org/hello-world/actions/runs/111/jobs?per_page=100', '-i']]);
     expect(failures).toEqual([
       {
         runId: 111,
@@ -218,7 +219,7 @@ describe('GhClient.collectFailures', () => {
 
   it('falls back to a placeholder step when a failed job has no steps', async () => {
     const { exec } = fakeExec([
-      ok(JSON.stringify({ jobs: [{ name: 'build', status: 'completed', conclusion: 'cancelled' }] })),
+      ok(restJobsBody([{ name: 'build', status: 'completed', conclusion: 'cancelled' }])),
     ]);
     const client = new GhClient({ exec });
     const failures = await client.collectFailures(REPO, [

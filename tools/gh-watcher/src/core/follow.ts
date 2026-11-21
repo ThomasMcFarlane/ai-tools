@@ -44,10 +44,11 @@ function shapeJobs(jobs: GhJobInfo[]): GhJobInfo[] {
   }));
 }
 
-/** Follow a target through `waitForTerminal`, emitting one line per check. Jobs of finished runs are fetched once. */
+/** Follow a target through `waitForTerminal`, emitting one line per check. Jobs of a run are fetched again only when its status, conclusion or updatedAt changed. */
 export async function followTarget(options: WaitOptions, deps: FollowDeps): Promise<FollowResult> {
   const client = deps.client ?? new GhClient({ detailedRuns: true });
-  const finished = new Map<number, GhJobInfo[]>();
+  /** Jobs per run, kept while the run's status, conclusion and updatedAt stay the same. */
+  const fetched = new Map<number, { stamp: string; jobs: GhJobInfo[] }>();
   let last: FollowLine | undefined;
 
   const build = async (
@@ -57,13 +58,15 @@ export async function followTarget(options: WaitOptions, deps: FollowDeps): Prom
   ): Promise<FollowLine> => {
     const runs: FollowRun[] = [];
     for (const run of report.runs) {
-      let jobs = finished.get(run.databaseId);
-      if (jobs === undefined) {
+      const stamp = `${run.status}|${run.conclusion ?? ''}|${run.updatedAt ?? ''}|${String(run.attempt ?? '')}`;
+      const known = fetched.get(run.databaseId);
+      let jobs: GhJobInfo[];
+      if (known !== undefined && known.stamp === stamp && (run.updatedAt !== undefined || run.status === 'completed')) {
+        jobs = known.jobs;
+      } else {
         try {
           jobs = shapeJobs(await client.runJobs(report.repo, run.databaseId));
-          if (run.status === 'completed') {
-            finished.set(run.databaseId, jobs);
-          }
+          fetched.set(run.databaseId, { stamp, jobs });
         } catch {
           jobs = [];
         }
