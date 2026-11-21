@@ -1,19 +1,55 @@
 # @ai-tools/gh-watcher
 
-Watch every check on a commit via `gh` (GitHub Actions runs, third-party check runs and
+Watch every check on a commit (GitHub Actions runs, third-party check runs and
 commit statuses such as Terraform Cloud), fire hooks when a step fails or
-everything succeeds, and watch pull request lifecycle events (draft, ready, merged, closed,
+everything succeeds, and watch pull request events (draft, ready, merged, closed,
 comments, reviews, pushes).
 
 Built for AI agents: pick a PR, branch, commit or run, then either block on `wait` for a
 terminal state or register a persistent watch that fires hooks. Every command is
 non-interactive and exit-code driven.
 
+## Webhooks through the relay only (0.7.0)
+
+gh-watcher was designed for webhooks from the start. Since 0.7.0 this is the only mode.
+
+- The agent never polls GitHub. gh-watcher makes no `gh` call and no GitHub API call.
+- Every command asks the relay, a private service that receives the GitHub webhooks.
+- The relay is the one central poller. One tracker for a commit or pull request serves every waiter, so the relay polls each target once.
+- The relay polls GitHub only for owners that have no webhooks installed. It warns about this in the `warning` field.
+- There is no silent fallback. If the relay does not answer, gh-watcher says so and retries only the relay.
+
+Set the relay base URL with `--events-url <url>` or the `GH_WATCHER_EVENTS_URL` environment variable.
+The relay contract is in [Relay API](#relay-api).
+
+### Removed flags
+
+`--source`, `--interval` and `--fallback-interval` were removed from every command.
+If you pass one, gh-watcher prints this line to stderr and exits with code `2`:
+
+```
+gh-watcher: polling was removed; gh-watcher always uses the relay (drop --source/--interval)
+```
+
+`watch add --interval` stays. It sets how often the watch daemon asks the relay. It does not poll GitHub.
+
+### Relay problems
+
+| Situation | What gh-watcher does |
+| --- | --- |
+| Relay URL not set | Prints `gh-watcher: ERROR no relay configured (set GH_WATCHER_EVENTS_URL)` to stderr and exits `2` at once. With `--json` it also prints `{"error":"relay_not_configured",...}`. |
+| Relay set but not reachable (or HTTP 503) | Prints `gh-watcher: ERROR relay unreachable at <url>` to stderr. Retries only the relay, after 5 s, then 10 s, 20 s, 40 s and 60 s (the maximum). |
+| Still not reachable at `--timeout` | Exits `2`. With `--json` it prints `{"error":"relay_unreachable","url":"...","message":"..."}`. |
+| Relay answers HTTP 400 | Exits `2` at once. A retry cannot help. |
+| Relay sends `warning` | Prints it once to stderr, for example that the relay polls GitHub because no webhooks are installed. |
+| Relay sends `stale: true` or `error` | Prints the error once and keeps waiting on the relay. The relay still shows its last good data. |
+
 ## Requirements
 
 - Node >= 20 and npm when building from source; the prebuilt binaries are self-contained and need no Node.
-- GitHub CLI (`gh`) installed and authenticated. Verify with `gh auth status`.
+- The URL of a relay (see above).
 - A repository, given as `--repo OWNER/NAME` or the `GH_REPO` environment variable.
+- The `gh` CLI is not needed.
 
 ## Install and build
 
@@ -42,9 +78,12 @@ The package also exports a library API (`exports["."]`).
 
 ## Command reference
 
+Every command that reads check or pull request state takes `--events-url <url>`
+(default `$GH_WATCHER_EVENTS_URL`). Durations accept a bare number (seconds) or a unit suffix: `250ms`, `30s`, `5m`, `1h`.
+
 ### gh-watcher status
 
-Check the current state of all checks for a target once.
+Read the state of all checks for a target once, from the relay.
 
 ```sh
 gh-watcher status [options]
@@ -55,25 +94,25 @@ gh-watcher status [options]
 | `--repo <owner/name>` | `$GH_REPO` | Repository in OWNER/NAME form. |
 | `--pr <number>` | | Pull request number. Exactly one target flag required. |
 | `--branch <name>` | | Branch name. |
-| `--commit <sha>` | | Commit sha. |
+| `--commit <sha>` | | Commit sha (the relay needs the full 40 characters). |
 | `--run <id>` | | Run id. |
-| `--timeout <duration>` | `10m` | Longest wait for a GitHub rate limit to lift, see [Shared GitHub queue](#shared-github-queue-and-rate-limits). |
+| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Relay base URL. |
+| `--timeout <duration>` | `10m` | Longest wait for an unreachable relay, capped at 24h. |
 | `--json` | off | Emit the check report as JSON. |
 
-Prints `repo target is <state>`, a table of runs, a table of other checks (third-party check
-runs and commit statuses), the failed steps and the failed checks (name and URL). Note that
-`status` exits `0` even when the reported state is `failure`; it exits non-zero only for
-errors.
+Prints `repo target is <state>`, a table of runs, a table of other checks, the failed steps and the
+failed checks. `status` exits `0` even when the state is `failure`.
+The JSON report has `source: "relay"`, `relaySource` (`webhook` or `relay-poll`) and, when the relay sends one, `warning`.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Check completed (any state, including `failure`) |
-| `2` | Error: bad target flags, or `gh` failed |
-| `124` | A GitHub rate limit did not lift within `--timeout` |
+| `0` | Report printed (any state) |
+| `2` | Error: bad flags, relay unreachable at `--timeout`, or relay rejected the request |
 
 ### gh-watcher wait
 
-Poll until all checks for a target succeed or fail.
+Block until all checks for a target succeed or fail. `wait` long-polls the relay
+(`/api/status?after=<rev>&wait=25`), so it returns at once when the relay learns of a change.
 
 ```sh
 gh-watcher wait [options]
@@ -83,54 +122,42 @@ Takes the same target flags as `status`, plus:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--interval <duration>` | `30s` | Poll interval. |
 | `--timeout <duration>` | `30m` | Overall wait limit, capped at 24h. |
-| `--source <mode>` | `auto` | `auto`, `events` or `poll`, see [Event mode](#event-mode). |
-| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Base URL of the event relay. |
-| `--fallback-interval <duration>` | `5m` | Event mode only: safety-net `gh` re-check interval. |
+| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Relay base URL. |
 | `--json` | off | Emit the outcome as JSON. |
 
-Durations accept a bare number (seconds) or a unit suffix: `250ms`, `30s`, `5m`, `1h`.
-While polling, a `.` progress dot is written to stderr, and a line `check 'NAME' is STATUS` whenever
-a non-Actions check appears or changes status. On failure the outcome includes
-the collected failed steps and `failedChecks`; `runsCount` and `checksCount` count each kind. The JSON outcome carries `source` (`"events"` or `"poll"`), the
-mode the wait finished in. Exit codes:
+While it waits, `wait` writes a `.` to stderr for each change that leaves the state pending,
+and a line `check 'NAME' is STATUS` when a non-Actions check appears or changes. On failure the outcome lists
+`failedSteps` and `failedChecks`. The JSON outcome carries `source` (always `"relay"`), `relaySource` and `warning`.
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Aggregate state reached `success` |
 | `1` | Aggregate state reached `failure` |
-| `124` | Timed out while still `pending` (JSON outcome: `{"state":"pending","timedOut":true,"source":"poll"}`) |
-| `2` | Error: `gh` failed or bad flags |
-
-A GitHub rate limit is waited out rather than reported as an error; see [Shared GitHub queue](#shared-github-queue-and-rate-limits).
+| `124` | Timed out while still `pending` (JSON: `{"state":"pending","timedOut":true,"source":"relay"}`) |
+| `2` | Error: bad flags, or the relay is unreachable or rejected the request |
 
 ### gh-watcher follow
 
-Like `wait`, but stream progress. It reuses the same wait loop (event mode when a relay is
-configured, polling otherwise) and prints one JSON line to stdout per check, always.
+Like `wait`, but print one JSON line to stdout for each change. It asks the relay for jobs (`jobs=1`).
 
 ```sh
 gh-watcher follow --repo octo-org/hello-world --pr 17
 ```
 
-Takes the target flags and the `--interval`, `--timeout`, `--source`, `--events-url` and
-`--fallback-interval` flags of `wait`. Each line:
+Takes the target flags and the `--timeout` and `--events-url` flags of `wait`. Each line:
 
 ```json
-{"repo":"octo-org/hello-world","targetKey":"pr:17","state":"pending","runs":[{"databaseId":1,"workflowName":"CI","status":"in_progress","conclusion":null,"url":"https://example.com/run/1","startedAt":"2026-01-01T00:00:00Z","attempt":1,"jobs":[{"name":"build","status":"in_progress","conclusion":null,"url":"https://example.com/job/2","steps":[{"name":"Test","number":3,"status":"in_progress","conclusion":null}]}]}],"failedSteps":[],"source":"events","checkedAt":"2026-01-01T00:01:00.000Z","isFinal":false}
+{"repo":"octo-org/hello-world","targetKey":"pr:17","state":"pending","runs":[{"databaseId":1,"workflowName":"CI","status":"in_progress","conclusion":null,"url":"https://example.com/run/1","attempt":1,"jobs":[{"name":"build","status":"in_progress","conclusion":null,"url":"https://example.com/job/2","steps":[{"name":"Test","number":3,"status":"in_progress","conclusion":null}]}]}],"checks":[],"failedSteps":[],"failedChecks":[],"source":"relay","relaySource":"webhook","checkedAt":"2026-01-01T00:01:00.000Z","isFinal":false}
 ```
 
-Each line also carries `checks` (the non-Actions checks, see [Targets](#targets)) and `failedChecks`.
-Runs carry the fields of `status --json` plus `startedAt`, `updatedAt`, `attempt` and `jobs`. Jobs are
-fetched for non-terminal runs on every check and for a finished run once; they are not
-refetched afterwards. The last line has `isFinal: true` (and `timedOut: true` on timeout).
-Exit codes match `wait`: `0` success, `1` failure, `124` timeout, `2` error. `wait` and
-`status` output is unchanged.
+Runs carry the fields of `status --json` plus `jobs`. The last line has `isFinal: true`
+(and `timedOut: true` on timeout). If the relay is unreachable at `--timeout`, the last line is
+`{"error":"relay_unreachable",...}`. Exit codes match `wait`.
 
 ### gh-watcher pr status
 
-Show a pull request once: state, comment and review counts, and the latest review of each author.
+Show a pull request once, from the relay (`/api/pr-status`).
 
 ```sh
 gh-watcher pr status --repo octo-org/hello-world --pr 17
@@ -140,26 +167,26 @@ gh-watcher pr status --repo octo-org/hello-world --pr 17
 | --- | --- | --- |
 | `--repo <owner/name>` | `$GH_REPO` | Repository in OWNER/NAME form. |
 | `--pr <number>` | | Pull request number. Exactly one of `--pr` and `--branch` is required. |
-| `--branch <name>` | | Head branch; the newest pull request (any state) with this head is used. |
-| `--timeout <duration>` | `10m` | Longest wait for a GitHub rate limit to lift, capped at 24h. |
+| `--branch <name>` | | Head branch; the relay finds the newest pull request with this head. |
+| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Relay base URL. |
+| `--timeout <duration>` | `10m` | Longest wait for an unreachable relay, capped at 24h. |
 | `--json` | off | Emit the snapshot as JSON. |
 
 Human output is one line (`repo #N is OPEN (draft): title [head sha, review decision ...]`), then the
-counts of comments, reviews and inline review comments, then `latest review by <author>: <STATE>`
-lines. `--json` emits the full snapshot: `number`, `url`, `title`, `state` (`OPEN`, `CLOSED` or
-`MERGED`), `isDraft`, `headSha`, `headRef`, `reviewDecision` (or `null`), `mergedAt`, `closedAt`,
-`comments`, `reviews`, `reviewComments` and `checkedAt`. A `--branch` without a pull request prints
-`{"state":"none"}` (JSON) and exits `0`.
+counts of comments, reviews and inline review comments, then the latest review of each author. `--json` emits the snapshot:
+`number`, `url`, `title`, `state` (`OPEN`, `CLOSED` or `MERGED`), `isDraft`, `headSha`, `headRef`,
+`reviewDecision` (or `null`), `mergedAt`, `closedAt`, `comments`, `reviews`, `reviewComments` and `checkedAt`.
+A `--branch` without a pull request prints `{"state":"none"}` (JSON) and exits `0`.
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Snapshot printed (including a branch with no pull request) |
-| `2` | Error: bad flags, or `gh` failed |
-| `124` | A GitHub rate limit did not lift within `--timeout` |
+| `2` | Error: bad flags, relay unreachable at `--timeout`, or relay rejected the request |
 
 ### gh-watcher pr wait
 
-Block until a wanted pull request event happens.
+Block until a wanted pull request event happens. The wait long-polls `/api/pr-status`
+and compares each answer with the previous one.
 
 ```sh
 gh-watcher pr wait --repo octo-org/hello-world --pr 17 --on merged,closed --timeout 2h --json
@@ -168,15 +195,12 @@ gh-watcher pr wait --repo octo-org/hello-world --pr 17 --on merged,closed --time
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--repo <owner/name>` | `$GH_REPO` | Repository in OWNER/NAME form. |
-| `--pr <number>` / `--branch <name>` | | Exactly one is required. With `--branch` and no pull request yet, the wait polls until one appears (that is `opened`) and then continues on it. |
+| `--pr <number>` / `--branch <name>` | | Exactly one is required. With `--branch` and no pull request yet, the wait continues until the relay reports one (that is `opened`). |
 | `--on <kinds>` | `any` | Comma-separated event kinds, or `any` (all kinds). An unknown kind exits `2`. |
-| `--interval <duration>` | `60s` | Poll interval. |
 | `--timeout <duration>` | `30m` | Overall limit, capped at 24h. |
-| `--since <time>` | | ISO 8601 time. Comments, reviews and inline comments created after it count as new even when already present in the baseline; this closes the race between acting (for example posting a comment) and starting the wait. |
+| `--since <time>` | | ISO 8601 time. Comments, reviews and inline comments created after it count as new even when already present in the first answer. The relay filters by this time. |
 | `--changes-only` | off | Do not match a state the pull request is already in. |
-| `--source <mode>` | `auto` | `auto`, `events` or `poll`, see [Pull request event mode](#pull-request-event-mode). |
-| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Base URL of the event relay. |
-| `--fallback-interval <duration>` | `5m` | Event mode only: safety-net `gh` re-check interval. |
+| `--events-url <url>` | `$GH_WATCHER_EVENTS_URL` | Relay base URL. |
 | `--json` | off | Emit the outcome as JSON (no progress dots). |
 
 Event kinds:
@@ -195,57 +219,41 @@ Event kinds:
 | `push` | The head commit changed (`from`, `to`). |
 | `review_decision` | The review decision changed (`from`, `to`; `null` means none). |
 
-The wait takes a baseline snapshot, then polls every `--interval` and returns as soon as the change
-since the previous poll contains a wanted kind. Unless `--changes-only` is given, a state the
-pull request is already in also matches when the kind is named explicitly (for example
-`--on merged` on a merged pull request returns at once, with `"initial": true` on the event). The
-initial state is the state kinds `opened` (open), `draft` or `ready` (open), `closed` and `merged`.
-`--on any` never matches the initial state, otherwise every open pull request would return at once.
+The first answer is the baseline. With `--since`, the relay sends every comment, review and inline comment after that time, so none is missed. The wait returns as soon as the change since the previous answer
+contains a wanted kind. Unless `--changes-only` is given, a state the pull request is already in
+also matches when the kind is named explicitly (for example `--on merged` on a merged pull request
+returns at once, with `"initial": true` on the event). `--on any` never matches the initial state.
 
 ```json
 {
   "matched": true,
   "events": [{ "kind": "merged", "at": "2026-01-03T00:00:00Z" }],
   "pr": { "number": 17, "url": "https://github.com/octo-org/hello-world/pull/17", "state": "MERGED", "isDraft": false, "headSha": "...", "reviewDecision": "APPROVED" },
-  "source": "poll"
+  "source": "relay",
+  "relaySource": "webhook"
 }
 ```
 
-`events` lists every event seen since the baseline, wanted or not. On timeout the outcome is
-`{"matched":false,"timedOut":true,"events":[],"source":"poll"}` (`events` holds any unwanted
-events seen). A progress dot is written to stderr per poll unless `--json` is given.
-
-With a relay configured the wait uses event mode instead of polling `gh` every `--interval`; see
-[Pull request event mode](#pull-request-event-mode). The outcome's `source` is `"events"` or `"poll"`.
+On timeout the outcome is `{"matched":false,"timedOut":true,"events":[],"source":"relay"}`.
 
 | Code | Meaning |
 | --- | --- |
 | `0` | A wanted event matched |
-| `2` | Error: bad flags, or `gh` failed |
-| `124` | Timed out, or a GitHub rate limit did not lift before the deadline |
+| `2` | Error: bad flags, relay unreachable at `--timeout`, or relay rejected the request |
+| `124` | Timed out |
 
 ### gh-watcher pr follow
 
-Like `pr wait`, but keep going: print one JSON line to stdout per detected wanted event until the
-pull request is merged or closed, or the timeout ends.
-
-```sh
-gh-watcher pr follow --repo octo-org/hello-world --pr 17 --on comment,review,push
-```
-
-Takes the same flags as `pr wait`, including `--source`, `--events-url` and `--fallback-interval` (without `--json`; output is always JSON lines). Each line is
-the event with the repository and pull request number: `{"repo":"octo-org/hello-world","pr":17,"kind":"review","at":"...","author":"alice","reviewState":"APPROVED"}`.
-On timeout the last line is `{"repo":"...","timedOut":true,"source":"poll"}`.
-
-| Code | Meaning |
-| --- | --- |
-| `0` | The pull request was merged or closed (also when it already was) |
-| `2` | Error: bad flags, or `gh` failed |
-| `124` | Timed out, or a GitHub rate limit did not lift before the deadline |
+Like `pr wait`, but keep going: print one JSON line to stdout for each wanted event until the
+pull request is merged or closed, or the timeout ends. Takes the flags of `pr wait` (without `--json`).
+Each line is the event with the repository and pull request number:
+`{"repo":"octo-org/hello-world","pr":17,"kind":"review","at":"...","author":"alice","reviewState":"APPROVED"}`.
+On timeout the last line is `{"repo":"...","timedOut":true,"source":"relay"}`.
+Exit codes: `0` merged or closed, `2` error, `124` timed out.
 
 ### gh-watcher watch add
 
-Add a new persistent watch.
+Add a persistent watch.
 
 ```sh
 gh-watcher watch add [options] <name> --repo <owner/name>
@@ -259,352 +267,137 @@ gh-watcher watch add [options] <name> --repo <owner/name>
 | `--commit <sha>` | | Watch runs for this commit. |
 | `--run <id>` | | Watch this run. |
 | `--on <event>` | `complete` | Comma-separated list mixing `failure`, `success`, `complete` (any terminal state) and pull request kinds (see [`pr wait`](#gh-watcher-pr-wait); `any` means every pull request kind). Pull request kinds need `--pr` or `--branch`. |
-| `--interval <duration>` | `60s` | Poll interval used by the daemon. |
+| `--interval <duration>` | `60s` | How often the daemon asks the relay for this watch. It never polls GitHub. |
 | `--hook <spec>` | `none` | Hook specification, see [Hooks](#hooks). |
 | `--json` | off | Emit the saved spec as JSON. |
 
 Exit `1` if a watch with the same name already exists; `2` for invalid target flags, an invalid
 `--on` value, or pull request kinds on a `--commit` or `--run` target.
-
-With pull request kinds the spec gets `prEvents`, and the daemon polls the pull request on each
-check. A watch with only pull request kinds (for example `--on merged,closed`) has no CI triggers and
-does not list runs at all. Mixed lists (`--on failure,merged`) check both and fire one hook per
-check. Specs without `prEvents` behave exactly as before.
+A watch with only pull request kinds has no CI triggers and does not read runs.
 
 ### gh-watcher watch list
 
-List saved watches. `--json` emits the raw specs. Columns include the target, triggers (pull
-request kinds appear as `pr:<kinds>`, or `pr:any`), interval, hook, `lastCheckedAt` and `lastState`.
+List saved watches. `--json` emits the raw specs.
 
 ### gh-watcher watch show
 
-```sh
-gh-watcher watch show <name>
-```
-
-Print the full spec as JSON. Exit `1` for an unknown name.
+`gh-watcher watch show <name>` prints the full spec as JSON. Exit `1` for an unknown name.
 
 ### gh-watcher watch remove
 
-```sh
-gh-watcher watch remove <name>
-```
-
-Remove a watch. Exit `1` for an unknown name.
+`gh-watcher watch remove <name>` removes a watch. Exit `1` for an unknown name.
 
 ### gh-watcher watch check
 
 ```sh
-gh-watcher watch check [names...]
+gh-watcher watch check [names...] [--events-url <url>] [--json]
 ```
 
 Check watches once and fire hooks on every trigger (manual checks bypass edge
-suppression; pull request events fire for what changed since the last stored check). Omit names to check all watches. `--json` emits the events as a JSON
-array. Exit codes: `0` when at least one hook fired, `1` when none fired, `2` when any
-given name is unknown.
+suppression). Omit names to check all watches. Exit codes: `0` when at least one hook fired,
+`1` when none fired, `2` for an unknown name or a relay problem.
 
 ### gh-watcher watch run
 
 ```sh
-gh-watcher watch run [names...]
+gh-watcher watch run [names...] [--events-url <url>]
 ```
 
 Run the watch daemon until interrupted (Ctrl+C or SIGTERM). The daemon sweeps every 5
-seconds and checks each watch when its `--interval` has elapsed. Daemon checks are
-edge-fired: see [State semantics](#state-semantics). Exit `2` at startup if any given
-name is unknown.
+seconds and asks the relay for each watch when its `--interval` has elapsed. If the relay is
+unreachable, the daemon prints the error and tries again at the next sweep.
+Daemon checks are edge-fired: see [State semantics](#state-semantics). Exit `2` at startup if a given name is unknown.
 
 ### gh-watcher watch events
 
-```sh
-gh-watcher watch events [--tail <n>] [--json]
-```
+`gh-watcher watch events [--tail <n>] [--json]` shows recent watch events, oldest first
+(`--tail` defaults to `20`). Events come from `events.jsonl` (see [State files](#state-files)).
 
-Show recent watch events, oldest first. `--tail <n>` defaults to `20`. Events come from
-`events.jsonl` (see [State files](#state-files)).
+## Relay API
 
-## Event mode
+The relay serves these endpoints on its tailnet host and in-cluster Service. The public host does not.
+Long-polls wait at most 25 seconds (`wait` is clamped to 25).
 
-By default `wait` polls GitHub through `gh` every `--interval`. If you run a private webhook
-relay that receives GitHub `workflow_run` webhooks and implements the API below, `wait` can
-block on the relay instead and make almost no GitHub API calls. The relay is not part of this
-repository and no hostname is built in: configure it with `--events-url <url>` or the
-`GH_WATCHER_EVENTS_URL` environment variable.
-
-`--source` selects the mode:
-
-- `auto` (default): use events when a URL is configured and the relay answers with
-  `owner_mode == "app"` and `workflow_run_subscribed == true`; otherwise poll exactly as before.
-- `events`: require a URL (exit `2` without one) and use the relay even if it does not report
-  app mode (a warning is logged and the fallback interval carries the load).
-- `poll`: never contact the relay.
-
-How `wait` behaves in event mode:
-
-1. Resolve the target to a head commit (PR head, branch tip, commit, or the run's commit), then
-   probe the relay for its current `latest_seq`.
-2. Run one `gh` status check (the baseline). If it is terminal, exit as usual.
-3. Long-poll `/api/runs` (25 seconds at a time) with `after=<last seq>`. Each event for the
-   commit is applied to the in-memory run list (matched by `run_id`, one run per
-   `workflow_name`, stale attempts and older runs ignored) and the state is recomputed locally,
-   with no `gh` call. Event data never ends a wait on its own: when the local state turns
-   terminal, one fresh confirming `gh` check decides the outcome (and fetches failed jobs and
-   steps). `gh` is also called on the `--fallback-interval` safety net (which also re-resolves a PR
-   or branch head, so a new push is picked up), after a relay restart, and when an event lacks
-   `run_id`, `workflow_name` or `status`, or would complete a run whose `attempt` is unknown, so it
-   cannot be trusted. The wait fetches `attempt` and `updatedAt` so stale attempts and
-   out-of-order events are ignored.
-4. If `latest_seq` goes backwards (the relay restarted), the sequence is reset and `gh` is
-   re-checked immediately.
-5. Any relay failure (network error, HTTP 5xx or 503, malformed response) logs one line to
-   stderr and the rest of the wait continues as normal polling. The relay never fails a wait.
-
-Exit codes, the JSON outcome and `--timeout` are unchanged. A typical successful wait costs
-one baseline `gh` call plus the head-commit resolution; events cost none. Runs created from
-events have an empty `displayTitle` until the next full `gh` check.
-
-The relay only delivers Actions `workflow_run` events, so it cannot announce check runs or commit
-statuses from other sources. While the latest report has a pending non-Actions check, or the state
-is `none` (statuses may not have started yet), the wait re-checks with `gh` every `--interval`
-(never longer than `--fallback-interval`) instead of waiting for the safety-net interval. The
-outcome `source` stays `"events"` while the relay is healthy, and is `"poll"` only when the wait actually fell back to polling. A purely Actions pending state
-keeps the event path. Each such re-check costs one head lookup (`pr view` or branch API, for
-`--pr`/`--branch`), one runs list, one check-runs call and one status call. These three REST
-calls are conditional (see "Conditional requests"), so they cost nothing while nothing changed.
-
-`watch run` (the daemon) does not use event mode: it remains poll-only, and so do `pr status` and
-`prEvents` watches. `pr wait` and `pr follow` have their own event mode, below.
-
-### Pull request event mode
-
-`pr wait` and `pr follow` accept `--source auto|events|poll` (default `auto`), `--events-url` and
-`--fallback-interval`, with the same meaning and validation as for `wait`. `--interval` and `--fallback-interval` must be positive, and the fallback is never shorter than the poll interval. `--repo` must be `OWNER/NAME` (letters, digits, `_`, `.` and `-`); anything else exits `2`. The relay's
-`workflow_run` endpoint is not used for them: they call `GET <base>/api/prs` (contract below).
-Relay events are only wake-ups; `gh` stays the source of truth.
-
-1. Probe `/api/prs` with `after=0&wait=0` to learn `latest_seq`, then take the `gh` baseline
-   snapshot (the probe comes first so events landing during the baseline are not missed).
-2. `auto` uses events only when the probe reports `owner_mode == "app"` and
-   `pr_events_subscribed == true`; otherwise it logs one stderr line saying why (even with
-   `--json`) and polls exactly as before. `events` needs a URL (exit `2` without one) and uses the
-   relay even when it is not usable (a warning is logged). `poll` never contacts the relay. HTTP
-   `404` (a host without the endpoint) or any probe failure means polling.
-3. In event mode the wait long-polls `/api/prs` (25 seconds at a time) with `after=<last seq>`,
-   filtered by `pr` (or by `head_ref` while a `--branch` target has no pull request yet). When an
-   event for the target arrives, it re-takes the `gh` snapshot and diffs it exactly as polling
-   does; an event alone never matches. `gh` is also checked every `--fallback-interval` as a safety
-   net.
-4. If `latest_seq` goes backwards (relay restart) `gh` is re-checked and the wait continues from
-   the new sequence. Any relay error mid-wait logs one line and the rest of the wait polls.
-
-**Each GitHub App owner must subscribe to the four pull request events** (`pull_request`,
-`issue_comment`, `pull_request_review` and `pull_request_review_comment`) for the relay to report
-`pr_events_subscribed: true`. Without that, `auto` falls back to polling.
-
-### Relay API contract
+### `GET /api/status`
 
 ```
-GET <base>/api/runs?repo=OWNER/NAME&sha=<40-hex>&after=<seq>&wait=<seconds, at most 25>
+/api/status?repo=OWNER/NAME&sha=<40-hex>&after=<rev>&wait=<seconds>&jobs=<0|1>
+/api/status?repo=OWNER/NAME&pr=<n>&...
+/api/status?repo=OWNER/NAME&branch=<name>&...
+/api/status?repo=OWNER/NAME&run=<id>&...
 ```
 
-Returns immediately when events with `seq > after` match the repository and commit; otherwise
-holds the request for up to `wait` seconds and returns an empty `events` list. Responds `400`
-on bad input and `503` when overloaded. The client sends an abort timeout of `wait + 10`
-seconds.
+`after` is the last `rev` the client saw. The relay answers at once when its `rev` is higher,
+else it blocks until the state changes or `wait` ends, and then answers with `changed: false`.
+Answer fields used by the client:
 
-```json
-{
-  "repo": "OWNER/NAME",
-  "owner_mode": "app",
-  "workflow_run_subscribed": true,
-  "latest_seq": 42,
-  "buffer_started_at": "2026-01-01T00:00:00Z",
-  "events": [
-    {
-      "seq": 42,
-      "received_at": "2026-01-01T00:01:00Z",
-      "action": "completed",
-      "repo": "OWNER/NAME",
-      "run_id": 1,
-      "run_attempt": 1,
-      "workflow_name": "CI",
-      "head_sha": "<40-hex>",
-      "head_branch": "main",
-      "status": "completed",
-      "conclusion": "success",
-      "event": "push",
-      "html_url": "https://github.com/OWNER/NAME/actions/runs/1",
-      "updated_at": "2026-01-01T00:01:00Z",
-      "pull_requests": []
-    }
-  ]
-}
-```
+| Field | Meaning |
+| --- | --- |
+| `rev` | Revision of the snapshot. |
+| `boot` | Random string per relay process. When it differs from the last one seen, the client resets `after` to 0 and treats the snapshot as fresh. |
+| `changed` | `false` when the long-poll ended with no change. |
+| `source` | `webhook` or `relay-poll`. |
+| `warning` | Optional text, for example that the relay polls because no webhooks are installed. Printed once. |
+| `stale`, `error` | The relay could not refresh from GitHub (`error` has `kind`, `message`, `retry_at`). The data is the last good snapshot. Printed once. |
+| `runs[]` | Workflow runs. `jobs[]` (with `steps[]`) appears when `jobs=1`, and always for a failed run. |
+| `check_runs[]` | Check runs of apps other than `github-actions`. |
+| `statuses[]` | Commit statuses. |
 
-`owner_mode` is `"app"`, `"poll"` or `"unknown"`; only `"app"` with
-`workflow_run_subscribed: true` makes `auto` choose events.
+The relay answers `400` for bad parameters and `503` when its waiter limit is full. gh-watcher
+treats `503` and network errors as "relay unreachable" and retries. It stops at once on `400`.
 
-### Pull request relay API contract
+### `GET /api/pr-status`
 
 ```
-GET <base>/api/prs?repo=OWNER/NAME&pr=<n>&head_ref=<branch>&after=<seq>&wait=<seconds, at most 25>
+/api/pr-status?repo=OWNER/NAME&pr=<n>&after=<rev>&wait=<seconds>
+/api/pr-status?repo=OWNER/NAME&branch=<name>&after=<rev>&wait=<seconds>
+/api/pr-status?repo=OWNER/NAME&pr=<n>&since=<ISO>&...
 ```
 
-`pr` and `head_ref` are optional filters. As for `/api/runs`: `400` on bad parameters, `503` when
-too many waiters, `404` on hosts without the endpoint (treated as unusable).
+`pr wait --since` sends `since`. The answer then also carries `comments[]`, `review_comments[]` and `reviews[]` with every item after `since`, oldest first, in the same item shape (`truncated: true` when the relay capped them at 100). The client matches on these arrays, and uses the `latest_*` items only when the arrays are absent.
 
-```json
-{
-  "repo": "OWNER/NAME",
-  "owner_mode": "app",
-  "pr_events_subscribed": true,
-  "latest_seq": 7,
-  "buffer_started_at": "2026-01-01T00:00:00Z",
-  "events": [
-    {
-      "seq": 7,
-      "received_at": "2026-01-01T00:01:00Z",
-      "event": "pull_request",
-      "action": "closed",
-      "repo": "OWNER/NAME",
-      "pr": 17,
-      "head_sha": "<40-hex>",
-      "head_ref": "feature",
-      "merged": true,
-      "draft": false,
-      "actor": "alice",
-      "html_url": "https://github.com/OWNER/NAME/pull/17",
-      "updated_at": "2026-01-01T00:01:00Z"
-    }
-  ]
-}
-```
+The answer has the same `rev`, `changed`, `source`, `warning`, `stale` and `error` fields, and:
 
-`event` is one of `pull_request`, `issue_comment`, `pull_request_review` and
-`pull_request_review_comment`; `head_sha`, `head_ref`, `merged` and `draft` are optional.
-
-## Shared GitHub queue and rate limits
-
-All agents on a host share one `gh` token, so every gh-watcher process sends its `gh` calls
-through a daemon-less queue kept in files under `<state dir>/queue/` (directory mode `0700`,
-files mode `0600`, no tokens stored; only `gh` stdout of successful calls):
-
-- Single-flight: an advisory lock file per exact `gh` argument list (`O_EXCL`, with a unique
-  token per holder, stale locks recovered by dead owner PID or an age of 3 minutes) ensures that
-  concurrent processes asking the same thing make one `gh` call. The result is shared only with
-  callers that were already waiting while that call ran; a call that starts after it finished
-  always fetches fresh, so a result from before your action is never served. Entries are written
-  with an atomic rename and keyed by host (`GH_HOST`), `GH_CONFIG_DIR` and a hash of
-  `GH_TOKEN`/`GITHUB_TOKEN` as well as the arguments.
-- Global spacing: calls from all processes with the same identity are at least a minimum
-  interval apart. No process sleeps while holding a lock.
-- Shared cooldown: when any process is rate-limited it records the resume time (per host and
-  identity) and every such process waits for it before calling `gh`.
-- A `gh` call that hangs is killed after 2 minutes, and daemon shutdown (SIGINT, SIGTERM) ends
-  any queued wait at once.
-
-Rate limits are a wait, not a failure. Primary limits ("API rate limit exceeded") resume at the
-reset time reported by `gh api rate_limit` (that endpoint is not counted). Secondary limits
-honour a `retry-after` when `gh` prints one, else back off exponentially from 60s, capped at 15
-minutes. One stderr line per backoff names the resume time. The wait ends at the command's own
-`--timeout` (`wait`, `follow`, and `status`, default `10m`): exit `124`, as for any timeout.
-Long-running `watch` commands wait at most 10 minutes per call, then report an error.
-
-| Environment variable | Default | Meaning |
-| --- | --- | --- |
-| `GH_WATCHER_CACHE_TTL` | `10` | Upper bound in seconds on how long a finished call may be shared with waiting callers (`0` disables sharing). |
-| `GH_WATCHER_MIN_SPACING` | `1` | Minimum seconds between `gh` calls across processes (`0` disables). |
-| `GH_WATCHER_QUEUE` | on | Set to `0`, `off` or `false` to bypass the shared queue entirely. |
-| `GH_WATCHER_MIN_REMAINING` | `500` | Below this many REST calls left, polling waits sleep 4 times longer. |
-
-The state-dir override (`AI_TOOLS_GH_WATCHER_STATE_DIR`) applies to the queue too.
-
-### Conditional requests (0.6.0)
-
-Run lists, single runs, job lists, check runs and commit statuses are read with `gh api -i`
-(one REST call, no workflow look-ups). The ETag and body of each URL are stored under
-`<state dir>/queue/etag/`, scoped by host, config dir and token hash (no token in the files). The
-next call, from any process on the host, sends `If-None-Match`. GitHub answers `304` and does not
-count that call against the rate limit, and the stored body is used. A wait, a `follow` and a
-`status` for the same commit therefore share one set of full responses.
-`GH_WATCHER_QUEUE=off` or an injected executor turns the store off. Entries older than a day are
-removed. The head lookup for `--pr` still uses `gh pr view` (GraphQL, not REST).
-
-### Low budget
-
-Every REST response carries `X-RateLimit-Remaining`. When it falls below
-`GH_WATCHER_MIN_REMAINING` (default `500`), polling waits sleep 4 times longer, and the event-mode
-re-check interval grows the same way. One stderr line says so. The state resets when a response
-shows a higher value.
-
-### Poll fallback
-
-With `--source auto`, a relay that cannot be reached makes the wait poll GitHub. It logs
-`gh-watcher: WARNING relay unreachable at <url>, polling GitHub` and polls no faster than every 2
-minutes. An explicit `--source poll` keeps the given `--interval`.
-
-### `follow` and jobs
-
-`follow` fetches the jobs of a run again only when the status, conclusion, `updatedAt` or attempt
-of that run changed since the last fetch.
+| Field | Meaning |
+| --- | --- |
+| `pr` | Pull request number (needed for `--branch`). |
+| `state` | `open`, `closed`, `merged`, or `none` when the branch has no pull request. |
+| `draft`, `html_url`, `head_sha`, `head_ref`, `base_ref`, `review_decision` | Pull request fields. `title` is not sent. |
+| `merged_at`, `updated_at` | Times; missing or `null` means unknown. |
+| `latest_comment` (issue comments only), `latest_review_comment` (inline), `latest_review` | The newest item of each kind, or `null`. Items are `{id, created_at, updated_at, user}`; reviews are `{id, state, submitted_at, user}`. `user` is the author (a login string or `{login}`). |
 
 ## Targets
 
 Every `status`, `wait` and `watch add` takes exactly one of `--pr N`, `--branch B`,
 `--commit SHA` or `--run ID`. Giving none, or more than one, is an error (exit `2`).
 Validation: `--pr` and `--run` take positive integers, `--commit` takes 4 to 40
-hexadecimal characters, `--branch` must be non-empty.
+hexadecimal characters (the relay needs 40), `--branch` must be non-empty.
 
-How each target resolves to runs (via `gh`). Only runs for a single commit are ever
-considered, so results from superseded commits cannot leak into the aggregate state:
-
-| Target | Resolution |
-| --- | --- |
-| `--pr <number>` | `gh pr view <number> --repo R --json headRefName,headRefOid`, then `gh api repos/R/actions/runs?head_sha=<headRefOid>&per_page=100`. Falls back to the branch rule below if `headRefOid` is missing. |
-| `--branch <name>` | Branch tip resolved with `gh api repos/R/branches/<name> --jq .commit.sha`, then the same runs call with `head_sha=<tip>`. If the tip cannot be resolved, falls back to `actions/runs?branch=<name>&per_page=100` and keeps only the commit of the most recently created run. |
-| `--commit <sha>` | `gh api repos/R/actions/runs?head_sha=<sha>&per_page=100`. A short sha is resolved to the full sha first. |
-| `--run <id>` | `gh api repos/R/actions/runs/<id>` (single run). |
-
-Within that commit, only the newest run of each workflow name is kept (latest
-`createdAt`, then highest run id), so a re-run that succeeds supersedes the failed
-attempt. A branch whose new tip has no runs yet reports `none` rather than the stale
-result of the previous commit.
-
-Fetched run fields: `databaseId`, `workflowName`, `displayTitle`, `status`,
-`conclusion`, `url`, `headSha`, `createdAt`.
+The relay resolves a pull request or branch to its head commit. It follows a new head commit
+when a `pull_request` or `push` webhook arrives. Only runs for a single commit are in a snapshot, so results
+from superseded commits cannot leak into the aggregate state. Within that commit, only the newest run of
+each workflow name is kept (latest `createdAt`, then highest run id), so a re-run that succeeds supersedes
+the failed attempt. A new head commit with no runs yet reports `none`.
 
 ### All checks, not only Actions
 
-For `--pr`, `--branch` and `--commit` the head sha is also queried for checks that are not
-Actions workflow runs (a `--run` target stays Actions-only). They are reported in `checks`:
-
-| Source | Call | Notes |
-| --- | --- | --- |
-| Check runs | `gh api repos/R/commits/<sha>/check-runs?per_page=100` | Runs whose app is `github-actions` are skipped (workflow runs cover them). The latest run per app and name is kept (by `started_at`, then id). |
-| Commit statuses | `gh api repos/R/commits/<sha>/status?per_page=100` | Combined status; one entry per context (the newest wins if a context repeats across pages). |
-
-Each entry is `{kind: "check_run" | "status", name, source, status, conclusion, url, updatedAt?}`.
-`source` is the app slug (check run) or the host of the status target URL, for example `app.terraform.io` (empty when there is none). `status` is `pending`,
-`success` or `failure`; `conclusion` keeps the raw check conclusion (`null` while running) or
-status state.
+The snapshot also lists checks that are not Actions workflow runs (a `--run` target is Actions-only).
+They are reported in `checks`:
+each entry is `{kind: "check_run" | "status", name, source, status, conclusion, url, updatedAt?}`.
+`source` is the app slug (check run) or the host of the status target URL (empty when there is none).
+`status` is `pending`, `success` or `failure`.
 
 | Raw | `status` |
 | --- | --- |
 | check run not `completed` | `pending` |
 | check run conclusion `success`, `neutral`, `skipped` | `success` |
 | any other completed conclusion (`failure`, `cancelled`, `timed_out`, `action_required`, ...) | `failure` |
-| check run conclusion `stale` | ignored (GitHub has superseded it; it still replaces older runs of the same check) |
+| check run conclusion `stale` | ignored |
 | status `pending` | `pending` |
 | status `success` | `success` |
 | status `failure`, `error` | `failure` |
 
-If the token cannot read check runs or statuses (HTTP 403), gh-watcher warns once on stderr,
-reports `checksUnavailable` (a short reason) in the report, `wait` outcome and `follow` lines, and
-aggregates from Actions runs only, as before 0.5.0. Other `gh` failures still fail the command.
-
-A commit with only statuses (for example Terraform Cloud) therefore reports `pending`, then
-`success` or `failure`, instead of `none`. Failed non-Actions checks are listed in
-`failedChecks` as `{kind, name, source, url}` so an agent can open the link.
+Failed non-Actions checks are listed in `failedChecks` as `{kind, name, source, url}`.
 
 ## State semantics
 
@@ -622,8 +415,8 @@ Failure conclusions: `failure`, `cancelled`, `timed_out`, `startup_failure`,
 
 Success conclusions: `success`, `neutral`, `skipped`.
 
-Step-level failure collection: for each failure-like run, `gh api repos/R/actions/runs/<id>/jobs?per_page=100`
-is fetched; for each failure-like job, every step with conclusion `failure` is recorded
+Step-level failure collection: the relay always sends the jobs of a failed run.
+For each failure-like job, every step with conclusion `failure` is recorded
 (workflow, job, step name and number). A failed job with no failed steps is reported as
 a job-level failure. Failures are collected only when the aggregate state is `failure`.
 
@@ -702,7 +495,6 @@ too.
 | --- | --- |
 | `~/.local/state/ai-tools/gh-watcher/watchers.json` | Watch specs and per-watch last-fired edges. |
 | `~/.local/state/ai-tools/gh-watcher/events.jsonl` | One JSON event per line, appended on every check. |
-| `~/.local/state/ai-tools/gh-watcher/queue/` | Shared `gh` queue: response cache, call-slot file, cooldown, lock files, `etag/` store. |
 
 Path resolution: `AI_TOOLS_GH_WATCHER_STATE_DIR` overrides the whole directory;
 otherwise `XDG_STATE_HOME` is honoured, defaulting to `~/.local/state` (`%LOCALAPPDATA%`
@@ -713,13 +505,14 @@ on Windows). The final directory is `<base>/ai-tools/gh-watcher`.
 Blocking wait as a background task:
 
 ```sh
-gh-watcher wait --repo octo-org/hello-world --pr 17 --interval 15s --timeout 45m --json &
+gh-watcher wait --repo octo-org/hello-world --pr 17 --timeout 45m --json &
 ```
 
 - Exit `0`: all runs succeeded; the JSON outcome has `state: "success"`.
 - Exit `1`: something failed; the JSON outcome lists `failedSteps` so the agent can go
   straight to the broken step.
-- Exit `124`: still pending at the timeout; poll `status` or wait longer.
+- Exit `124`: still pending at the timeout; wait again or run `status`.
+- Exit `2`: a bad flag or a relay problem. Never replace the call with your own `gh` polling.
 
 Watcher plus notify for long horizons:
 
@@ -732,18 +525,18 @@ gh-watcher watch run ci-main
 The daemon fires the hook once per new failing run, and the notified agent receives the
 summary plus the first three failed steps.
 
-Polling intervals to know about:
+Timing defaults:
 
 | Context | Default |
 | --- | --- |
-| `wait` poll interval | `30s` |
 | `wait` overall timeout | `30m`, capped at 24h |
+| Relay long-poll | 25 s per request |
+| Relay retry back-off | 5 s, doubling to 60 s |
 | `watch add` interval | `60s` |
-| Daemon sweep cadence | every 5s (checks each watch when due) |
+| Daemon sweep cadence | every 5 s (asks the relay for each watch when due) |
 
 ## Privacy
 
-- All GitHub access goes through your local `gh` binary and its existing
-  authentication; no tokens are read or stored by this tool.
+- gh-watcher reads no GitHub token and calls no GitHub API. It talks only to the relay you configure.
 - Watch state stays in the local state directory.
-- No telemetry, no analytics, no network calls beyond `gh` (and the event relay, when configured).
+- No telemetry and no analytics.

@@ -1,12 +1,13 @@
 import type { Command } from 'commander';
 import { resolveEventsUrl } from '../core/events.js';
-import { GhClient } from '../core/gh.js';
+import { RelaySession, RelayUnreachableError, prStatusToSnapshot } from '../core/relay.js';
 import { followPrEvents, waitForPrEvent, type PrTarget, type PrWaitOptions, type PrWaitResult } from '../core/pr-wait.js';
 import { latestReviewPerAuthor, parseEventKinds } from '../core/pr.js';
-import { RateLimitTimeoutError } from '../core/queue.js';
 import type { PrSnapshot } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
 import { printJson } from './output.js';
+import { reportRelayError } from './relay-error.js';
+import { resolveRepoOrExit } from './repo.js';
 import { parseNumberOption, parseTargetFlags } from './target.js';
 
 const MAX_WAIT_TIMEOUT_MS = 24 * 3_600_000;
@@ -17,16 +18,13 @@ interface PrTargetFlags {
   branch?: string;
   json?: boolean;
   timeout?: string;
+  eventsUrl?: string;
 }
 
 interface PrWaitFlags extends PrTargetFlags {
   on?: string;
-  interval?: string;
   since?: string;
   changesOnly?: boolean;
-  source?: string;
-  eventsUrl?: string;
-  fallbackInterval?: string;
 }
 
 function fail(message: string): never {
@@ -34,17 +32,8 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
-const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-
 function resolveRepo(repo: string | undefined): string {
-  const value = repo ?? process.env['GH_REPO'];
-  if (value === undefined || value.trim().length === 0) {
-    return fail('no repository specified (use --repo OWNER/NAME or set GH_REPO)');
-  }
-  if (!REPO_PATTERN.test(value) || value.split('/').some((part) => part === '.' || part === '..')) {
-    return fail(`invalid repository "${value}": use OWNER/NAME`);
-  }
-  return value;
+  return resolveRepoOrExit(repo);
 }
 
 /** Run option parsing so any failure, including a bad duration, exits 2. */
@@ -76,11 +65,6 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function rateLimited(timeoutMs: number): void {
-  console.error(`error: GitHub rate limit not lifted within ${formatDuration(timeoutMs)}`);
-  process.exitCode = 124;
-}
-
 function printSnapshot(snapshot: PrSnapshot, repo: string): void {
   const draft = snapshot.isDraft ? ' (draft)' : '';
   const decision = snapshot.reviewDecision ?? 'none';
@@ -101,15 +85,13 @@ async function statusAction(flags: PrTargetFlags): Promise<void> {
     target: parsePrTarget(flags),
     timeoutMs: Math.min(parseDuration(flags.timeout ?? '10m'), MAX_WAIT_TIMEOUT_MS),
   }));
-  const client = new GhClient();
-  client.setDeadline(Date.now() + timeoutMs);
   let snapshot: PrSnapshot | undefined;
   try {
-    const number = target.kind === 'pr' ? target.number : await client.findPrForBranch(repo, target.branch);
-    snapshot = number === undefined ? undefined : await client.prSnapshot(repo, number);
+    const session = new RelaySession({ baseUrl: resolveEventsUrl(flags.eventsUrl), deadline: Date.now() + timeoutMs });
+    const response = await session.prStatus(repo, target.kind === 'pr' ? { number: target.number } : { branch: target.branch }, 0, 0);
+    snapshot = prStatusToSnapshot(response);
   } catch (error) {
-    if (error instanceof RateLimitTimeoutError) {
-      rateLimited(timeoutMs);
+    if (reportRelayError(error, flags.json)) {
       return;
     }
     console.error(`error: ${describeError(error)}`);
@@ -144,21 +126,9 @@ function parseWaitOptions(flags: PrWaitFlags): { options: PrWaitOptions; timeout
   } catch (error) {
     return fail(describeError(error));
   }
-  const intervalMs = parseDuration(flags.interval ?? '60s');
-  if (intervalMs <= 0) {
-    return fail(`invalid interval "${String(flags.interval)}": use a positive duration`);
-  }
   const timeoutMs = Math.min(parseDuration(flags.timeout ?? '30m'), MAX_WAIT_TIMEOUT_MS);
   if (flags.since !== undefined && Number.isNaN(Date.parse(flags.since))) {
     return fail(`invalid --since "${flags.since}": use an ISO 8601 timestamp`);
-  }
-  const source = flags.source ?? 'auto';
-  if (source !== 'auto' && source !== 'events' && source !== 'poll') {
-    return fail(`invalid --source "${source}": use auto, events or poll`);
-  }
-  const fallbackMs = parseDuration(flags.fallbackInterval ?? '5m');
-  if (fallbackMs <= 0) {
-    return fail(`invalid fallback interval "${String(flags.fallbackInterval)}": use a positive duration`);
   }
   return {
     timeoutMs,
@@ -167,13 +137,10 @@ function parseWaitOptions(flags: PrWaitFlags): { options: PrWaitOptions; timeout
       target,
       kinds: parsed.kinds,
       any: parsed.any,
-      intervalMs,
       timeoutMs,
       since: flags.since,
       changesOnly: flags.changesOnly === true,
-      source,
       eventsUrl: resolveEventsUrl(flags.eventsUrl),
-      fallbackMs,
     },
   };
 }
@@ -189,13 +156,23 @@ async function waitAction(flags: PrWaitFlags): Promise<void> {
   try {
     result = await waitForPrEvent(options, { onPoll });
   } catch (error) {
+    if (reportRelayError(error, flags.json)) {
+      return;
+    }
     console.error(`error: ${describeError(error)}`);
     process.exitCode = 2;
     return;
   }
   if (result.kind === 'timeout') {
     if (flags.json) {
-      printJson({ matched: false, timedOut: true, events: result.events, source: result.source });
+      printJson({
+        matched: false,
+        timedOut: true,
+        events: result.events,
+        source: result.source,
+        ...(result.relaySource !== undefined ? { relaySource: result.relaySource } : {}),
+        ...(result.warning !== undefined ? { warning: result.warning } : {}),
+      });
     } else {
       process.stderr.write('\n');
       console.error(`timed out after ${formatDuration(timeoutMs)}`);
@@ -204,7 +181,14 @@ async function waitAction(flags: PrWaitFlags): Promise<void> {
     return;
   }
   if (flags.json) {
-    printJson({ matched: true, events: result.events, pr: result.pr, source: result.source });
+    printJson({
+      matched: true,
+      events: result.events,
+      pr: result.pr,
+      source: result.source,
+      ...(result.relaySource !== undefined ? { relaySource: result.relaySource } : {}),
+      ...(result.warning !== undefined ? { warning: result.warning } : {}),
+    });
     return;
   }
   process.stderr.write('\n');
@@ -221,12 +205,20 @@ async function followAction(flags: PrWaitFlags): Promise<void> {
       },
     });
   } catch (error) {
+    if (error instanceof RelayUnreachableError) {
+      process.stdout.write(`${JSON.stringify({ error: 'relay_unreachable', url: error.url, message: error.message })}\n`);
+    }
+    if (reportRelayError(error, false)) {
+      return;
+    }
     console.error(`error: ${describeError(error)}`);
     process.exitCode = 2;
     return;
   }
   if (result.kind === 'timeout') {
-    process.stdout.write(`${JSON.stringify({ repo: options.repo, timedOut: true, source: result.source })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ repo: options.repo, timedOut: true, source: result.source, ...(result.relaySource !== undefined ? { relaySource: result.relaySource } : {}), ...(result.warning !== undefined ? { warning: result.warning } : {}) })}\n`,
+    );
     process.exitCode = 124;
   }
 }
@@ -235,26 +227,23 @@ function addTargetOptions(command: Command): Command {
   return command
     .option('--repo <owner/name>', 'repository in OWNER/NAME form (defaults to GH_REPO)')
     .option('--pr <number>', 'pull request number', parseNumberOption)
-    .option('--branch <name>', 'branch name; the newest pull request with this head branch');
+    .option('--branch <name>', 'branch name; the newest pull request with this head branch')
+    .option('--events-url <url>', 'relay base URL (defaults to GH_WATCHER_EVENTS_URL)');
 }
 
 function addWaitOptions(command: Command): Command {
   return addTargetOptions(command)
     .option('--on <kinds>', 'comma-separated event kinds, or any', 'any')
-    .option('--interval <duration>', 'poll interval', '60s')
     .option('--timeout <duration>', 'overall limit, capped at 24h', '30m')
     .option('--since <time>', 'ISO time: comments and reviews after it count as new even if already present')
-    .option('--changes-only', 'do not match a state the pull request is already in', false)
-    .option('--source <mode>', 'auto, events or poll (auto uses the relay when configured and usable)', 'auto')
-    .option('--events-url <url>', 'event relay base URL (defaults to GH_WATCHER_EVENTS_URL)')
-    .option('--fallback-interval <duration>', 'event mode: safety-net gh re-check interval', '5m');
+    .option('--changes-only', 'do not match a state the pull request is already in', false);
 }
 
 export function registerPrCommands(program: Command): void {
-  const pr = program.command('pr').description('Watch pull request events (event relay when configured, else polling through gh)');
+  const pr = program.command('pr').description('Watch pull request events (long-polls the relay; never polls GitHub)');
   addTargetOptions(pr.command('status'))
     .description('Show the current state, comments and reviews of a pull request once')
-    .option('--timeout <duration>', 'longest wait for a GitHub rate limit to lift, capped at 24h', '10m')
+    .option('--timeout <duration>', 'longest wait for an unreachable relay, capped at 24h', '10m')
     .option('--json', 'emit the snapshot as JSON', false)
     .action(async (opts) => {
       await statusAction(opts as PrTargetFlags);

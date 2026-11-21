@@ -14,6 +14,8 @@ import {
 } from '../core/types.js';
 import { formatDuration, parseDuration } from './duration.js';
 import { printJson, printTable } from './output.js';
+import { reportRelayError } from './relay-error.js';
+import { resolveRepoOrExit } from './repo.js';
 import { parseNumberOption, parseTargetFlagsOrExit } from './target.js';
 
 const HOOK_USAGE =
@@ -37,6 +39,11 @@ interface ListFlags {
 
 interface CheckFlags {
   json?: boolean;
+  eventsUrl?: string;
+}
+
+interface RunFlags {
+  eventsUrl?: string;
 }
 
 interface EventsFlags {
@@ -169,6 +176,7 @@ function selectedNames(state: GhWatcherState, names: string[]): string[] {
 }
 
 async function addAction(name: string, flags: AddFlags): Promise<void> {
+  const repo = resolveRepoOrExit(flags.repo);
   const target = parseTargetFlagsOrExit(flags);
   let parsedOn: ParsedOn;
   try {
@@ -189,7 +197,7 @@ async function addAction(name: string, flags: AddFlags): Promise<void> {
   }
   const spec: GhWatchSpec = {
     name,
-    repo: flags.repo,
+    repo,
     target,
     triggers: parsedOn.triggers,
     hook,
@@ -259,10 +267,17 @@ async function checkAction(names: string[], flags: CheckFlags): Promise<void> {
   requireKnownNames(state, names);
   const wanted = names.length > 0 ? new Set(names) : undefined;
   const events: GhEvent[] = [];
-  for (const spec of state.watchers) {
-    if (wanted === undefined || wanted.has(spec.name)) {
-      events.push(await checkWatchManual(spec));
+  try {
+    for (const spec of state.watchers) {
+      if (wanted === undefined || wanted.has(spec.name)) {
+        events.push(await checkWatchManual(spec, { eventsUrl: flags.eventsUrl }));
+      }
     }
+  } catch (error) {
+    if (reportRelayError(error, flags.json)) {
+      return;
+    }
+    throw error;
   }
   if (flags.json) {
     printJson(events);
@@ -274,11 +289,11 @@ async function checkAction(names: string[], flags: CheckFlags): Promise<void> {
   process.exitCode = events.some((event) => event.fired) ? 0 : 1;
 }
 
-async function runAction(names: string[]): Promise<void> {
+async function runAction(names: string[], flags: RunFlags): Promise<void> {
   const state = await loadState();
   requireKnownNames(state, names);
   process.stderr.write(`watching: ${selectedNames(state, names).join(', ')}\n`);
-  await runDaemon(names.length > 0 ? names : undefined, { pollSeconds: 5 });
+  await runDaemon(names.length > 0 ? names : undefined, { pollSeconds: 5 }, { eventsUrl: flags.eventsUrl });
 }
 
 async function eventsAction(flags: EventsFlags): Promise<void> {
@@ -320,7 +335,7 @@ export function registerWatchCommands(program: Command): void {
     .option('--commit <sha>', 'watch runs for this commit')
     .option('--run <id>', 'watch this run', parseNumberOption)
     .option('--on <event>', 'comma-separated: failure, success, complete (any terminal state), any, or pull request kinds (opened, reopened, closed, merged, draft, ready, comment, review, review_comment, push, review_decision); pull request kinds need --pr or --branch', 'complete')
-    .option('--interval <duration>', 'poll interval', '60s')
+    .option('--interval <duration>', 'how often the watch daemon reads the relay', '60s')
     .option('--hook <spec>', `hook: ${HOOK_USAGE}`, 'none')
     .option('--json', 'emit the saved spec as JSON', false)
     .action(async (name, opts) => {
@@ -351,6 +366,7 @@ export function registerWatchCommands(program: Command): void {
     .command('check')
     .description('Check watches once and fire hooks on every trigger')
     .argument('[names...]', 'watch names, all when omitted')
+    .option('--events-url <url>', 'relay base URL (defaults to GH_WATCHER_EVENTS_URL)')
     .option('--json', 'emit the events as a JSON array', false)
     .action(async (names, opts) => {
       await checkAction(names as string[], opts as CheckFlags);
@@ -359,8 +375,9 @@ export function registerWatchCommands(program: Command): void {
     .command('run')
     .description('Run the watch daemon until interrupted')
     .argument('[names...]', 'watch names, all when omitted')
-    .action(async (names) => {
-      await runAction(names as string[]);
+    .option('--events-url <url>', 'relay base URL (defaults to GH_WATCHER_EVENTS_URL)')
+    .action(async (names, opts) => {
+      await runAction(names as string[], opts as RunFlags);
     });
   watch
     .command('events')

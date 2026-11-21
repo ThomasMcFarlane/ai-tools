@@ -10,6 +10,7 @@ import {
   failedStepNames,
   groupRuns,
   isEnded,
+  lineSource,
   parseLine,
   parseTrackArg,
   parseWatcherCommands,
@@ -120,7 +121,7 @@ const apply = async ($: EngineInterface, target: Target, line: FollowLine) => {
   const live: ActiveRun[] = []
   const ended: ActiveRun[] = []
   for (const run of line.runs) {
-    const a: ActiveRun = { key: runKey(run), runId: run.databaseId, attempt: run.attempt ?? 1, target, run, source: line.source, checkedAt, seenAt: now }
+    const a: ActiveRun = { key: runKey(run), runId: run.databaseId, attempt: run.attempt ?? 1, target, run, source: lineSource(line), checkedAt, seenAt: now }
     ;(isEnded(run) ? ended : live).push(a)
   }
   const merge = (list: ActiveRun[]): ActiveRun[] => {

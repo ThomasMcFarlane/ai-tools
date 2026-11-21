@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { run } from '../src/cli/index.js';
 
 let stateRoot: string;
@@ -79,24 +79,11 @@ describe('status pre-flight validation', () => {
 
 describe('wait pre-flight validation', () => {
   it('errors with no repo and no GH_REPO', async () => {
-    await expect(run(['node', 'gh-watcher', 'wait', '--branch', 'main'])).rejects.toThrow(
-      /no repository specified/,
-    );
-  });
-
-  it('rejects an invalid interval', async () => {
-    await expect(
-      run([
-        'node',
-        'gh-watcher',
-        'wait',
-        '--repo',
-        'octo-org/hello-world',
-        '--branch',
-        'main',
-        '--interval',
-        'fortnight',
-      ]),
-    ).rejects.toThrow(/invalid duration/);
+    const out: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((line: string) => out.push(line));
+    await run(['node', 'gh-watcher', 'wait', '--branch', 'main', '--json']);
+    log.mockRestore();
+    expect(process.exitCode).toBe(2);
+    expect(JSON.parse(out.join(''))).toMatchObject({ error: 'bad_arguments', message: expect.stringMatching(/no repository specified/) });
   });
 });

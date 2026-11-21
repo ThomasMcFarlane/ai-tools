@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateState, runsKey } from '../src/core/gh.js';
+import { aggregateState, runsKey } from '../src/core/check-state.js';
 import { targetKey, type GhRunInfo } from '../src/core/types.js';
 
 function run(partial: Partial<GhRunInfo> & { databaseId: number }): GhRunInfo {
