@@ -109,6 +109,22 @@ Only the compaction the rotation itself starts rotates; any other compaction is 
 - `/jev-compact stats` shows the session totals: compactions applied, deferred and handed to the built-in summary, estimated tokens freed, Jev requests, sentences dropped, characters saved by word compression and characters saved on entry.
 - At session start the mod logs the thresholds in force (`jev-compaction: thresholds: trigger ..., target ..., hard limit ...`), so a session that runs on the defaults because its stored options were lost is visible in the log. The host clears `pluginConfigs` options when a plugin is uninstalled, and a reinstall starts from the defaults.
 
+## Reporting
+
+In a stream-json or SDK session (the way T3 Code runs Claude), the mod writes one machine-readable line for each compaction decision. The host sends it as a `system` frame with subtype `ui_log` and `plugin` set to `jev-compaction`. The line is written before the hook returns, so it comes before the `compact_boundary` frame. Interactive sessions get no such line. The normal `jev-compaction: ...` line and the toast stay as they were.
+
+The `text` of the frame is the prefix `t3.compaction/v1 ` and one line of JSON:
+
+```json
+{"v":1,"tokensBefore":212345,"tokensAfter":118200,"details":{"trigger":{"kind":"plugin","name":"jev-compaction"},"outcome":"applied","messages":{"before":1500,"after":900},"tools":{"kept":40,"truncated":22,"dropped":31},"texts":{"kept":55,"abridged":12,"stubbed":9},"sentencesDropped":48,"wordCharsSaved":5210,"requests":6}}
+```
+
+- `outcome` is `applied` (the pruning ran), `deferred` (nothing changed) or `fallback` (the built-in summary runs instead). A deferral or fallback has `reason` and no pruning counts, and has `tokensBefore` only when the host gave a count.
+- `trigger.kind` is `plugin` for a compaction that the mod started (also `/jev-compact now`), and `auto` or `manual` for one that the host started.
+- A rotation reports `applied` with the message counts, or `deferred` with the reason when it is skipped or is a dry run.
+- All numbers are whole numbers of 0 or more. The line is under 4000 characters. `reason` is cut at 500 characters and the Jev key is never in it.
+- A failure to write the line never changes the compaction.
+
 ## Options
 
 All options have defaults and are set in the plugin's config menu.

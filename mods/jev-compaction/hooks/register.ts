@@ -88,6 +88,59 @@ function notify($: EngineInterface, text: string) {
   $.ui.toast(`jev-compaction: ${text}`, { timeoutMs: 12_000 })
 }
 
+const T3_PREFIX = 't3.compaction/v1 '
+// The host cuts a ui_log line at 10000 characters; a reader of the line gets a smaller bound.
+const T3_MAX_CHARS = 4000
+const T3_MAX_REASON = 500
+const PLUGIN_TRIGGER = { kind: 'plugin', name: 'jev-compaction' } as const
+
+type T3Details = {
+  trigger?: { kind: 'auto' | 'manual' | 'plugin'; name?: string }
+  outcome?: 'applied' | 'fallback' | 'deferred'
+  reason?: string
+  durationMs?: number
+  messages?: { before?: number; after?: number }
+  tools?: { kept?: number; truncated?: number; dropped?: number }
+  texts?: { kept?: number; abridged?: number; stubbed?: number }
+  sentencesDropped?: number
+  wordCharsSaved?: number
+  requests?: number
+}
+type T3Payload = { v: 1; tokensBefore?: number; tokensAfter?: number; details?: T3Details }
+
+const whole = (n: number) => (Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0)
+
+/** Every number in the payload as a whole number of 0 or more; the receiver rejects the whole `details` on one bad value. */
+function normalise<T>(value: T): T {
+  if (typeof value === 'number') return whole(value) as T
+  if (Array.isArray(value)) return value.map(normalise) as T
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined).map(([name, v]) => [name, normalise(v)])) as T
+  return value
+}
+
+/**
+ * The compaction decision as one machine-readable `ui_log` line for T3 Code. Only in a non-interactive session: in the
+ * REPL the line would show as raw JSON. Never throws; a failed report must not change the compaction.
+ */
+async function reportToT3($: EngineInterface, payload: T3Payload) {
+  try {
+    // After a hot reload the module has not seen the session start; its answer is kept in `$.state`.
+    if ((interactive ?? (await $.state.get(INTERACTIVE)).value) !== false) return
+    const clean = normalise(payload)
+    if (clean.details?.reason !== undefined) clean.details.reason = clean.details.reason.slice(0, T3_MAX_REASON)
+    let line = T3_PREFIX + JSON.stringify(clean)
+    if (line.length >= T3_MAX_CHARS && clean.details) {
+      delete clean.details.reason
+      line = T3_PREFIX + JSON.stringify(clean)
+    }
+    if (line.length >= T3_MAX_CHARS) return
+    const logged: unknown = $.ui.log(line)
+    if (logged instanceof Promise) logged.catch(() => undefined)
+  } catch {
+    // the human line already tells the same
+  }
+}
+
 async function bump($: EngineInterface, change: Partial<typeof NO_STATS>) {
   const { value } = await $.state.get(STATS)
   const next = { ...NO_STATS, ...value }
@@ -201,11 +254,34 @@ async function measured($: EngineInterface, tokens: number) {
   $.ui.log(`jev-compaction: measured ${tokens} tokens after the compaction (estimated ${m.after})`)
 }
 
+function decisionPayload(verdict: Verdict, done: Awaited<ReturnType<typeof attempt>> | undefined, tokens: number | undefined, requests: number, trigger: T3Details['trigger']): T3Payload {
+  if (verdict.act === 'apply' && done) {
+    const s = done.result.stats
+    return {
+      v: 1,
+      tokensBefore: done.tokensBefore,
+      tokensAfter: done.tokensAfter,
+      details: {
+        trigger,
+        outcome: 'applied',
+        messages: { before: s.messagesBefore, after: s.messagesAfter },
+        tools: { kept: s.toolsKept, truncated: s.resultsTruncated, dropped: s.callsDropped },
+        texts: { kept: s.textsKept, abridged: s.textsAbridged, stubbed: s.textsStubbed },
+        sentencesDropped: s.sentencesDropped,
+        wordCharsSaved: s.wordCharsSaved,
+        requests,
+      },
+    }
+  }
+  return { v: 1, tokensBefore: tokens, details: { trigger, outcome: verdict.act === 'skip' ? 'deferred' : 'fallback', reason: verdict.act === 'apply' ? undefined : verdict.reason, requests: requests > 0 ? requests : undefined } }
+}
+
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
   // The rotation's own compaction, and no other: it applies or skips, and never falls through to the built-in summary.
   if (rotating && e.agentId === undefined && e.trigger !== 'precompute') {
     if (Array.isArray(e.messages)) return onRotate($, e, rotating.dry)
     notify($, 'rotation skipped: the compaction carried no transcript')
+    await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: 'rotation skipped, the compaction carried no transcript' } })
     return { skip: 'jev-compaction: rotation skipped, no transcript' }
   }
   if (e.agentId !== undefined || e.trigger === 'precompute' || !Array.isArray(e.messages)) return next(e)
@@ -240,6 +316,7 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
     verdict = failure(now ? 'plugin' : trigger, text, usage?.tokens, usage && thresholdsFor(config, usage.window).hard)
   }
   const requests = done?.result.stats.requests ?? 0
+  await reportToT3($, decisionPayload(verdict, done, usage?.tokens, requests, now || trigger === 'plugin' ? PLUGIN_TRIGGER : trigger === 'auto' || trigger === 'manual' ? { kind: trigger } : undefined))
   try {
     if (verdict.act === 'apply' && done) {
       const freed = done.tokensBefore - done.tokensAfter
@@ -651,16 +728,20 @@ export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: 
       const path = `${h.handoverDir}/HANDOFF.preview.md`
       await $.fs.write(path, `${built.text}\n\n## Dry run\n\n${missing.length > 0 ? `Gate failed:\n\n${missing.map((m) => `- ${m.item}`).join('\n')}` : `Gate passed; ${kept}.`}\n`)
       notify($, `rotation dry run: preview at ${path}; ${missing.length > 0 ? 'gate failed' : 'gate passed'}; nothing applied`)
+      await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: 'rotation dry run, nothing applied' } })
       return { skip: `jev-compaction: rotation dry run, preview at ${path}` }
     }
     if (missing.length > 0) {
       notify($, `rotation skipped: ${gate}`)
+      await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: `rotation skipped, ${gate}` } })
       return { skip: `jev-compaction: rotation skipped, ${gate}` }
     }
     notify($, `rotated: ${kept}; handover in ${h.handoffPath}`)
+    await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'applied', messages: { before: e.messages.length, after: built.messages.length } } })
     return { messages: built.messages }
   } catch (err) {
     notify($, `rotation skipped: ${message(err)}`)
+    await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: `rotation skipped, ${message(err)}` } })
     return { skip: `jev-compaction: rotation skipped, ${message(err)}` }
   }
 }
