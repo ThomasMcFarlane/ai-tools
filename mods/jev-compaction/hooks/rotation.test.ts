@@ -489,3 +489,36 @@ test('cap: a transcript at the cap (it may be the host\'s cut) is skipped, never
   for (const n of [4096, 4010]) expect((await rotate(b, long(n))).skip).toMatch(/4096-message cap/)
   expect((await rotate(b, long(3990))).messages).toBeDefined()
 })
+
+const t3Notes = () => notes.filter((n) => n.startsWith('t3.compaction/v1 ')).map((n) => JSON.parse(n.slice('t3.compaction/v1 '.length)))
+
+test('reporting: a stream-json rotation logs one applied line with the trigger and the message counts; a dry run logs a deferral', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  await say($, 'Remember to run the linter.')
+  await command($, 'rotate dry')
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  await rotate(b, b.messages, true)
+  expect(t3Notes()).toEqual([{ v: 1, details: { trigger: { kind: 'plugin', name: 'jev-compaction' }, outcome: 'deferred', reason: 'rotation dry run, nothing applied' } }])
+})
+
+test('reporting: an applied stream-json rotation logs one line with outcome applied', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  await say($, 'Remember to run the linter.')
+  await command($, 'rotate')
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  const out = (await rotate(b, b.messages)).messages!
+  expect(t3Notes()).toEqual([{ v: 1, details: { trigger: { kind: 'plugin', name: 'jev-compaction' }, outcome: 'applied', messages: { before: b.messages.length, after: out.length } } }])
+})
+
+test('reporting: an interactive rotation logs no t3.compaction/v1 line', async ($, on) => {
+  const b = await boot($, on)
+  await say($, 'Remember to run the linter.')
+  await command($, 'rotate')
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  await rotate(b, b.messages)
+  expect(notes.some((n) => n.startsWith('jev-compaction: rotated'))).toBe(true)
+  expect(t3Notes()).toEqual([])
+})

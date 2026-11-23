@@ -25,6 +25,8 @@ type Setup = {
   headless?: boolean
   // tokens outside the `Messages` row of the host's breakdown; absent, no breakdown
   fixed?: number
+  // the host fails to write a t3.compaction/v1 line
+  failReport?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -87,6 +89,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('ui.log', (_$: any, e: any) => {
+    if (setup.failReport && e.text.startsWith('t3.compaction/v1 ')) throw new Error('log failed')
     logs.push(e.text)
     return { value: undefined }
   })
@@ -741,4 +744,98 @@ test('compaction: state and questions sent to Jev have secrets masked', async ($
   await $.session.compact({ trigger: 'plugin', messages } as never)
   expect(requests.length).toBeGreaterThan(0)
   expect(JSON.stringify(requests.map((r) => r.body))).not.toMatch(/p_abcdefghijklmnopqrstuvwx|abcdef1234567890abcdef/)
+})
+
+const T3 = 't3.compaction/v1 '
+const t3Lines = (logs: string[]) => logs.filter((l) => l.startsWith(T3))
+const t3Payload = (line: string) => JSON.parse(line.slice(T3.length)) as { v: number; tokensBefore?: number; tokensAfter?: number; details?: Record<string, any> }
+const numbersIn = (value: unknown): number[] => (typeof value === 'number' ? [value] : value && typeof value === 'object' ? Object.values(value).flatMap(numbersIn) : [])
+
+test('reporting: an applied compaction logs one t3.compaction/v1 line with the counts, and the human line stays', async ($, on) => {
+  const { logs, toasts } = await boot($, on, { p: 0, headless: true })
+  const r = await compact($, 'plugin')
+  expect(isBuiltin(r)).toBe(false)
+  const lines = t3Lines(logs)
+  expect(lines.length).toBe(1)
+  const payload = t3Payload(lines[0]!)
+  expect(payload.v).toBe(1)
+  expect(payload.tokensBefore).toBe(450_000)
+  expect(payload.tokensAfter).toBeLessThan(450_000)
+  expect(payload.details).toMatchObject({
+    trigger: { kind: 'plugin', name: 'jev-compaction' },
+    outcome: 'applied',
+    messages: { before: 31, after: 8 },
+    tools: { kept: 0, truncated: 0, dropped: 12 },
+  })
+  expect(payload.details!['reason']).toBeUndefined()
+  expect(Object.keys(payload.details!['texts']).sort()).toEqual(['abridged', 'kept', 'stubbed'])
+  expect(typeof payload.details!['requests']).toBe('number')
+  expect(lines[0]!.includes('\n')).toBe(false)
+  expect(logs.some((l) => l.startsWith('jev-compaction: compacted'))).toBe(true)
+  expect(toasts.some((l) => l.startsWith('jev-compaction: compacted'))).toBe(true)
+})
+
+test('reporting: a deferral logs one line with outcome deferred and the reason, and no pruning counts', { options: OLD }, async ($, on) => {
+  const { logs } = await boot($, on, { status: 500, headless: true })
+  const r = await compact($, 'plugin')
+  expect(r.skip).toMatch(/Jev request failed \(500\)/)
+  const lines = t3Lines(logs)
+  expect(lines.length).toBe(1)
+  const payload = t3Payload(lines[0]!)
+  expect(payload.v).toBe(1)
+  expect(payload.tokensBefore).toBe(450_000)
+  expect(payload.tokensAfter).toBeUndefined()
+  expect(payload.details).toMatchObject({ trigger: { kind: 'plugin', name: 'jev-compaction' }, outcome: 'deferred', reason: 'Jev request failed (500)' })
+  expect(payload.details!['tools']).toBeUndefined()
+  expect(payload.details!['messages']).toBeUndefined()
+  expect(lines[0]).not.toContain('jev-compaction deferred:')
+})
+
+test('reporting: a handover to the built-in summary logs one line with outcome fallback and the native trigger', { options: OLD }, async ($, on) => {
+  const { logs } = await boot($, on, { status: 500, headless: true })
+  expect(isBuiltin(await compact($, 'auto'))).toBe(true)
+  const lines = t3Lines(logs)
+  expect(lines.length).toBe(1)
+  expect(t3Payload(lines[0]!).details).toEqual({ trigger: { kind: 'auto' }, outcome: 'fallback', reason: 'Jev request failed (500)' })
+})
+
+test('reporting: a missing Jev credential is reported by name only, without the human prefix', { options: OLD }, async ($, on) => {
+  const { logs } = await boot($, on, { env: { HOME: '/home/u' }, headless: true })
+  expect((await compact($, 'plugin')).skip).toContain('no Jev API key')
+  const lines = t3Lines(logs)
+  expect(lines.length).toBe(1)
+  expect(t3Payload(lines[0]!).details).toEqual({ trigger: { kind: 'plugin', name: 'jev-compaction' }, outcome: 'deferred', reason: 'no Jev API key (environment or key file)' })
+})
+
+test('reporting: a manual compaction that the mod did not start keeps the manual trigger', { options: OLD }, async ($, on) => {
+  const { logs } = await boot($, on, { status: 500, headless: true })
+  await compact($, 'manual')
+  expect(t3Payload(t3Lines(logs)[0]!).details!['trigger']).toEqual({ kind: 'manual' })
+})
+
+test('reporting: an interactive session logs no t3.compaction/v1 line', async ($, on) => {
+  const { logs } = await boot($, on, { p: 0 })
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
+  expect(logs.some((l) => l.startsWith('jev-compaction: compacted'))).toBe(true)
+  expect(t3Lines(logs)).toEqual([])
+})
+
+test('reporting: every number is a whole number of 0 or more and the line stays under 4000 characters', async ($, on) => {
+  const { logs } = await boot($, on, { p: 0, headless: true })
+  await compact($, 'plugin')
+  const [line] = t3Lines(logs)
+  const numbers = numbersIn(t3Payload(line!))
+  expect(numbers.length).toBeGreaterThan(8)
+  for (const n of numbers) {
+    expect(Number.isInteger(n)).toBe(true)
+    expect(n).toBeGreaterThanOrEqual(0)
+  }
+  expect(line!.length).toBeLessThan(4000)
+})
+
+test('reporting: a failing ui.log never changes the compaction', async ($, on) => {
+  const { logs } = await boot($, on, { p: 0, headless: true, failReport: true })
+  expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
+  expect(logs.some((l) => l.startsWith('jev-compaction: compacted'))).toBe(true)
+  expect(t3Lines(logs)).toEqual([])
 })
