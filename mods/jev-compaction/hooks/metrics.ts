@@ -17,15 +17,17 @@
  *   jev_compaction_deferred_total{host,process,reason}              compactions that were not applied and left the conversation alone
  *   jev_compaction_updated_timestamp_seconds{host,process}          gauge, when this process last wrote
  *
- * Cardinality: a process starts with 15 series (4 request statuses, 5 failures, 5 deferral reasons, the timestamp). A status that is not
- * in that list adds its series when it first happens, and at most `MAX_KEYS` distinct keys exist in one table. So each process adds 15
- * to about 35 series for good in VictoriaMetrics, and 15 on a quiet day. At 100 to 300 processes a day on a host that is 1500 to 4500
+ * Cardinality: a process starts with 16 series (4 request statuses, 5 failures, 6 deferral reasons, the timestamp). A status that is not
+ * in that list adds its series when it first happens, and at most `MAX_KEYS` distinct keys exist in one table. So each process adds 16
+ * to about 36 series for good in VictoriaMetrics, and 16 on a quiet day. At 100 to 300 processes a day on a host that is 1600 to 4800
  * new series a day (`count(count by (host, process) (jev_compaction_updated_timestamp_seconds))` after a week shows the real figure).
  */
 export const FILE_PREFIX = 'jev_compaction_'
 export const DEFAULT_METRICS_DIR = '/var/lib/node-exporter/textfile-collector'
 /** A file that nothing wrote for this long belongs to an ended process, whatever `/proc` says: it is removed. Longer than the 30 minute alert window. */
 export const MAX_AGE_SECONDS = 24 * 3600
+/** How often a live process writes its file again, whatever happened, so its file is never older than the 24 hour limit. */
+export const HEARTBEAT_SECONDS = 3600
 /** How often a process looks for old files. */
 export const PRUNE_EVERY_SECONDS = 3600
 /** Most distinct keys in one counter table: a status or an error type Jev invents cannot grow the series without bound. */
@@ -49,7 +51,7 @@ export type Counts = {
 
 const KNOWN_STATUSES = ['200', '400', 'timeout', 'other']
 const KNOWN_FAILURES = ['400|max_tokens_exceeded', '400|api_usage_error', '400|none', 'timeout|none', 'other|none']
-const KNOWN_DEFERRED = ['frees_too_little', 'jev_error', 'no_key', 'transcript_cut', 'rotation_skipped']
+const KNOWN_DEFERRED = ['frees_too_little', 'jev_error', 'no_key', 'transcript_cut', 'boundary_unknown', 'rotation_skipped']
 
 export function emptyCounts(): Counts {
   return {

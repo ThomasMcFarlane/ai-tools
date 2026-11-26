@@ -66,8 +66,8 @@ test('every usual series starts at 0, carries host and process, and the timestam
   expect(lines).toContain('jev_compaction_deferred_total{host="pod-a",process="4242-987654",reason="transcript_cut"} 0')
   expect(lines).toContain('jev_compaction_deferred_total{host="pod-a",process="4242-987654",reason="rotation_skipped"} 0')
   expect(lines.at(-1)).toBe(`jev_compaction_updated_timestamp_seconds{host="pod-a",process="4242-987654"} ${NOW}`)
-  // a process starts with 15 series: the cardinality figure in the header of metrics.ts
-  expect(lines.length).toBe(15)
+  // a process starts with 16 series: the cardinality figure in the header of metrics.ts
+  expect(lines.length).toBe(16)
 })
 
 test('every # TYPE line stands before its series and appears once', () => {

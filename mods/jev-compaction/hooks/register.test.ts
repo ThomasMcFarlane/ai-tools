@@ -48,6 +48,10 @@ type Setup = {
   // the host's rows are an append-only history (`$.session.messages()`): a compaction's output is appended after the old rows, and the
   // next `/compact` is given the output and what came after it. The tests add rows with `hostRows.push(...)`.
   appendOnly?: boolean
+  // answer 400 to every request that is made while the host's `/compact` runs (inside the hook), and only to those
+  failInCommand?: boolean
+  // rows the host appends after a compaction's output, which the hook never returned (attachments)
+  extraAfterCompact?: Message[]
 }
 
 const KEY = 'k-secret-123'
@@ -68,7 +72,8 @@ function transcript(calls = 12): Message[] {
 }
 
 async function boot($: any, on: any, setup: Setup = {}) {
-  const requests: { url: string; headers: Record<string, string>; body: any }[] = []
+  const requests: { url: string; headers: Record<string, string>; body: any; inCommand: boolean }[] = []
+  let inCommand = false
   const toasts: string[] = []
   const logs: string[] = []
   const compactCalls: any[] = []
@@ -78,6 +83,13 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const stored = { get: () => rows.appended().map((r) => r.message as any) }
   mock.env(on, setup.env ?? { JEV_COMPACTION_API_KEY: KEY, HOME: '/home/u' })
   const written: Record<string, string> = {}
+  // The plugin's $.state, held here so a test reads and sets it.
+  const state: Record<string, unknown> = {}
+  on('state.get', (_$: any, e: any) => ({ value: { value: state[`${e.plugin}/${e.key}`], version: 0 } as never }))
+  on('state.set', (_$: any, e: any) => {
+    state[`${e.plugin}/${e.key}`] = JSON.parse(JSON.stringify(e.value))
+    return { value: { isSet: true, version: 1 } as never }
+  })
   const commands: string[][] = []
   const DIR = '/var/lib/node-exporter/textfile-collector'
   const dirFiles = { ...(setup.dirFiles ?? {}) }
@@ -95,7 +107,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('fs.write', (_$: any, e: any) => {
     if (setup.failMetricsWrite && e.path.startsWith(`${DIR}/`)) throw new Error('EACCES')
     written[e.path] = String(e.text ?? '')
-    if (e.path.startsWith(`${DIR}/`)) dirFiles[e.path.slice(DIR.length + 1)] = { mtimeMs: Date.now(), size: written[e.path].length }
+    if (e.path.startsWith(`${DIR}/`)) dirFiles[e.path.slice(DIR.length + 1)] = { mtimeMs: Date.now(), size: (written[e.path] ?? '').length }
     return { value: undefined }
   })
   on('fs.list', (_$: any, e: any) => ({
@@ -113,7 +125,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
     } else if (cmd === 'mv' && paths.length === 2) {
       written[paths[1]!] = written[paths[0]!] ?? ''
       delete written[paths[0]!]
-      dirFiles[name(paths[1]!)] = { mtimeMs: Date.now(), size: written[paths[1]!].length }
+      dirFiles[name(paths[1]!)] = { mtimeMs: Date.now(), size: (written[paths[1]!] ?? '').length }
       delete dirFiles[name(paths[0]!)]
     } else if (cmd === 'rm') {
       for (const path of paths) {
@@ -135,13 +147,14 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const hostRows: Message[] = [...((setup.rows ?? []) as Message[])]
   let listFrom = 0
   on('session.messages', (_$: any, e: any) => ({
-    value: (e.as === 'api' ? (setup.api ?? []) : setup.appendOnly ? hostRows.map((m) => ({ ...m, handle: undefined })) : (setup.rows ?? [])) as never,
+    value: (e.as === 'api' ? (setup.api ?? []) : setup.appendOnly ? hostRows.slice(-4096).map((m) => ({ ...m, handle: undefined })) : (setup.rows ?? [])) as never,
   }))
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
   on('http.fetch', (_$: any, e: any) => {
     if (setup.hang) return new Promise(() => undefined) as never
     const body = JSON.parse(e.init.body)
-    requests.push({ url: e.url, headers: e.init.headers, body })
+    requests.push({ url: e.url, headers: e.init.headers, body, inCommand })
+    if (setup.failInCommand && inCommand) return { value: { status: 400, ok: false, headers: {}, text: JSON.stringify({ detail: { error_type: 'api_usage_error' } }) } }
     if (setup.failFirst !== undefined && requests.length <= setup.failFirst) return { value: { status: 400, ok: false, headers: {}, text: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } }
     if (setup.maxChars !== undefined && e.init.body.length > setup.maxChars) return { value: { status: 400, ok: false, headers: {}, text: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } }
     if (setup.body !== undefined) return { value: { status: setup.status ?? 400, ok: false, headers: {}, text: setup.body } }
@@ -170,21 +183,26 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   // The host runs `/compact` in an SDK session: the session.compact chain with trigger `manual`, this plugin's hook included.
   on('command.run', { command: 'compact' }, async (_$: any, e: any) => {
-    if (setup.appendOnly) {
-      const result = await compact($, 'manual', { messages: hostRows.slice(listFrom) })
-      ran.push({ args: e.args, result })
-      if (result.messages) {
-        listFrom = hostRows.length
-        hostRows.push(...result.messages)
+    inCommand = true
+    try {
+      if (setup.appendOnly) {
+        const result = await compact($, 'manual', { messages: hostRows.slice(listFrom) })
+        ran.push({ args: e.args, result })
+        if (result.messages) {
+          listFrom = hostRows.length
+          hostRows.push(...result.messages, ...(setup.extraAfterCompact ?? []))
+        }
+        return {}
       }
+      ran.push({ args: e.args, result: await compact($, 'manual') })
       return {}
+    } finally {
+      inCommand = false
     }
-    ran.push({ args: e.args, result: await compact($, 'manual') })
-    return {}
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
-  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written, commands, dirFiles, hostRows }
+  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written, commands, dirFiles, hostRows, state }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -1123,13 +1141,26 @@ test('metrics: where rm is not possible an old file is emptied, so its series go
   expect(written[`${DIR}/jev_compaction_pod-b_17-5.prom`]).toBe('')
 })
 
-test('metrics: a round of parallel failures writes the file far fewer times than it has requests', { options: OLD }, async ($, on) => {
-  const { commands } = await boot($, on, { status: 400, body: TOO_BIG, metrics: true })
-  await compact($, 'plugin')
+test('metrics: six requests that finish together write the file at most 3 times (2 with the debounce, 5 without it)', { options: OLD }, async ($, on) => {
+  const { commands, requests } = await boot($, on, { p: 0, metrics: true })
+  await Promise.all(Array.from({ length: 6 }, () => compact($, 'plugin')))
   await flush()
+  expect(requests.length).toBe(6)
   const moves = commands.filter((c) => c[0] === 'mv').length
   expect(moves).toBeGreaterThanOrEqual(2)
-  expect(moves).toBeLessThanOrEqual(8)
+  expect(moves).toBeLessThanOrEqual(3)
+})
+
+test('metrics: a live process writes its file again every hour, so it never reaches the 24 hour removal', { options: OLD }, async ($, on) => {
+  const { commands, clock } = await boot($, on, { metrics: true, headless: true })
+  await flush()
+  const before = commands.filter((c) => c[0] === 'mv').length
+  await clock.advance(3_600_000)
+  await flush()
+  expect(commands.filter((c) => c[0] === 'mv').length).toBe(before + 1)
+  await clock.advance(3_600_000)
+  await flush()
+  expect(commands.filter((c) => c[0] === 'mv').length).toBe(before + 2)
 })
 
 test('metrics: no textfile directory (a pod without the mount) writes nothing and changes nothing', { options: OLD }, async ($, on) => {
@@ -1268,4 +1299,155 @@ test('stream-json: a deferral between two compactions leaves the boundary where 
   expect(ran.length).toBe(2)
   expect(ran[1]!.result.messages).toBeDefined()
   expect(logs.filter((l) => l.includes('differs from the host')).length).toBe(0)
+})
+
+// --- the hook never ends a turn: it judges the host's list from the kept scores, with no new request ---
+
+/** Small tool calls (300 characters each), as rows: many of them fit under the host cap. */
+const smallCalls = (from: number, n: number): Message[] =>
+  Array.from({ length: n }, (_, i) => from + i).flatMap((i): Message[] => {
+    const text = String(i % 10).repeat(300)
+    return [
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: `s${i}`, tool: 'Read', input: { file_path: `/src/s${i}.ts` }, text }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `s${i}`, text, isError: false }] },
+    ]
+  })
+
+const BOUNDARY = 'jev-compaction/boundary'
+const deferredCount = (written: Record<string, string>, reason: string) => {
+  const text = Object.values(written).join('\n')
+  const hit = new RegExp(`reason="${reason}"\\} (\\d+)`).exec(text)
+  return hit ? Number(hit[1]) : 0
+}
+
+test('stream-json: scores near a threshold and a refused request inside /compact: the hook judges from the kept scores, asks nothing and never skips', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0.45, appendOnly: true, headless: true, rows: transcript() }
+  const { ran, usage, hostRows, requests } = await boot($, on, setup)
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran[0]!.result.messages).toBeDefined()
+  // the context is small again after the compaction, and grows back
+  usage.tokens = 100_000
+  await $.turn.complete(reply())
+  setup.failInCommand = true
+  hostRows.push(...moreCalls(100, 9))
+  usage.tokens = 470_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(2)
+  expect(ran[1]!.result.skip).toBeUndefined()
+  expect(ran[1]!.result.messages).toBeDefined()
+  // the check asked (the scores were near a threshold); the hook asked nothing, so the refusal never reached it
+  expect(requests.some((r) => !r.inCommand)).toBe(true)
+  expect(requests.filter((r) => r.inCommand)).toEqual([])
+})
+
+test('stream-json: the compaction the hook applies keeps the engine handles of the host list, which the rows do not carry', { options: OLD }, async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { p: 0, appendOnly: true })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  // the check ran on rows (no handles); the hook judged its own list again, so the first message is the engine's own
+  expect(ran[0]!.result.messages![0]!.handle).toBe('h0')
+})
+
+test('stream-json: a hook that cannot judge the list again falls back to the host summary, never to a skip', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: transcript() }
+  const { ran, usage, hostRows, toasts } = await boot($, on, setup)
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  // the host list holds one message more than the check saw, and the new content is too little to free anything
+  hostRows.push({ role: 'user', text: 'one more thing', toolUses: [] }, { role: 'assistant', text: 'ok', toolUses: [] })
+  usage.tokens = 470_000
+  await $.turn.complete(reply())
+  expect(ran.every((r) => r.result.skip === undefined)).toBe(true)
+  expect(toasts.some((x) => x.includes('Not compacted'))).toBe(false)
+})
+
+test('stream-json: a long session still compacts below the hard limit: the 4096 cap counts the /compact list, not the whole history', { options: OLD }, async ($, on) => {
+  const { ran, usage, hostRows, logs } = await bootHeadless($, on, { p: 0, appendOnly: true, rows: [...transcript(), ...smallCalls(0, 1900)] })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.messages).toBeDefined()
+  usage.tokens = 100_000
+  await $.turn.complete(reply())
+  // 300 rows and a few big calls later the history is past 4096 rows (the host shows the newest 4096), the list is a few hundred
+  hostRows.push(...Array.from({ length: 150 }, (_, i): Message[] => [{ role: 'user', text: `q ${i}`, toolUses: [] }, { role: 'assistant', text: `a ${i}`, toolUses: [] }]).flat(), ...moreCalls(100, 9))
+  expect(hostRows.length).toBeGreaterThan(4096)
+  usage.tokens = 470_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(2)
+  expect(ran[1]!.result.messages).toBeDefined()
+  expect(logs.some((l) => l.includes('may be a cut'))).toBe(false)
+})
+
+test('stream-json: rows the host adds after the output (attachments) are part of the list, found by content, and the hook list equals the check', { options: OLD }, async ($, on) => {
+  const extra: Message = { role: 'user', text: '[host attachment]', toolUses: [] }
+  const { ran, usage, hostRows, logs } = await bootHeadless($, on, { p: 0, appendOnly: true, extraAfterCompact: [extra] })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  usage.tokens = 100_000
+  await $.turn.complete(reply())
+  hostRows.push(...moreCalls(100, 9))
+  usage.tokens = 470_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(2)
+  expect(ran[1]!.result.messages).toBeDefined()
+  expect(logs.some((l) => l.includes('differs from the host'))).toBe(false)
+  expect(logs.filter((l) => l.includes('equals the host')).length).toBe(2)
+})
+
+test('stream-json: a compaction whose output is not known runs no periodic /compact below the hard limit, and runs it at the hard limit', { options: OLD }, async ($, on) => {
+  const { ran, usage, requests, written, state } = await bootHeadless($, on, { p: 0, appendOnly: true, metrics: true })
+  state[BOUNDARY] = { known: false }
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  await flush()
+  expect(ran.length).toBe(0)
+  expect(requests.length).toBe(0)
+  expect(deferredCount(written, 'boundary_unknown')).toBe(1)
+  usage.tokens = 520_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+})
+
+test('stream-json: when the output stands nowhere in the rows (cut, or the host changed its text) no command runs below the hard limit', { options: OLD }, async ($, on) => {
+  const { ran, usage, logs, state } = await bootHeadless($, on, { p: 0, appendOnly: true })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  state[BOUNDARY] = { known: true, count: 3, first: 'user|5|other|', hash: 'x' }
+  usage.tokens = 100_000
+  await $.turn.complete(reply())
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(logs.some((l) => l.includes('the list the host would give /compact is not known'))).toBe(true)
+})
+
+test('stream-json: a hook that skips leaves the boundary where it was', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: transcript() }
+  const { ran, usage, state } = await boot($, on, setup)
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  const kept = state[BOUNDARY]
+  expect(kept).toMatchObject({ known: true })
+  // a plugin compaction through the hook (not the periodic command) while Jev fails: a skip below the hard limit
+  setup.status = 500
+  const fresh = transcript()
+  const r = await compact($, 'plugin', { messages: [fresh[0]!, ...moreCalls(500, 12), ...fresh.slice(-6)] })
+  expect(r.skip).toBeDefined()
+  expect(state[BOUNDARY]).toEqual(kept)
+})
+
+test('stream-json: a hook that throws leaves the boundary where it was', { options: OLD }, async ($, on) => {
+  let boom = false
+  const { ran, usage, state } = await bootHeadless($, on, { p: 0, appendOnly: true, core: () => { if (boom) throw new Error('boom'); return { messages: [BUILTIN] } } })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  const kept = state[BOUNDARY]
+  boom = true
+  await expect(compact($, 'manual', { instructions: 'x' })).rejects.toThrow()
+  expect(state[BOUNDARY]).toEqual(kept)
 })

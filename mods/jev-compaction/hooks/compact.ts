@@ -446,6 +446,8 @@ async function gather(messages: readonly Message[], ask: JevAsker, opts: Options
   const pending = [...toAsk, ...sentences]
   if (pending.length === 0) return g
   if (pending.length < (run.minQuestions ?? 0)) return g
+  // No request at all (the compaction is judged from remembered scores): the unscored items stay, and nothing is fitted or asked.
+  if (run.maxBatches === 0) return g
   const fitted = fitState(messages, calls, opts)
   g.stateTokens = fitted.tokens
   g.stateStage = fitted.stage

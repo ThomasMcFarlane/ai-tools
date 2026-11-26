@@ -10,10 +10,12 @@ import type { Config, Estimate, Verdict } from './policy'
 import { buildRotation, handoffFile, isRule, lastRotationOf, ledgerFromPrompt, ledgerFromRow, lineSplitter, parseHandover, promptsFile, REQUEST_MARKER, rotationDue, standingRules, unfinishedShells, verifyRotation } from './rotate'
 import type { LedgerEntry, RotationInput } from './rotate'
 import { goalFromMessages, truncate } from './state'
-import { DEFAULT_METRICS_DIR, PRUNE_EVERY_SECONDS, bumpCount, deferReason, emptyCounts, processId, pruneMetrics, writeMetrics } from './metrics'
+import { describeOutput, findBoundary, sameList, withHandles } from './boundary'
+import type { Boundary } from './boundary'
+import { DEFAULT_METRICS_DIR, HEARTBEAT_SECONDS, PRUNE_EVERY_SECONDS, bumpCount, deferReason, emptyCounts, processId, pruneMetrics, writeMetrics } from './metrics'
 import type { MetricsIo, ProcessId } from './metrics'
 import { head as cutHead } from './unicode'
-import type { CompactResult, Message, Protect } from './types'
+import type { CompactResult, JevAsker, Message, Protect } from './types'
 
 const SCORES = { plugin: 'jev-compaction', key: 'scores' } as const
 const STATS = { plugin: 'jev-compaction', key: 'stats' } as const
@@ -22,6 +24,7 @@ const ONE_SHOT = { plugin: 'jev-compaction', key: 'oneShot' } as const
 const FAILURES = { plugin: 'jev-compaction', key: 'failures' } as const
 const BUDGET = { plugin: 'jev-compaction', key: 'budget' } as const
 const GUARD = { plugin: 'jev-compaction', key: 'guard' } as const
+const BOUNDARY = { plugin: 'jev-compaction', key: 'boundary' } as const
 const SCALE = { plugin: 'jev-compaction', key: 'scale' } as const
 const LEDGER = { plugin: 'jev-compaction', key: 'ledger' } as const
 const ROTATION = { plugin: 'jev-compaction', key: 'rotation' } as const
@@ -253,6 +256,22 @@ async function flushMetrics($: EngineInterface): Promise<void> {
  * A write that is queued but has not begun covers every event that comes before it starts, so a round of parallel requests
  * writes the file once or twice, not once for each request.
  */
+/**
+ * The file is written again once an hour while the process lives, so an idle process never reaches the 24 hours after which others
+ * remove a file: only the files of ended processes do. Without it a day of silence would remove the file and the series would come back
+ * later with their old totals, which `increase()` can count as new.
+ */
+function heartbeat($: EngineInterface): void {
+  try {
+    $.clock.after(HEARTBEAT_SECONDS * 1000, () => {
+      track($, () => undefined)
+      heartbeat($)
+    })
+  } catch {
+    // no clock: no heartbeat
+  }
+}
+
 function track($: EngineInterface, change: (c: typeof counts) => void): void {
   try {
     change(counts)
@@ -352,7 +371,11 @@ async function budgeted($: EngineInterface): Promise<Config> {
   return { ...config, maxStateTokens: Math.floor(config.maxStateTokens * scale), maxRequestTokens: Math.floor(config.maxRequestTokens * scale) }
 }
 
-async function attempt($: EngineInterface, messages: Message[], key: string, tokens: number | undefined, window: number) {
+/**
+ * `reuseOnly`: ask Jev nothing. The compaction is judged from the scores that earlier requests left in the state, and what has no
+ * score stays as it is. It needs no key and cannot fail on a request.
+ */
+async function attempt($: EngineInterface, messages: Message[], key: string, tokens: number | undefined, window: number, reuseOnly = false) {
   const { value: memory = {} } = await $.state.get(SCORES)
   const protect = await protection($)
   const started = Date.now()
@@ -360,9 +383,12 @@ async function attempt($: EngineInterface, messages: Message[], key: string, tok
   // A round of requests runs in parallel with the same state, so they fail together: the budgets shrink once for the
   // round (and once for an attempt), not once for each request.
   let sawTooLarge = false
-  const ask = asker($, key, config.jevTimeoutMs, started, budgetMs, (err) => {
-    if (isTooLarge(err)) sawTooLarge = true
-  })
+  const noAsk: JevAsker = () => Promise.reject(new Error('Jev is not asked'))
+  const ask = reuseOnly
+    ? noAsk
+    : asker($, key, config.jevTimeoutMs, started, budgetMs, (err) => {
+        if (isTooLarge(err)) sawTooLarge = true
+      })
   let shrunk = false
   const shrinkOnce = async () => {
     sawTooLarge = false
@@ -374,7 +400,7 @@ async function attempt($: EngineInterface, messages: Message[], key: string, tok
   let result: CompactResult
   for (let tries = 0; ; tries++) {
     try {
-      result = await compact(messages, ask, await budgeted($), memory, { protect, stop })
+      result = await compact(messages, ask, await budgeted($), memory, { protect, stop, ...(reuseOnly ? { reuseAll: true, maxBatches: 0 } : {}) })
       // Some requests of the round were refused as too large, the others were not: the next compaction starts smaller.
       if (sawTooLarge) await shrinkOnce()
       break
@@ -386,7 +412,7 @@ async function attempt($: EngineInterface, messages: Message[], key: string, tok
     }
   }
   // An attempt with no size error wins back a quarter of what earlier errors took.
-  if (!shrunk) await growBudget($)
+  if (!shrunk && !reuseOnly) await growBudget($)
   await remember($, memory, result.scores)
   const { value: scale = DEFAULT_SCALE } = await $.state.get(SCALE)
   const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / CHARS_PER_TOKEN)
@@ -457,19 +483,23 @@ type Decision = {
   trigger: SessionCompactInput['trigger']
   /** What the report to T3 names as the trigger. */
   reported: T3Details['trigger']
+  /** It was `/jev-compact now`. */
+  now: boolean
 }
 
 /** Asks Jev about the transcript and judges the result. Never throws: a failure is a verdict (see `failure`). */
-async function decide($: EngineInterface, messages: Message[], trigger: SessionCompactInput['trigger'], now: boolean): Promise<Decision> {
+async function decide($: EngineInterface, messages: Message[], trigger: SessionCompactInput['trigger'], now: boolean, reuseOnly = false): Promise<Decision> {
   let key: string | undefined
   let verdict: Verdict
   let usage: Decision['usage']
   let done: Decision['done']
   try {
     usage = (await $.session.usage()).context
-    key = await resolveKey($)
-    if (!key) throw new Error('no Jev API key (environment or key file)')
-    done = await attempt($, messages, key, usage.tokens, usage.window)
+    if (!reuseOnly) {
+      key = await resolveKey($)
+      if (!key) throw new Error('no Jev API key (environment or key file)')
+    }
+    done = await attempt($, messages, key ?? '', usage.tokens, usage.window, reuseOnly)
     verdict = judge({ trigger, isNow: now, ...done, minFreedTokens: config.minFreedTokens })
   } catch (err) {
     const text = redact(message(err), key)
@@ -477,7 +507,7 @@ async function decide($: EngineInterface, messages: Message[], trigger: SessionC
     verdict = failure(now ? 'plugin' : trigger, text, usage?.tokens, usage && thresholdsFor(config, usage.window).hard)
   }
   const reported = now || trigger === 'plugin' ? PLUGIN_TRIGGER : trigger === 'auto' || trigger === 'manual' ? { kind: trigger } : undefined
-  return { verdict, done, usage, trigger, reported }
+  return { verdict, done, usage, trigger, reported, now }
 }
 
 /** Reports a decision and does its bookkeeping. The answer is the hook's: apply, skip, or the host's own summary (`next`). */
@@ -511,44 +541,35 @@ async function settle($: EngineInterface, d: Decision, next: () => Promise<Sessi
 
 // What compactBetweenTurns decided before it ran `/compact`, for the hook to use: the compaction that follows applies it
 // or hands over to the host's summary. Cleared when the hook has read it, or when the command ends.
-let prepared: { decision: Decision; messages: Message[]; rebuilt: boolean } | undefined
-// Where the newest compaction left the host's rows. `$.session.messages()` is the whole history: the rows from before a compaction stay,
-// and the compaction's output is appended after them. The list a later `/compact` is given starts at that output (Claude Code 2.1.325,
-// measured: output of 8 rows after 9 old ones, 7 rows later, and the hook was given 15). So the list the next compaction will see is the
-// output, then the rows that came after it. `rows` is how many rows there were when the compaction ran.
-let boundary: { rows: number; result: Message[] } | undefined
+let prepared: { decision: Decision; messages: Message[] } | undefined
 // The rotation built and verified before `/compact` ran, with the transcript it was built on.
-let preparedRotation: { messages: Message[]; result: SessionCompactResult; used: boolean; rebuilt: boolean } | undefined
-
-const sameTranscript = (a: readonly Message[], b: readonly Message[]) => a.length === b.length && a.at(-1)?.text === b.at(-1)?.text && a[0]?.text === b[0]?.text
+let preparedRotation: { messages: Message[]; result: SessionCompactResult; used: boolean } | undefined
 
 /**
- * The list the host gives the next `/compact`, rebuilt from the rows: the output of the newest compaction, then the rows after it.
- * The rows themselves when no compaction was seen, when the list may be a cut, or when the rows do not fit what was recorded.
+ * The list the host gives the next `/compact`. `rows`: no compaction was seen, so the rows are the list. `sliced`: from the output of the
+ * newest compaction (found by its content, see `boundary.ts`), then the rows after it. `unknown`: a compaction ran and its output is not
+ * in the rows (they were cut, the host changed the text, or the host answered no messages), so the list cannot be told.
  */
-export function sinceBoundary(rows: Message[]): { messages: Message[]; rebuilt: boolean } {
-  if (!boundary || rows.length >= TRANSCRIPT_CAP - 96) return { messages: rows, rebuilt: false }
-  const from = boundary.rows + boundary.result.length
-  if (rows.length < from) return { messages: rows, rebuilt: false }
-  // The engine's handles of an older list mean nothing to the next one.
-  return { messages: [...boundary.result.map((m) => ({ ...m, handle: undefined })), ...rows.slice(from)], rebuilt: true }
+export type HostList = { kind: 'rows' | 'sliced'; messages: Message[] } | { kind: 'unknown' }
+
+export async function hostList($: EngineInterface, rows: Message[]): Promise<HostList> {
+  const boundary: Boundary | undefined = await $.state.get(BOUNDARY).then((r) => r.value as Boundary | undefined, () => undefined)
+  if (!boundary) return { kind: 'rows', messages: rows }
+  const found = findBoundary(rows, boundary)
+  return found ? { kind: 'sliced', messages: found.messages } : { kind: 'unknown' }
 }
 
-/** Keeps track of where each compaction that stands leaves the rows (see `boundary`). A skip leaves it as it was. */
+/** Keeps where each compaction that stands left its output (see `boundary.ts`). A skip leaves it as it was, and so does a throw. */
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
   if (e.agentId !== undefined || e.trigger === 'precompute') return judgeCompact($, e, next)
-  const before = boundary
-  const rows = await $.session.messages().then((r) => r.length, () => undefined)
-  boundary = undefined
-  let out: Awaited<ReturnType<typeof judgeCompact>>
-  try {
-    out = await judgeCompact($, e, next)
-  } catch (err) {
-    boundary = before
-    throw err
+  const out = await judgeCompact($, e, next)
+  if (!out?.skip) {
+    try {
+      await $.state.set(BOUNDARY, out?.messages && out.messages.length > 0 ? describeOutput(out.messages as Message[]) : { known: false })
+    } catch {
+      // without it the next check finds no output and waits
+    }
   }
-  if (out?.skip) boundary = before
-  else if (out?.messages && rows !== undefined) boundary = { rows, result: [...out.messages] as Message[] }
   return out
 }
 
@@ -559,9 +580,10 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
       // Built and judged before the command ran (see rotationTurn): the same transcript gets the same answer, once.
       const p = preparedRotation
       preparedRotation = undefined
-      if (p && !p.rebuilt && sameTranscript(p.messages, e.messages)) {
+      if (p && sameList(p.messages, e.messages)) {
         p.used = true
-        return p.result
+        // The kept messages are the engine's own again: the pre-build ran on rows, which carry no handles.
+        return p.result.skip === undefined ? { ...p.result, messages: withHandles(p.result.messages as Message[], p.messages, e.messages as Message[]) } : p.result
       }
       return onRotate($, e, rotating.dry)
     }
@@ -590,12 +612,27 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
     track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
     return { skip: 'jev-compaction: transcript over 4096 messages' }
   }
-  // Decided before the command ran (see compactBetweenTurns), on this very transcript: use it, ask Jev no second time.
-  // A list rebuilt from the rows has no handles of this list, so it is only a check: the compaction is judged again here, on the
-  // real list, from the scores the check kept (no new request when the lists are the same).
-  if (ours && decided && sameTranscript(decided.messages, e.messages)) $.ui.log(`jev-compaction: the ${decided.rebuilt ? 'rebuilt list' : 'transcript'} equals the host's (${e.messages.length} messages)`)
-  if (ours && decided && !sameTranscript(decided.messages, e.messages)) $.ui.log(`jev-compaction: the ${decided.rebuilt ? 'rebuilt list' : 'transcript'} differs from the host's (${decided.messages.length} and ${e.messages.length} messages), judging again`)
-  const d = ours && decided && !decided.rebuilt && sameTranscript(decided.messages, e.messages) ? decided.decision : await decide($, e.messages, trigger, now)
+  // Judged before the command ran (see compactBetweenTurns), and the command ran because the answer was to apply. The hook judges the
+  // host's own list again from the scores that check kept: no request, so no failure and no changed answer, and the kept messages
+  // carry the engine's handles. It never returns a skip here: the host prints "Not compacted" for one, and in a T3 Code session that
+  // line would answer whatever started the turn.
+  if (ours && decided) {
+    const same = sameList(decided.messages, e.messages)
+    $.ui.log(
+      same
+        ? `jev-compaction: the checked list equals the host's (${e.messages.length} messages)`
+        : `jev-compaction: the checked list differs from the host's (${decided.messages.length} and ${e.messages.length} messages), judging again from the kept scores`,
+    )
+    const judged = await decide($, e.messages as Message[], trigger, decided.decision.now, true)
+    // The requests were the check's: the totals count them with the compaction they paid for.
+    const asked = decided.decision.done?.result.stats.requests ?? 0
+    const again: Decision = judged.done ? { ...judged, done: { ...judged.done, result: { ...judged.done.result, stats: { ...judged.done.result.stats, requests: asked } } } } : judged
+    if (again.verdict.act === 'apply') return settle($, again, () => next(e))
+    const why = again.verdict.reason
+    $.ui.log(`jev-compaction: the host's list could not be judged again (${why}); the host's own summary runs, no deferral`)
+    return settle($, { ...again, verdict: { act: 'next', reason: why } }, () => next(e))
+  }
+  const d = await decide($, e.messages as Message[], trigger, now)
   return settle($, d, () => next(e))
 }
 
@@ -634,19 +671,32 @@ async function compactBetweenTurns($: EngineInterface, periodic = false): Promis
 async function preflight($: EngineInterface): Promise<{ result: SessionCompactResult | undefined } | undefined> {
   const now = isNow && Date.now() - nowAt < NOW_VALID_MS
   isNow = false
-  const messages = await $.session.messages()
-  // `$.session.messages()` is the newest 4096 only, so a list this long may be a cut of a longer one that the hook then refuses.
-  if (mayBeCut(messages.length) || messages.length >= TRANSCRIPT_CAP) {
+  const rows = await $.session.messages()
+  const list = await hostList($, rows)
+  const atHardLimit = async () => {
     const usage = await $.session.usage().then((u) => u.context, () => undefined)
-    if (usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard) return undefined
-    $.ui.log(`jev-compaction: no compaction now, the host list of ${messages.length} messages may be a cut of a longer one`)
+    return usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard
+  }
+  if (list.kind === 'unknown') {
+    // The output of the last compaction is not in the rows, so the list the host would give `/compact` is not known: judging the rows would
+    // judge another list. At the hard limit the command runs and the hook falls back to the host's summary.
+    if (await atHardLimit()) return undefined
+    $.ui.log('jev-compaction: no compaction now, the list the host would give /compact is not known (the output of the last compaction is not in the rows)')
+    track($, (c) => bumpCount(c.deferred, 'boundary_unknown'))
+    return { result: { skip: 'jev-compaction: the compaction list is not known' } }
+  }
+  // `$.session.messages()` is the newest 4096 only, so rows this long may be a cut of a longer list that the hook then refuses. A list found
+  // from the output of a compaction starts at a row we know, so it is whole: only its own length counts (the hook refuses 4096 or more).
+  const cut = list.kind === 'rows' ? mayBeCut(rows.length) || rows.length >= TRANSCRIPT_CAP : list.messages.length >= TRANSCRIPT_CAP
+  if (cut) {
+    if (await atHardLimit()) return undefined
+    $.ui.log(`jev-compaction: no compaction now, the host list of ${list.messages.length} messages may be a cut of a longer one`)
     track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
     return { result: { skip: 'jev-compaction: transcript over 4096 messages' } }
   }
-  const list = sinceBoundary(messages)
   const decision = await decide($, list.messages, 'plugin', now)
   if (decision.verdict.act === 'skip') return { result: await settle($, decision, () => undefined) }
-  prepared = { decision, messages: list.messages, rebuilt: list.rebuilt }
+  prepared = { decision, messages: list.messages }
   return undefined
 }
 
@@ -1078,19 +1128,26 @@ async function rotationTurn($: EngineInterface, tokens: number | undefined): Pro
         else {
           // The host prints "Not compacted" for a skip, and that line answers whatever started the turn. So the rotation is
           // built and verified here, from the host's list, and `/compact` runs only when the result applies.
-          const list = sinceBoundary(await $.session.messages())
-          const messages = list.messages
-          const built = await buildRotationResult($, { trigger: 'plugin', messages } as SessionCompactInput, dry)
-          if (built.result.skip) {
-            await built.report()
-            result = built.result
+          const list = await hostList($, await $.session.messages())
+          if (list.kind === 'unknown') {
+            track($, (c) => bumpCount(c.deferred, 'rotation_skipped'))
+            notify($, 'rotation skipped: the list the compaction would be given is not known')
+            await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: 'rotation skipped, the compaction list is not known' } })
+            result = { skip: 'jev-compaction: rotation skipped, the compaction list is not known' }
           } else {
-            const prepared = { messages, result: built.result, used: false, rebuilt: list.rebuilt }
-            preparedRotation = prepared
-            result = await compactBetweenTurns($)
-            // Said only now: the command ran and the hook answered with this very result. A hook that built its own (the transcript
-            // changed) has reported it already, and a command that failed reports nothing.
-            if (prepared.used && result && !result.skip) await built.report()
+            const messages = list.messages
+            const built = await buildRotationResult($, { trigger: 'plugin', messages } as SessionCompactInput, dry)
+            if (built.result.skip) {
+              await built.report()
+              result = built.result
+            } else {
+              const prepared = { messages, result: built.result, used: false }
+              preparedRotation = prepared
+              result = await compactBetweenTurns($)
+              // Said only now: the command ran and the hook answered with this very result. A hook that built its own (the transcript
+              // changed) has reported it already, and a command that failed reports nothing.
+              if (prepared.used && result && !result.skip) await built.report()
+            }
           }
         }
       } catch (err) {
@@ -1158,7 +1215,10 @@ export const register: Register = (on, options) => {
     }
     await $.state.set(ONE_SHOT, oneShot)
     // The file starts with every usual series at 0, so a first failure counts in `increase()`. A one-shot run never compacts: no series for it.
-    if (!oneShot) track($, () => undefined)
+    if (!oneShot) {
+      track($, () => undefined)
+      heartbeat($)
+    }
     $.ui.log(`jev-compaction: ${activeThresholds(config)}`)
     try {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now), show totals (stats), or rotate the session (rotate [dry])', argumentHint: 'now | stats | rotate [dry]' })

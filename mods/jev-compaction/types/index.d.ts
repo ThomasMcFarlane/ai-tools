@@ -63,6 +63,9 @@ declare module 'claude-code' {
       interactive: boolean
       // a one-shot `-p` run (non-interactive, no `--input-format stream-json`): no periodic compaction there
       oneShot: boolean
+      // where the newest compaction left its output in the host's rows (count, a key of its first message, a hash of all of them), or
+      // `{ known: false }` when the host answered no messages: the list the next `/compact` is given starts there
+      boundary: { known: true; count: number; first: string; hash: string } | { known: false }
       // every prompt of the person this session (since install, or backfilled from the transcript)
       ledger: JevCompactionLedgerEntry[]
       rotation: JevCompactionRotation

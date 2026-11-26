@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { describeOutput } from './boundary'
 import { onRotate } from './register'
 import type { Message } from './types'
 
@@ -58,6 +59,10 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const compactCalls: any[] = []
   // How often the host's `/compact` command ran: a skip made inside it prints "Not compacted" and can answer a whole turn.
   const commandRuns = { count: 0 }
+  const writes: string[] = []
+  // How often the rotation was built: each build lists the live agents.
+  const builds = { count: 0 }
+  const results: ({ messages?: Message[]; skip?: string } | undefined)[] = []
   const messages = conversation()
   // The plugin's $.state, held here so the phase-2 handler called by the test (whose $ has no state) reads it too.
   for (const key of Object.keys(state)) delete state[key]
@@ -80,6 +85,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: files[e.path] }
   })
   on('fs.write', (_$: any, e: any) => {
+    writes.push(e.path)
     if (!setup.dropWrites?.test(e.path)) files[e.path] = e.text
     return { value: undefined }
   })
@@ -89,7 +95,10 @@ async function boot($: any, on: any, setup: Setup = {}) {
     for (let i = 0; i < FIXTURE.length; i += 97) yield { stream: 'stdout', text: FIXTURE.slice(i, i + 97) }
     return { value: setup.grepEnd ?? { code: 0, signal: null } }
   })
-  on('agent.list', () => ({ value: (setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]) as never }))
+  on('agent.list', () => {
+    builds.count++
+    return { value: (setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]) as never }
+  })
   on('tool.register', (_$: any, e: any) => {
     registered.push(e.name)
     return { value: { tool: `mcp__jev-compaction__${e.name}` } }
@@ -116,13 +125,13 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('command.run', { command: 'compact' }, async () => {
     commandRuns.count++
     if (setup.commandFails) throw new Error('the host could not run /compact')
-    await $.session.compact({ trigger: 'manual', messages: setup.hookMessages ? setup.hookMessages(messages) : messages } as never)
+    results.push((await $.session.compact({ trigger: 'manual', messages: setup.hookMessages ? setup.hookMessages(messages) : messages } as never)) as never)
     return {}
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
   const agents = setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]
-  return { files, toasts, logs, submitted, registered, spawned, compactCalls, commandRuns, messages, clock, agents, dropWrites: setup.dropWrites }
+  return { files, toasts, logs, submitted, registered, spawned, compactCalls, commandRuns, messages, clock, agents, dropWrites: setup.dropWrites, writes, results, builds }
 }
 
 const user = (text: string): Message => ({ role: 'user', text, toolUses: [] })
@@ -612,4 +621,31 @@ test('stream-json: a gate failure text of 200 characters is cut on a character, 
   await say($, `${'b'.repeat(199)}😀 a typed prompt that the ledger never saw`)
   await rotateTurns($, 'rotate', b)
   expect(b.toasts.join('\n')).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+})
+
+// ---- stream-json: a list found from the output of the last compaction ----
+
+const BOUNDARY = 'jev-compaction/boundary'
+
+test('stream-json: a rotation on a list found from the last compaction is built once, and the result keeps the engine handles of the hook list', async ($, on) => {
+  const b = await boot($, on, { headless: true, hookMessages: (m) => m.slice(41).map((x) => ({ ...x, handle: `e-${x.handle}` })) })
+  state[BOUNDARY] = describeOutput(b.messages.slice(41, 45))
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  // the pre-build is the one the hook applies (the live agents are listed once, for one build), and the toast says applied once
+  expect(b.builds.count).toBe(1)
+  expect(rotatedToasts(b).length).toBe(1)
+  const result = b.results[0]!
+  expect(result.skip).toBeUndefined()
+  expect(result.messages![0]!.handle).toBe('e-a19')
+})
+
+test('stream-json: a rotation whose compaction list is not known runs no /compact and says so once', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  state[BOUNDARY] = { known: false }
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(0)
+  expect(b.toasts.join('\n')).toMatch(/rotation skipped: the list the compaction would be given is not known/)
+  expect(b.logs.filter((l) => l.startsWith('t3.compaction/v1 ') && l.includes('"outcome":"deferred"')).length).toBe(1)
+  expect(appliedLines(b)).toEqual([])
 })
