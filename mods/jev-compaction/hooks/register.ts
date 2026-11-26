@@ -594,6 +594,8 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
       // Turns that queued behind the command add rows at the end of the list, and nothing before them changes. The result built before the
       // command stands, and the new rows follow it: a rebuild here could skip (the longer list may lie in the cap band, see `mayBeCut`),
       // and a skip inside `/compact` prints "Not compacted", which in a T3 Code session answers whatever started the turn.
+      // The "applied" toast and T3 line come from the pre-built report: their counts (before, after, newest N of M) are for the list the
+      // rotation was built on and leave out these appended rows.
       if (p && p.result.skip === undefined && e.messages.length > p.messages.length && sameList(p.messages, e.messages.slice(0, p.messages.length))) {
         p.used = true
         const list = e.messages as Message[]
