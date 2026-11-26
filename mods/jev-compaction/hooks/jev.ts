@@ -1,4 +1,5 @@
 import { maskDeep } from './mask'
+import { wellFormedDeep } from './unicode'
 import type { JevAsker } from './types'
 
 export const SYSTEM_ONE_URL = 'https://api.typesafe.ai/v1/systemone'
@@ -13,8 +14,28 @@ export class JevError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** The `error_type` of Jev's error body, such as `max_tokens_exceeded`. */
+    readonly errorType?: string,
   ) {
     super(message)
+  }
+}
+
+/** The request is over Jev's input limit (about 32k tokens): a smaller state or batch is the only cure. */
+export const isTooLarge = (error: unknown) => error instanceof JevError && error.errorType === 'max_tokens_exceeded'
+
+const ERROR_TYPE = /^[a-z][a-z0-9_]{0,59}$/
+
+/** What Jev's error body says, safe to log: the `error_type` and a short `message`, never the request. */
+function errorDetail(text: string): { errorType?: string; message?: string } {
+  try {
+    const detail = (JSON.parse(text) as { detail?: unknown } | null)?.detail as { error_type?: unknown; message?: unknown } | undefined
+    if (!detail || typeof detail !== 'object') return {}
+    const errorType = typeof detail.error_type === 'string' && ERROR_TYPE.test(detail.error_type) ? detail.error_type : undefined
+    const message = typeof detail.message === 'string' ? detail.message.replace(/\s+/g, ' ').slice(0, 120) : undefined
+    return { errorType, message }
+  } catch {
+    return {}
   }
 }
 
@@ -23,13 +44,16 @@ export function buildRequest(apiKey: string, model: string, state: object, quest
     url: SYSTEM_ONE_URL,
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model, state: maskDeep(state), questions: maskDeep(questions) }),
+    body: JSON.stringify({ model, state: wellFormedDeep(maskDeep(state)), questions: wellFormedDeep(maskDeep(questions)) }),
   }
 }
 
 /** Validates a response body and returns the `noul` probability of every asked question. */
 export function parseResponse(status: number, ok: boolean, text: string, names: readonly string[]): Record<string, number> {
-  if (!ok) throw new JevError(`Jev request failed (${status})`, status)
+  if (!ok) {
+    const { errorType, message } = errorDetail(text)
+    throw new JevError(`Jev request failed (${status}${errorType ? `: ${errorType}` : ''}${message ? `, ${message}` : ''})`, status, errorType)
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(text)

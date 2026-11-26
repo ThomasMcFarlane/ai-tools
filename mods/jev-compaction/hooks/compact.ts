@@ -1,4 +1,5 @@
 // Ported from fast-jev-compaction (MIT): batching, decisions and rebuilding, extended to message text.
+import { head as cutHead, tail as cutTail } from './unicode'
 import { collectToolCalls, estimateTokens, fitState, hasNote, isPinned } from './state'
 import { SIGNAL_LINES, SIGNAL_MAX_CHARS, SENTENCE_MIN_CHARS, compressWords, dropSegments, pickDrops, planSentences, sentenceQuestion, sentencesNote, signalLines } from './squeeze'
 import type { SentencePlan } from './squeeze'
@@ -24,8 +25,8 @@ export const DEFAULT_OPTIONS: Options = {
   keepThreshold: 0.5,
   abridgeThreshold: 0.2,
   preserveRecentMessages: 6,
-  maxStateTokens: 25_000,
-  maxRequestTokens: 30_000,
+  maxStateTokens: 20_000,
+  maxRequestTokens: 24_000,
   truncateHeadChars: 300,
   textCompression: true,
   sentenceKeepThreshold: 0.35,
@@ -200,7 +201,7 @@ export function abridgeText(text: string, head: number, tail: number): string {
   const omitted = text.length - head - tail
   if (omitted <= ABRIDGE_SLACK) return text
   const signals = signalLines(text.slice(head, text.length - tail))
-  const out = `${text.slice(0, head)}\n${signals ? `${signals}\n` : ''}[… ${omitted} chars omitted by jev-compaction …]\n${text.slice(-tail)}`
+  const out = `${cutHead(text, head)}\n${signals ? `${signals}\n` : ''}[… ${omitted} chars omitted by jev-compaction …]\n${cutTail(text, tail)}`
   return out.length < text.length ? out : text
 }
 
@@ -210,7 +211,7 @@ export const stubText = (chars: number) => `[earlier assistant message omitted b
 
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
   if (text.length <= headChars + 120 || hasNote(text)) return text
-  const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : ''
+  const head = headChars > 0 ? `${cutHead(text, headChars)}\n` : ''
   const signals = signalLines(text.slice(headChars))
   const out = `${head}${signals ? `${signals}\n` : ''}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
   return out.length < text.length ? out : text
@@ -271,7 +272,7 @@ export function noteHead(tool: string, input: Record<string, unknown>): string {
     }
   }
   const flat = raw.replace(/\s+/g, ' ').trim()
-  return flat.length > HEAD_CHARS ? `${flat.slice(0, HEAD_CHARS)}…` : flat
+  return flat.length > HEAD_CHARS ? `${cutHead(flat, HEAD_CHARS)}…` : flat
 }
 
 /** Dropped calls behind one note: the count per tool, and the note of a lone call. */

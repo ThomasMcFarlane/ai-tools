@@ -106,7 +106,7 @@ Only the compaction the rotation itself starts rotates; any other compaction is 
 
 - `/jev-compact now` (interactive and stream sessions, not one-shot `-p`) compacts when your next turn ends (the host refuses it inside a command), with the `/compact` policy. Below the hard limit it never falls back to the built-in summary: if it frees too little it defers and leaves the conversation as it is. At or above the hard limit, when its result would still end at or above it, it falls back to the built-in summary.
 - `/jev-compact rotate [dry]` (interactive and stream sessions, not one-shot `-p`) rotates the session once (see Session rotation); with `dry` (any case) it writes `HANDOFF.preview.md` and applies nothing. Any other argument is a usage error and starts nothing.
-- `/jev-compact stats` shows the session totals: compactions applied, deferred and handed to the built-in summary, estimated tokens freed, Jev requests, sentences dropped, characters saved by word compression and characters saved on entry.
+- `/jev-compact stats` shows the session totals: compactions applied, deferred and handed to the built-in summary, estimated tokens freed, Jev requests, failed Jev requests by status (`400:max_tokens_exceeded x3, 500 x1`), sentences dropped, characters saved by word compression and characters saved on entry.
 - At session start the mod logs the thresholds in force (`jev-compaction: thresholds: trigger ..., target ..., hard limit ...`), so a session that runs on the defaults because its stored options were lost is visible in the log. The host clears `pluginConfigs` options when a plugin is uninstalled, and a reinstall starts from the defaults.
 
 ## Reporting
@@ -141,7 +141,7 @@ All options have defaults and are set in the plugin's config menu.
 | `jevTimeoutMs`, `jevTotalMs`                                       | 8000, 20000                          | Per request and per compaction (also held under the hook budget) |
 | `keepThreshold`, `abridgeThreshold`                                | 0.5, 0.2                             | Jev probabilities for keep and abridge                      |
 | `preserveRecentMessages`                                           | 6                                    | Newest messages never touched                               |
-| `maxStateTokens`, `maxRequestTokens`                               | 25000, 30000                         | Estimated size of the state and of one Jev request          |
+| `maxStateTokens`, `maxRequestTokens`                               | 20000, 24000                         | Estimated size of the state and of one Jev request          |
 | `truncateHeadChars`                                                | 300                                  | Characters of a truncated tool result kept                  |
 | `textCompression`                                                  | true                                 | Compress old text in a compaction (word filter, sentence drops) |
 | `sentenceKeepThreshold`, `maxSentenceDropRatio`                    | 0.35, 0.7                            | Sentences below the threshold are dropped, at most this share of a message |
@@ -152,6 +152,14 @@ All options have defaults and are set in the plugin's config menu.
 | `rotate`                                                           | false                                | Rotate automatically when due                               |
 | `rotateAfterHours`, `rotateHighTurns`, `rotateHighTokens`          | 72, 100, 250000                      | When a rotation is due                                      |
 | `rotateKeepMessages`, `rotateBudgetTokens`                         | 40, 40000                            | Newest messages a rotation keeps, and their token budget    |
+
+## Failed Jev requests
+
+- Jev's error body is read: a failure reads `Jev request failed (400: max_tokens_exceeded)` (status, `error_type`, and a message of at most 120 characters). The request itself is never logged, and the key never is.
+- **Size limit.** Jev refuses a request over about 32768 input tokens (`400 max_tokens_exceeded`, measured 26 Nov 2026). The mod's token estimate runs up to 1.35 times low for ids, hashes and non-Latin text, so the defaults are `maxStateTokens` 20000 and `maxRequestTokens` 24000. After such an answer the budgets shrink to 60% (floor 15%, kept in the session state), and the compaction is tried again, up to two more times while its time allows. `/jev-compact stats` shows the budget when it is below 100%.
+- **Invalid text.** A lone UTF-16 surrogate (an emoji cut in two) in a request gives `400 api_usage_error: Request contains invalid Unicode text`. Every string is made well formed before it leaves, and the mod's own cuts never split a surrogate pair.
+- **A deferral never ends a turn.** In an SDK or stream-json session (T3 Code) the periodic compaction runs the host's `/compact`, and a deferral makes the host print `Not compacted` as an answer. When a background-task notice or a queued prompt started the turn, that line was the whole answer and the turn ended after about a second with no work. The mod now asks Jev and judges *before* it runs `/compact`; the command runs only when the result applies or the host's own summary must take over (at or above the hard limit). A deferral or a Jev failure is counted, logged and toasted, and the turn goes on as normal.
+- **Counters.** Failed requests are counted per session by `<status>[:<error_type>]`, `timeout` or `other`; deferrals and built-in fallbacks are in the same `/jev-compact stats`. Each deferral also writes its `t3.compaction/v1` line (see Reporting) and each failed request one `jev-compaction: Jev request failed (<label>)` log line. There is no metrics endpoint in a session, so no series reaches VictoriaMetrics.
 
 ## Jev request
 
