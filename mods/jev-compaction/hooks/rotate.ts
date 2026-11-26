@@ -282,7 +282,7 @@ export function verifyRotation(r: RotationInput, built: Rotation, promptsText: s
   const urls = new Set(dropped.flatMap((m) => [m.text, ...m.toolUses.map((u) => JSON.stringify(u.input) + (u.text ?? '')), ...(m.toolResults ?? []).map((t) => t.text)].flatMap((t) => t.match(PR_URL) ?? [])))
   for (const url of urls) if (!has(url)) missing.push({ item: `pull request ${url}`, fixable: true })
   // A typed prompt the ledger never saw would be lost with its row: nothing to append it from, so the rotation stops.
-  for (const t of uncoveredPrompts(dropped, ledger)) missing.push({ item: `dropped prompt not in the ledger: ${t.slice(0, 200)}`, fixable: false })
+  for (const t of uncoveredPrompts(dropped, ledger)) missing.push({ item: `dropped prompt not in the ledger: ${cutHead(t, 200)}`, fixable: false })
   for (const q of unansweredQuestions(r.messages)) if (!r.handover.pendingQuestions.some((p) => p.includes(q)) && !has(q)) missing.push({ item: `pending question: ${q}`, fixable: true })
   if (r.handover.goal.trim() === '') missing.push({ item: 'goal is empty', fixable: false })
   const first = built.messages[0]

@@ -55,6 +55,8 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const registered: string[] = []
   const spawned: string[][] = []
   const compactCalls: any[] = []
+  // How often the host's `/compact` command ran: a skip made inside it prints "Not compacted" and can answer a whole turn.
+  const commandRuns = { count: 0 }
   const messages = conversation()
   // The plugin's $.state, held here so the phase-2 handler called by the test (whose $ has no state) reads it too.
   for (const key of Object.keys(state)) delete state[key]
@@ -110,13 +112,14 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('command.register', () => ({ value: undefined as never }))
   // An SDK session: the host's `/compact`, which the mod runs there, raises the compaction with the transcript.
   on('command.run', { command: 'compact' }, async () => {
+    commandRuns.count++
     await $.session.compact({ trigger: 'manual', messages } as never)
     return {}
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
   const agents = setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]
-  return { files, toasts, submitted, registered, spawned, compactCalls, messages, clock, agents, dropWrites: setup.dropWrites }
+  return { files, toasts, submitted, registered, spawned, compactCalls, commandRuns, messages, clock, agents, dropWrites: setup.dropWrites }
 }
 
 const user = (text: string): Message => ({ role: 'user', text, toolUses: [] })
@@ -521,4 +524,44 @@ test('reporting: an interactive rotation logs no t3.compaction/v1 line', async (
   await rotate(b, b.messages)
   expect(notes.some((n) => n.startsWith('jev-compaction: rotated'))).toBe(true)
   expect(t3Notes()).toEqual([])
+})
+
+// ---- stream-json: a rotation that would skip runs no /compact, so it never prints "Not compacted" in a turn ----
+
+const rotateTurns = async ($: any, args: string, b: Booted) => {
+  await command($, args)
+  await $.turn.complete(reply())
+  await $.tool.call(fields() as never)
+  await $.turn.complete(reply())
+  expect(b.compactCalls).toEqual([])
+}
+
+test('stream-json: a rotation that applies runs /compact once', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  expect(b.toasts.join('\n')).toMatch(/rotated: /)
+})
+
+test('stream-json: a dry run runs no /compact and leaves the preview', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  await rotateTurns($, 'rotate dry', b)
+  expect(b.commandRuns.count).toBe(0)
+  expect(b.files[`${DIR}/HANDOFF.preview.md`]).toBeDefined()
+  expect(b.toasts.join('\n')).toMatch(/dry run/)
+})
+
+test('stream-json: a failed gate runs no /compact', async ($, on) => {
+  const b = await boot($, on, { headless: true, dropWrites: /PROMPTS\.md$/ })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(0)
+  expect(b.toasts.join('\n')).toMatch(/rotation skipped: gate failed/)
+})
+
+test('stream-json: a transcript at the host cap (it may be a cut) runs no /compact', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  b.messages.splice(0, b.messages.length, ...long(4096))
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(0)
+  expect(b.toasts.join('\n')).toMatch(/4096-message cap/)
 })

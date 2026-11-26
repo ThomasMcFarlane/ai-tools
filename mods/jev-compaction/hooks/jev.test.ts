@@ -46,4 +46,10 @@ describe('token estimate', () => {
     expect(estimateTokens(hex)).toBeGreaterThanOrEqual(20)
     expect(estimateTokens('Open the file src/index.ts and read it.')).toBeLessThan(20)
   })
+
+  test('a long run of letters with a digit (base64, ids) is priced by its characters, not as a word', () => {
+    const b64 = 'dGhpcyBpcyBhIHRlc3Qgc3RyaW5nIGZvciB0ZXN0aW5nIHB1cnBvc2VzIG9ubHk1'
+    expect(estimateTokens(b64)).toBeGreaterThanOrEqual(Math.floor(b64.length * 0.6))
+    expect(estimateTokens('internationalization and documentation of the configuration')).toBeLessThan(20)
+  })
 })

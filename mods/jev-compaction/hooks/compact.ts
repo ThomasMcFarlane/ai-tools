@@ -200,7 +200,7 @@ export function abridgeText(text: string, head: number, tail: number): string {
   if (hasNote(text)) return text
   const omitted = text.length - head - tail
   if (omitted <= ABRIDGE_SLACK) return text
-  const signals = signalLines(text.slice(head, text.length - tail))
+  const signals = signalLines(text.slice(cutHead(text, head).length, text.length - cutTail(text, tail).length))
   const out = `${cutHead(text, head)}\n${signals ? `${signals}\n` : ''}[… ${omitted} chars omitted by jev-compaction …]\n${cutTail(text, tail)}`
   return out.length < text.length ? out : text
 }
@@ -212,7 +212,7 @@ export const stubText = (chars: number) => `[earlier assistant message omitted b
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
   if (text.length <= headChars + 120 || hasNote(text)) return text
   const head = headChars > 0 ? `${cutHead(text, headChars)}\n` : ''
-  const signals = signalLines(text.slice(headChars))
+  const signals = signalLines(text.slice(headChars > 0 ? cutHead(text, headChars).length : 0))
   const out = `${head}${signals ? `${signals}\n` : ''}[jev-compaction truncated ${text.length - headChars} chars of this tool result${isError ? ' (error)' : ''}; re-run the tool if needed]`
   return out.length < text.length ? out : text
 }
