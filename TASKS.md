@@ -20,7 +20,7 @@ ETA: 2026-10-21 18:00 ICT
 | 7 | CLUSTER-287 hq0 disk cleanup for this repository | done | claude | cluster-287-cleanup | | 2026-10-21 18:00 ICT | Finished the merged task worktrees board-owner-gate-explicit (#12), fix-action-bundle (#14) and epic-eta-lint (#40); removed downloaded resolver lists and vendored type copies from .data scratch. Kept scripts, notes, results and the tasks-board plugin config. Was OPS-1. |
 
 ## 3. jev-compaction
-ETA: 2026-11-16 17:00 ICT
+ETA: 2026-12-04 18:00 ICT
 
 | ID | Task | Status | Owner | Branch | Depends | ETA | Notes |
 |---|---|---|---|---|---|---|---|
@@ -28,6 +28,7 @@ ETA: 2026-11-16 17:00 ICT
 | 9 | Collapse runs of dropped-call notes into one expandable row | dropped | claude | jev-note-collapse | | | Dropped: the engine gives `AssistantMessage` render props no `isExpanded` and no view of neighbouring rows, so a run cannot be merged into one row with a ctrl+o expand; owner chose the shorter note (3.8) instead, 2026-10-23. Was JEV-2. |
 | 10 | Run Jev compaction in T3 Code (stream-json) sessions | done | claude | jev-compaction-stream-json | | 2026-11-16 15:15 ICT | The host refuses `$.session.compact()` in SDK/stream-json sessions, so the periodic trigger never ran in T3 threads (a filedeck thread reached 350k). The mod now runs the host's `/compact` via `$.command.run` from `turn.complete` there and judges it as periodic; one-shot `-p` stays excluded; rotation stays interactive only. Version 0.5.0. Done in #91 (0.5.0), installed in all 9 identities; live proof in a T3-flag stream-json session with the installed plugin: 233,036 -> 22,184 tokens. |
 | 11 | Rotation in stream-json sessions and an accurate post-compaction size estimate | done | claude | jev-rotation-stream-json | | 2026-11-16 15:50 ICT | Rotation was interactive-only; the estimate read ~6k against a real 50k. 0.6.0: rotation via plugin prompt + host /compact in stream sessions (sdk prompts count in the ledger); estimate = fixed part + messages x kept share x learnt scale, measured at the first main request after the compaction. Done in #93 (0.6.0), installed in all 9 identities. T3 thread proof: /jev-compact rotate, handover written, rotation 25,922 -> 12,647, next turn answered from the handover. Estimate 45,978 vs measured 52,576. |
+| 28 | Stop the rotation command skipping when rows before the end changed | todo | | | | 2026-12-04 18:00 ICT | Open case of #103: rows change before the end while the command waits, and the rebuilt list lies in the cap band (4000 to 4096 rows).<br>The rebuild skips inside `/compact` and the host prints "Not compacted".<br>Needs a design choice: apply the pre-built result when only the tail differs, or let the host summary run in that one case.<br>Not seen on any known host path. |
 
 ## 4. tasks-board
 ETA: 2026-10-25 03:30 ICT
