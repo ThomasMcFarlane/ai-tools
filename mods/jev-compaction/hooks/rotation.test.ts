@@ -599,12 +599,59 @@ test('stream-json: when /compact fails, no toast and no T3 line says the rotatio
   expect(b.logs.some((l) => l.includes('rotation failed'))).toBe(true)
 })
 
-test('stream-json: when the hook sees another transcript than the check did, the rotation is built again and says applied once', async ($, on) => {
+test('stream-json: rows that queued turns add at the end are kept after the rotation built before the command, which says applied once and is not built again', async ($, on) => {
   const b = await boot($, on, { headless: true, hookMessages: (m) => [...m, { role: 'user', text: 'one more', toolUses: [] }] })
   await rotateTurns($, 'rotate', b)
   expect(b.commandRuns.count).toBe(1)
+  expect(b.builds.count).toBe(1)
   expect(rotatedToasts(b).length).toBe(1)
   expect(appliedLines(b).length).toBe(1)
+  expect(b.results[0]!.skip).toBeUndefined()
+  expect(b.results[0]!.messages!.at(-1)!.text).toBe('one more')
+})
+
+test('stream-json: queued rows that bring the hook list into the cap band do not turn the rotation command into a skip', async ($, on) => {
+  const queued = (m: Message[]) => [...m, ...Array.from({ length: 4050 - m.length }, (_, i): Message => ({ role: 'user', text: `queued ${i}`, toolUses: [] }))]
+  const b = await boot($, on, { headless: true, hookMessages: queued })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  const result = b.results[0]!
+  // a skip inside the command prints "Not compacted" and can answer a whole turn
+  expect(result.skip).toBeUndefined()
+  expect(result.messages!.at(-1)!.text).toBe(`queued ${4050 - b.messages.length - 1}`)
+  expect(result.messages!.filter((m) => m.text.startsWith('queued ')).length).toBe(4050 - b.messages.length)
+  expect(rotatedToasts(b).length).toBe(1)
+  expect(appliedLines(b).length).toBe(1)
+  expect(b.builds.count).toBe(1)
+})
+
+test('stream-json: when rows before the end changed, the hook builds the rotation again and says applied once', async ($, on) => {
+  const b = await boot($, on, { headless: true, hookMessages: (m) => [{ ...m[0]!, text: `${m[0]!.text} (edited)` }, ...m.slice(1)] })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  expect(b.builds.count).toBe(2)
+  expect(rotatedToasts(b).length).toBe(1)
+  expect(appliedLines(b).length).toBe(1)
+})
+
+test('stream-json: rows changed before the end and a row added: the hook builds again and does not append', async ($, on) => {
+  const b = await boot($, on, { headless: true, hookMessages: (m) => [{ ...m[0]!, text: `${m[0]!.text} (edited)` }, ...m.slice(1), { role: 'user', text: 'one more', toolUses: [] }] })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  expect(b.builds.count).toBe(2)
+  expect(appliedLines(b).length).toBe(1)
+})
+
+test('stream-json: appended rows follow kept messages that carry the engine handles of the hook list', async ($, on) => {
+  const b = await boot($, on, { headless: true, hookMessages: (m) => [...m.map((x) => ({ ...x, handle: `e-${x.handle}` })), { role: 'user', text: 'one more', toolUses: [] }] })
+  await rotateTurns($, 'rotate', b)
+  expect(b.builds.count).toBe(1)
+  const result = b.results[0]!
+  expect(result.skip).toBeUndefined()
+  // the first message and the newest kept rows are the hook's own objects (handle e-...), not the rows the pre-build ran on
+  expect(result.messages![0]!.handle).toBe('e-h0')
+  expect(result.messages!.find((m) => m.text === 'Done.\nShall I merge it?')!.handle).toBe('e-q')
+  expect(result.messages!.at(-1)!.text).toBe('one more')
 })
 
 test('stream-json: a skipped rotation reports its deferral once and runs no /compact', async ($, on) => {
