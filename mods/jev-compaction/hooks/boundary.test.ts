@@ -66,3 +66,15 @@ test('tool calls and results have no text: their ids tell one output from anothe
   expect(findBoundary(rows, describeOutput(pair('z')))).toBeUndefined()
   expect(sameList(pair('a'), pair('b'))).toBe(false)
 })
+
+test('two outputs with the same first message and the same texts differ by the tool ids that come later', () => {
+  const pair = (id: string): Message[] => [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: {}, text: '' }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: '', isError: false }] },
+  ]
+  const one = [msg('user', 'start'), ...pair('a'), msg('assistant', 'end')]
+  const other = [msg('user', 'start'), ...pair('b'), msg('assistant', 'end')]
+  expect(describeOutput(one)).not.toEqual(describeOutput(other))
+  expect(findBoundary([...before, ...other], describeOutput(one))).toBeUndefined()
+  expect(findBoundary([...before, ...one], describeOutput(one))?.from).toBe(3)
+})

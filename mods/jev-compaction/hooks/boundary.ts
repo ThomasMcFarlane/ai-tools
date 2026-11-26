@@ -5,7 +5,7 @@
  * them. The list a later `/compact` is given starts at that output (Claude Code 2.1.325, measured: an output of 8 rows after 9 old
  * ones, 7 rows later, and the hook was given 15). So the list the next compaction will see is the output, then the rows after it.
  *
- * The output is found in the rows by its content, so the boundary survives a resume and a new process and needs no row count. A
+ * The output is found in the rows by its content, so it needs no row count and holds when the host adds rows after it. The descriptor lives in `$.state`, and a resumed process starts with an empty state (measured, Claude Code 2.1.325): it then judges all rows until its own next compaction. A
  * descriptor (not the messages) is kept in `$.state`: the count, a key of the first message, and a hash of all of them. A message is
  * told by its role, text and the ids of its tool calls and results: a tool call has no text, so the text alone would match anywhere.
  */

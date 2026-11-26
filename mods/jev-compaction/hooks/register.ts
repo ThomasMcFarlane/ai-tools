@@ -1,6 +1,6 @@
 import type { EngineInterface, Next, Register, SessionAppendInput, SessionCompactInput, SessionCompactResult, TurnCompleteInput } from 'claude-code'
 
-import { compact, prescore, reusable } from './compact'
+import { compact, prescore } from './compact'
 import { rewriteRow } from './entry'
 import type { EntryRow, Judge } from './entry'
 import { JevError, isTooLarge, jevAsker } from './jev'
@@ -414,12 +414,6 @@ async function attempt($: EngineInterface, messages: Message[], key: string, tok
   // An attempt with no size error wins back a quarter of what earlier errors took.
   if (!shrunk && !reuseOnly) await growBudget($)
   await remember($, memory, result.scores)
-  if (!reuseOnly) {
-    // How many of the kept scores a later judgement asks about again, because they lie near a threshold (see REASK_MARGIN).
-    const all = Object.values({ ...memory, ...result.scores })
-    const near = all.filter((s) => !reusable(s, [config.keepThreshold, config.abridgeThreshold, config.sentenceKeepThreshold])).length
-    $.ui.log(`jev-compaction: ${all.length} scores kept, ${near} near a threshold`)
-  }
   const { value: scale = DEFAULT_SCALE } = await $.state.get(SCALE)
   const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / CHARS_PER_TOKEN)
   // Without a real count there is no fixed part to tell apart: all of it scales, which errs high.
@@ -517,9 +511,15 @@ async function decide($: EngineInterface, messages: Message[], trigger: SessionC
 }
 
 /** Reports a decision and does its bookkeeping. The answer is the hook's: apply, skip, or the host's own summary (`next`). */
-async function settle($: EngineInterface, d: Decision, next: () => Promise<SessionCompactResult | undefined> | SessionCompactResult | undefined): Promise<SessionCompactResult | undefined> {
+async function settle(
+  $: EngineInterface,
+  d: Decision,
+  next: () => Promise<SessionCompactResult | undefined> | SessionCompactResult | undefined,
+  /** The requests the check made for this compaction, when this decision made none of its own (the hook's judgement from kept scores). */
+  asked?: number,
+): Promise<SessionCompactResult | undefined> {
   const { verdict, done } = d
-  const requests = done?.result.stats.requests ?? 0
+  const requests = asked ?? done?.result.stats.requests ?? 0
   await reportToT3($, decisionPayload(verdict, done, d.usage?.tokens, requests, d.reported))
   try {
     if (verdict.act === 'apply' && done) {
@@ -571,7 +571,7 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
   const out = await judgeCompact($, e, next)
   if (!out?.skip) {
     try {
-      await $.state.set(BOUNDARY, out?.messages && out.messages.length > 0 ? describeOutput(out.messages as Message[]) : { known: false })
+      await $.state.set(BOUNDARY, describeOutput((out?.messages ?? []) as Message[]))
     } catch {
       // without it the next check finds no output and waits
     }
@@ -602,22 +602,14 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
   const now = isNow && Date.now() - nowAt < NOW_VALID_MS && (e.trigger === 'plugin' || e.trigger === 'manual')
   isNow = false
   // In a non-interactive session the mod's periodic compaction comes through `/compact`, so as `manual`.
-  const ours = e.trigger === 'manual' && commandAt > 0 && Date.now() - commandAt < NOW_VALID_MS
+  // No time limit: a T3 queue can hold the command for minutes. `commandAt` is set only while `$.command.run` waits for it.
+  const ours = e.trigger === 'manual' && commandAt > 0
   commandAt = 0
   const trigger = ours ? 'plugin' : e.trigger
   const decided = prepared
   prepared = undefined
   // The user asked for something specific: that is the built-in summary's job.
   if (e.instructions) return next(e)
-  // The list may be cut. A soft compaction waits (the engine compacts at its own limit) unless the context is at or
-  // above the hard limit; auto and manual, which must produce something, fall back.
-  if (e.messages.length >= TRANSCRIPT_CAP) {
-    if (trigger !== 'plugin' && !now) return next(e)
-    const usage = await $.session.usage().then((u) => u.context, () => undefined)
-    if (usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard) return next(e)
-    track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
-    return { skip: 'jev-compaction: transcript over 4096 messages' }
-  }
   // Judged before the command ran (see compactBetweenTurns), and the command ran because the answer was to apply. The hook judges the
   // host's own list again from the scores that check kept: no request, so no failure and no changed answer, and the kept messages
   // carry the engine's handles. It never returns a skip here: the host prints "Not compacted" for one, and in a T3 Code session that
@@ -630,13 +622,23 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
         : `jev-compaction: the checked list differs from the host's (${decided.messages.length} and ${e.messages.length} messages), judging again from the kept scores`,
     )
     const judged = await decide($, e.messages as Message[], trigger, decided.decision.now, true)
-    // The requests were the check's: the totals count them with the compaction they paid for.
+    // The requests were the check's: the totals count them with the compaction they paid for, also when this judgement throws.
     const asked = decided.decision.done?.result.stats.requests ?? 0
-    const again: Decision = judged.done ? { ...judged, done: { ...judged.done, result: { ...judged.done.result, stats: { ...judged.done.result.stats, requests: asked } } } } : judged
-    if (again.verdict.act === 'apply') return settle($, again, () => next(e))
-    const why = again.verdict.reason
+    if (judged.verdict.act === 'apply') return settle($, judged, () => next(e), asked)
+    const why = judged.verdict.reason
     $.ui.log(`jev-compaction: the host's list could not be judged again (${why}); the host's own summary runs, no deferral`)
-    return settle($, { ...again, verdict: { act: 'next', reason: why } }, () => next(e))
+    return settle($, { ...judged, verdict: { act: 'next', reason: why } }, () => next(e), asked)
+  }
+  // The list may be cut. A soft compaction waits (the engine compacts at its own limit) unless the context is at or
+  // above the hard limit; auto and manual, which must produce something, fall back. The mod's own command also falls back.
+  if (e.messages.length >= TRANSCRIPT_CAP) {
+    if (trigger !== 'plugin' && !now) return next(e)
+    const usage = await $.session.usage().then((u) => u.context, () => undefined)
+    if (usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard) return next(e)
+    // The mod's own command never returns a skip: the host prints "Not compacted" for one.
+    if (ours) return next(e)
+    track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
+    return { skip: 'jev-compaction: transcript over 4096 messages' }
   }
   const d = await decide($, e.messages as Message[], trigger, now)
   return settle($, d, () => next(e))

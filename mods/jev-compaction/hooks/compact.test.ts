@@ -360,6 +360,18 @@ describe('partial failures, pre-scoring and notes', () => {
     expect(jev.requests()).toBeGreaterThan(before)
   })
 
+  test('a judgement with no request (maxBatches 0) of a history Jev could not take whole still answers, and asks nothing', async () => {
+    const jev = fakeJev({}, 0.05)
+    // the newest messages are pinned and long: the state cannot be made small enough for any request
+    const heavy = [user('start'), ...many(6).slice(1, -6), ...Array.from({ length: 3 }, (_, i) => [assistant(`${i}`.repeat(5000)), user(`${i}`.repeat(5000))]).flat()]
+    const tiny = { maxStateTokens: 40, maxRequestTokens: 100 }
+    // the same call fails when it may ask: the history does not fit
+    await expect(compact(heavy, jev.ask, tiny, {}, { reuseAll: true })).rejects.toThrow(/too large/)
+    const { messages: out } = await compact(heavy, jev.ask, tiny, {}, { reuseAll: true, maxBatches: 0 })
+    expect(out.length).toBe(heavy.length)
+    expect(jev.requests()).toBe(0)
+  })
+
   test('only the mod notes pin an item: a path that contains the name does not', async () => {
     const path = '/home/u/.worktrees/jev-compaction/src/a.ts'
     const messages = [user('start'), assistant(`I edited ${path} ` + body(1000)), user('ok'), ...call('p', `${path}\n` + long(2000), { file_path: path }), ...tail()]

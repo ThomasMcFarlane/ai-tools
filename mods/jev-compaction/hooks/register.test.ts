@@ -52,6 +52,10 @@ type Setup = {
   failInCommand?: boolean
   // rows the host appends after a compaction's output, which the hook never returned (attachments)
   extraAfterCompact?: Message[]
+  // runs when the host's `/compact` starts, before the hook (what happens to the rows while the command waits in the queue)
+  beforeCommand?: (hostRows: Message[], listFrom: number) => void | Promise<void>
+  // `$.session.usage()` fails while the host's `/compact` runs (inside the hook)
+  failUsageInCommand?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -138,6 +142,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const clock = mock.clock(on)
   const usage = { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }
   on('session.usage', (_$: any, e: any) => {
+    if (setup.failUsageInCommand && inCommand) throw new Error('usage unavailable')
     const breakdown =
       e?.breakdown && setup.fixed !== undefined
         ? { totalTokens: usage.tokens, categories: [{ name: 'System prompt', kind: 'used', tokens: setup.fixed }, { name: 'Messages', kind: 'used', tokens: usage.tokens - setup.fixed }, { name: 'Free space', kind: 'free', tokens: 1 }] }
@@ -185,6 +190,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   on('command.run', { command: 'compact' }, async (_$: any, e: any) => {
     inCommand = true
     try {
+      await setup.beforeCommand?.(hostRows, listFrom)
       if (setup.appendOnly) {
         const result = await compact($, 'manual', { messages: hostRows.slice(listFrom) })
         ran.push({ args: e.args, result })
@@ -1450,4 +1456,73 @@ test('stream-json: a hook that throws leaves the boundary where it was', { optio
   boom = true
   await expect(compact($, 'manual', { instructions: 'x' })).rejects.toThrow()
   expect(state[BOUNDARY]).toEqual(kept)
+})
+
+// --- round 4: the mod's own command never returns a skip, and it knows itself however long it waited ---
+
+test('stream-json: rows that queued turns add between the check and the command push the host list past 4096: the hook still never skips', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: [...transcript(), ...smallCalls(0, 1900)] }
+  const { ran, usage, hostRows, toasts } = await boot($, on, setup)
+  setup.beforeCommand = (rows) => {
+    rows.push(...smallCalls(5000, 200))
+    expect(rows.length).toBeGreaterThanOrEqual(4096)
+  }
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(hostRows.length).toBeGreaterThan(4096)
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.skip).toBeUndefined()
+  expect(ran[0]!.result.messages).toBeDefined()
+  expect(toasts.some((x) => x.includes('Not compacted'))).toBe(false)
+})
+
+test('stream-json: a hook that cannot apply the kept scores to the host list hands over to the host summary: the answer is never a skip', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: transcript() }
+  const { ran, usage, hostRows, toasts, state, logs } = await boot($, on, setup)
+  // the check judged the 12 big calls (scored); by the time the command runs the host list holds other calls, which no score covers
+  setup.beforeCommand = (rows, from) => {
+    rows.splice(from)
+    rows.push(...transcript(0).slice(0, 1), ...moreCalls(900, 12), ...transcript(0).slice(-6))
+  }
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(hostRows.length).toBeGreaterThan(0)
+  expect(ran.length).toBe(1)
+  // the hook fell back to the host's summary (no messages from this stand-in), and a skip would have shown here
+  expect(ran[0]!.result.skip).toBeUndefined()
+  expect(logs.some((l) => l.includes('could not be judged again'))).toBe(true)
+  expect(toasts.some((x) => x.includes('Not compacted'))).toBe(false)
+  // the host's summary is the output of this compaction, and the boundary follows it (the test engine cannot answer no messages at all:
+  // `describeOutput([])` is `{ known: false }`, see boundary.test.ts)
+  expect(state[BOUNDARY]).toMatchObject({ known: true, count: 1 })
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+})
+
+test('stream-json: a judgement in the hook that throws still counts the check\'s requests in the stats', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: transcript(), failUsageInCommand: true }
+  const { ran, usage, requests } = await boot($, on, setup)
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+  expect(requests.length).toBeGreaterThan(0)
+  expect(await stat($)).toContain(`${requests.length} Jev requests`)
+})
+
+test('stream-json: the mod\'s own command with no prepared check, over the cap and below the hard limit, hands over to the host summary and never skips', { options: OLD }, async ($, on) => {
+  // the check ran at the hard limit on a list that may be cut (so the command runs with no prepared decision); by the time it runs the
+  // context is below the hard limit and the host list is 4096 rows or more
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: [...transcript(), ...smallCalls(0, 2000)] }
+  const { ran, usage, toasts } = await boot($, on, setup)
+  setup.beforeCommand = (rows) => {
+    usage.tokens = 300_000
+    rows.push(...smallCalls(9000, 100))
+  }
+  usage.tokens = 520_000
+  expect(setup.rows!.length).toBeGreaterThanOrEqual(4000)
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.skip).toBeUndefined()
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+  expect(toasts.some((x) => x.includes('Not compacted'))).toBe(false)
 })
