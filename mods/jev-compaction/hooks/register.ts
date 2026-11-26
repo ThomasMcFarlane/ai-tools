@@ -603,6 +603,9 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
   isNow = false
   // In a non-interactive session the mod's periodic compaction comes through `/compact`, so as `manual`.
   // No time limit: a T3 queue can hold the command for minutes. `commandAt` is set only while `$.command.run` waits for it.
+  // A compaction that is not the mod's own (an `auto` one, or the user's `/compact`) can run while the command waits in the queue. It
+  // clears `commandAt` and takes `prepared`, as any compaction here does. The mod's own command then arrives as a plain `manual`
+  // compaction: the manual policy never skips, so the outcome is an ordinary compaction, never an empty turn.
   const ours = e.trigger === 'manual' && commandAt > 0
   commandAt = 0
   const trigger = ours ? 'plugin' : e.trigger
@@ -629,14 +632,19 @@ async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Ne
     $.ui.log(`jev-compaction: the host's list could not be judged again (${why}); the host's own summary runs, no deferral`)
     return settle($, { ...judged, verdict: { act: 'next', reason: why } }, () => next(e), asked)
   }
+  // The mod's own command with nothing prepared: the check found the list unknown or possibly cut at the hard limit, and left the command
+  // to the host's summary. Jev is not asked here and the answer is never a skip, whatever the token count is now.
+  if (ours) {
+    $.ui.log('jev-compaction: no check was prepared for this /compact (the list was unknown or may be cut); the host\'s own summary runs, no Jev request')
+    await bump($, { fallbacks: 1 }).catch(() => undefined)
+    return next(e)
+  }
   // The list may be cut. A soft compaction waits (the engine compacts at its own limit) unless the context is at or
-  // above the hard limit; auto and manual, which must produce something, fall back. The mod's own command also falls back.
+  // above the hard limit; auto and manual, which must produce something, fall back.
   if (e.messages.length >= TRANSCRIPT_CAP) {
     if (trigger !== 'plugin' && !now) return next(e)
     const usage = await $.session.usage().then((u) => u.context, () => undefined)
     if (usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard) return next(e)
-    // The mod's own command never returns a skip: the host prints "Not compacted" for one.
-    if (ours) return next(e)
     track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
     return { skip: 'jev-compaction: transcript over 4096 messages' }
   }

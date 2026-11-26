@@ -1473,6 +1473,8 @@ test('stream-json: rows that queued turns add between the check and the command 
   expect(ran.length).toBe(1)
   expect(ran[0]!.result.skip).toBeUndefined()
   expect(ran[0]!.result.messages).toBeDefined()
+  // the Jev result, not the host's summary: the decision of the check stands whatever the list length is by the time the command runs
+  expect(isBuiltin(ran[0]!.result)).toBe(false)
   expect(toasts.some((x) => x.includes('Not compacted'))).toBe(false)
 })
 
@@ -1525,4 +1527,60 @@ test('stream-json: the mod\'s own command with no prepared check, over the cap a
   expect(ran[0]!.result.skip).toBeUndefined()
   expect(isBuiltin(ran[0]!.result)).toBe(true)
   expect(toasts.some((x) => x.includes('Not compacted'))).toBe(false)
+})
+
+// A check at the hard limit that cannot tell the list (4000 to 4096 rows may be a cut) prepares nothing, and the command runs: the hook hands
+// over to the host's summary, asks Jev nothing and never skips, whatever the token count is when the command runs.
+const NEARLY_CUT = (): Message[] => [...transcript(), ...smallCalls(0, 2000)]
+
+test('stream-json: the mod\'s own command with no prepared check, token count unreadable inside the command: host summary, no Jev request, no skip', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: NEARLY_CUT(), failUsageInCommand: true, failInCommand: true }
+  const { ran, usage, requests, toasts } = await boot($, on, setup)
+  usage.tokens = 520_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.skip).toBeUndefined()
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+  expect(requests).toEqual([])
+  expect(toasts.some((x) => x.includes('deferred'))).toBe(false)
+})
+
+test('stream-json: the mod\'s own command with no prepared check, token count below the hard limit when it runs, Jev refusing: host summary, no Jev request, no skip', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0, appendOnly: true, headless: true, rows: NEARLY_CUT(), failInCommand: true }
+  const { ran, usage, requests, toasts } = await boot($, on, setup)
+  setup.beforeCommand = () => {
+    usage.tokens = 300_000
+  }
+  usage.tokens = 520_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.skip).toBeUndefined()
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+  expect(requests).toEqual([])
+  expect(toasts.some((x) => x.includes('deferred'))).toBe(false)
+})
+
+test('stream-json: the mod\'s own command with no prepared check, token count still at the hard limit: host summary and no Jev request inside the command', { options: OLD }, async ($, on) => {
+  const { ran, usage, requests } = await boot($, on, { p: 0, appendOnly: true, headless: true, rows: NEARLY_CUT() })
+  usage.tokens = 520_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+  expect(requests.filter((r) => r.inCommand)).toEqual([])
+})
+
+test('stream-json: a command that waits in the queue on the engine clock is still the mod\'s own: the hook asks Jev nothing', { options: OLD }, async ($, on) => {
+  const setup: Setup = { p: 0.45, appendOnly: true, headless: true, rows: transcript() }
+  const { ran, usage, requests, clock } = await boot($, on, setup)
+  setup.failInCommand = true
+  // a limit on the engine clock would expire here; the marker has none (see the 60 s it had, and the note in register.ts)
+  setup.beforeCommand = async () => {
+    await clock.advance(120_000)
+  }
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(false)
+  expect(requests.some((r) => !r.inCommand)).toBe(true)
+  expect(requests.filter((r) => r.inCommand)).toEqual([])
 })
