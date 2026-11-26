@@ -192,3 +192,9 @@ test('readsStreamInput: the stream-json input flag in either spelling, not a one
   expect(readsStreamInput(['claude', '-p', '--output-format', 'stream-json', 'hi'])).toBe(false)
   expect(readsStreamInput(['claude', '--input-format', 'text'])).toBe(false)
 })
+
+test('the request ceilings stay under Jev\'s 32768 token input limit, with room for an estimate that runs low', () => {
+  expect(DEFAULTS.maxStateTokens).toBe(20_000)
+  expect(DEFAULTS.maxRequestTokens).toBe(24_000)
+  expect(resolveConfig({}).maxRequestTokens).toBe(24_000)
+})

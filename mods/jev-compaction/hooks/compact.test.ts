@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { applyDecisions, callKey, collectTexts, compact, hash, noteHead, prescore, resultKey, signalLines, textKey } from './compact'
+import { abridgeText, applyDecisions, callKey, collectTexts, compact, hash, noteHead, prescore, resultKey, signalLines, textKey } from './compact'
 import { compressWords } from './squeeze'
 import { hasNote } from './state'
 import type { JevAsker, Message, Scores } from './types'
@@ -606,5 +606,27 @@ describe('drop note collapsing', () => {
     const { out } = dropAll(messages, ['a', 'b', 'c'])
     expect(out.map((m) => m.text)).toEqual(['go', '[jev dropped Bash: cmd a]', 'keep this', '[jev dropped 2 calls: Bash ×2]', '', '', 'end'])
     expect(out[4]?.toolUses.length).toBe(1)
+  })
+})
+
+describe('cuts never split a surrogate pair', () => {
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  test('abridgeText at every offset around the head and the tail', () => {
+    for (let shift = -2; shift <= 2; shift++) {
+      const text = `${'x'.repeat(398 + shift)}\u{1F600}${'y'.repeat(3000)}\u{1F600}\u{1F600}${'z'.repeat(148 + shift)}`
+      expect(abridgeText(text, 400, 150)).not.toMatch(lone)
+    }
+  })
+  test('a truncated tool result, and the signal lines it keeps', () => {
+    for (let shift = -2; shift <= 2; shift++) {
+      const body = `${'x'.repeat(298 + shift)}\u{1F600}${'y'.repeat(400)}\nError: failed \u{1F600} here\n${'z'.repeat(400)}`
+      const messages: Message[] = [
+        { role: 'user', text: 'start', toolUses: [] },
+        { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c1', tool: 'Bash', input: { command: 'ls' }, text: body }] },
+        { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'c1', text: body, isError: false }] },
+      ]
+      const out = applyDecisions(messages, new Map([['c1', 'drop_result' as const]]), new Map(), 300)
+      for (const m of out) expect(JSON.stringify(m.toolResults ?? [])).not.toMatch(/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])|(?<!\\ud[89ab][0-9a-f]{2})\\ud[c-f][0-9a-f]{2}/i)
+    }
   })
 })
