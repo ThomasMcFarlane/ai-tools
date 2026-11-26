@@ -1,6 +1,6 @@
 import type { EngineInterface, Next, Register, SessionAppendInput, SessionCompactInput, SessionCompactResult, TurnCompleteInput } from 'claude-code'
 
-import { compact, prescore } from './compact'
+import { compact, prescore, reusable } from './compact'
 import { rewriteRow } from './entry'
 import type { EntryRow, Judge } from './entry'
 import { JevError, isTooLarge, jevAsker } from './jev'
@@ -414,6 +414,12 @@ async function attempt($: EngineInterface, messages: Message[], key: string, tok
   // An attempt with no size error wins back a quarter of what earlier errors took.
   if (!shrunk && !reuseOnly) await growBudget($)
   await remember($, memory, result.scores)
+  if (!reuseOnly) {
+    // How many of the kept scores a later judgement asks about again, because they lie near a threshold (see REASK_MARGIN).
+    const all = Object.values({ ...memory, ...result.scores })
+    const near = all.filter((s) => !reusable(s, [config.keepThreshold, config.abridgeThreshold, config.sentenceKeepThreshold])).length
+    $.ui.log(`jev-compaction: ${all.length} scores kept, ${near} near a threshold`)
+  }
   const { value: scale = DEFAULT_SCALE } = await $.state.get(SCALE)
   const tokensBefore = tokens ?? Math.round(result.stats.charsBefore / CHARS_PER_TOKEN)
   // Without a real count there is no fixed part to tell apart: all of it scales, which errs high.
@@ -550,13 +556,13 @@ let preparedRotation: { messages: Message[]; result: SessionCompactResult; used:
  * newest compaction (found by its content, see `boundary.ts`), then the rows after it. `unknown`: a compaction ran and its output is not
  * in the rows (they were cut, the host changed the text, or the host answered no messages), so the list cannot be told.
  */
-export type HostList = { kind: 'rows' | 'sliced'; messages: Message[] } | { kind: 'unknown' }
+export type HostList = { kind: 'rows'; messages: Message[] } | { kind: 'sliced'; messages: Message[]; from: number } | { kind: 'unknown' }
 
 export async function hostList($: EngineInterface, rows: Message[]): Promise<HostList> {
   const boundary: Boundary | undefined = await $.state.get(BOUNDARY).then((r) => r.value as Boundary | undefined, () => undefined)
   if (!boundary) return { kind: 'rows', messages: rows }
   const found = findBoundary(rows, boundary)
-  return found ? { kind: 'sliced', messages: found.messages } : { kind: 'unknown' }
+  return found ? { kind: 'sliced', messages: found.messages, from: found.from } : { kind: 'unknown' }
 }
 
 /** Keeps where each compaction that stands left its output (see `boundary.ts`). A skip leaves it as it was, and so does a throw. */
@@ -694,6 +700,7 @@ async function preflight($: EngineInterface): Promise<{ result: SessionCompactRe
     track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
     return { result: { skip: 'jev-compaction: transcript over 4096 messages' } }
   }
+  $.ui.log(`jev-compaction: checking ${list.messages.length} messages (${list.kind === 'sliced' ? `from row ${list.from} of ${rows.length}` : `all ${rows.length} rows`})`)
   const decision = await decide($, list.messages, 'plugin', now)
   if (decision.verdict.act === 'skip') return { result: await settle($, decision, () => undefined) }
   prepared = { decision, messages: list.messages }
