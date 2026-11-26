@@ -31,6 +31,8 @@ type Setup = {
   fixed?: number
   // the host fails to write a t3.compaction/v1 line
   failReport?: boolean
+  // the node-exporter textfile directory exists (the counters are written to it)
+  metrics?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -60,10 +62,17 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const rows = mock.session(on)
   const stored = { get: () => rows.appended().map((r) => r.message as any) }
   mock.env(on, setup.env ?? { JEV_COMPACTION_API_KEY: KEY, HOME: '/home/u' })
+  const written: Record<string, string> = {}
   on('fs.read', (_$: any, e: any) => {
-    const text = (setup.files ?? {})[e.path]
+    if (e.path === '/proc/self/stat') return { value: '4242 (claude) S 1 4242' }
+    const text = (setup.files ?? {})[e.path] ?? written[e.path]
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
+  })
+  on('fs.exists', (_$: any, e: any) => ({ value: e.path.startsWith('/proc/') ? e.path === '/proc/4242' : Boolean(setup.metrics) && e.path === '/var/lib/node-exporter/textfile-collector' }))
+  on('fs.write', (_$: any, e: any) => {
+    written[e.path] = String(e.text ?? '')
+    return { value: undefined }
   })
   const clock = mock.clock(on)
   const usage = { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }
@@ -112,7 +121,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
-  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran }
+  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -915,4 +924,46 @@ test('reporting: a failing ui.log never changes the compaction', async ($, on) =
   expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
   expect(logs.some((l) => l.startsWith('jev-compaction: compacted'))).toBe(true)
   expect(t3Lines(logs)).toEqual([])
+})
+
+// --- Prometheus counters in the node-exporter textfile (metrics.ts) ---
+
+const PROM = '/var/lib/node-exporter/textfile-collector/jev_compaction.prom'
+const flush = async () => {
+  for (let i = 0; i < 200; i++) await Promise.resolve()
+}
+const series = (text: string | undefined, name: string, labels: string) => {
+  const line = (text ?? '').split('\n').find((l) => l.startsWith(`${name}{`) && labels.split(',').every((p) => l.includes(p)))
+  return line === undefined ? undefined : Number(line.slice(line.lastIndexOf(' ') + 1))
+}
+
+test('metrics: a 400 max_tokens_exceeded counts in requests and failures by status and error type', { options: OLD }, async ($, on) => {
+  const { written } = await boot($, on, { status: 400, body: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }), metrics: true })
+  await compact($, 'plugin')
+  await flush()
+  const text = written[PROM]
+  expect(text).toBeDefined()
+  expect(series(text, 'jev_compaction_failures_total', 'status="400",error_type="max_tokens_exceeded"')).toBeGreaterThanOrEqual(1)
+  expect(series(text, 'jev_compaction_requests_total', 'status="400"')).toBeGreaterThanOrEqual(1)
+  expect(series(text, 'jev_compaction_deferred_total', 'reason="jev_error"')).toBeGreaterThanOrEqual(1)
+  expect(text).toContain('pid="4242"')
+  // every usual series exists from the first write, so a first failure counts in increase()
+  expect(series(text, 'jev_compaction_failures_total', 'status="401",error_type="none"')).toBe(0)
+})
+
+test('metrics: a deferral that frees too little counts under its own reason, and a good request counts as 200', { options: OLD }, async ($, on) => {
+  const { written } = await boot($, on, { p: 1, metrics: true })
+  const r = await compact($, 'plugin')
+  await flush()
+  const text = written[PROM]
+  expect(series(text, 'jev_compaction_requests_total', 'status="200"')).toBeGreaterThanOrEqual(1)
+  if (r.skip) expect(series(text, 'jev_compaction_deferred_total', 'reason="frees_too_little"')).toBeGreaterThanOrEqual(1)
+})
+
+test('metrics: no textfile directory (a pod without the mount) writes nothing and changes nothing', { options: OLD }, async ($, on) => {
+  const { written } = await boot($, on, { status: 400, body: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) })
+  const r = await compact($, 'plugin')
+  await flush()
+  expect(r.skip).toMatch(/Jev request failed \(400/)
+  expect(Object.keys(written)).toEqual([])
 })

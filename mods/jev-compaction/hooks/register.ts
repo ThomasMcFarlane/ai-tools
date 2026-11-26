@@ -10,6 +10,7 @@ import type { Config, Estimate, Verdict } from './policy'
 import { buildRotation, handoffFile, isRule, lastRotationOf, ledgerFromPrompt, ledgerFromRow, lineSplitter, parseHandover, promptsFile, REQUEST_MARKER, rotationDue, standingRules, unfinishedShells, verifyRotation } from './rotate'
 import type { LedgerEntry, RotationInput } from './rotate'
 import { goalFromMessages, truncate } from './state'
+import { DEFAULT_METRICS_DIR, bumpCount, deferReason, emptyCounts, writeMetrics } from './metrics'
 import type { CompactResult, Message, Protect } from './types'
 
 const SCORES = { plugin: 'jev-compaction', key: 'scores' } as const
@@ -199,6 +200,36 @@ async function fetchWithin($: EngineInterface, url: string, init: { method?: str
   }
 }
 
+// Counters for the node-exporter textfile (see metrics.ts). Kept in module memory: one process, one set of series.
+const counts = emptyCounts()
+let metricsPid: string | undefined
+let metricsChain: Promise<unknown> = Promise.resolve()
+
+/** Counts an event and writes the file. Never throws and never waits for the disk: a counter must not change a compaction. */
+function track($: EngineInterface, change: (c: typeof counts) => void): void {
+  try {
+    change(counts)
+  } catch {
+    return
+  }
+  metricsChain = metricsChain.then(async () => {
+    try {
+      metricsPid ??= String((await $.fs.read('/proc/self/stat').catch(() => 'unknown')).split(' ')[0] ?? '').replace(/\D/g, '') || 'unknown'
+      const dir = (await $.env.get('JEV_COMPACTION_METRICS_DIR')) || DEFAULT_METRICS_DIR
+      const fs = { read: (path: string) => $.fs.read(path), write: (path: string, text: string) => $.fs.write(path, text), exists: (path: string) => $.fs.exists(path) }
+      await writeMetrics(fs, dir, metricsPid, counts, Math.floor(Date.now() / 1000))
+    } catch {
+      // metrics are best effort
+    }
+  })
+}
+
+/** The status and Jev error type of a failed request, as the metric labels. */
+function failureParts(err: unknown): { status: string; errorType: string } {
+  if (err instanceof JevError) return { status: err.status === undefined ? 'other' : String(err.status), errorType: err.errorType || 'none' }
+  return { status: /timed out/i.test(message(err)) ? 'timeout' : 'other', errorType: 'none' }
+}
+
 /** The label of a failed Jev request for the failure counters: `<status>[:<error_type>]`, `timeout` or `other`. */
 export function failureLabel(err: unknown): string {
   if (err instanceof JevError) return err.status === undefined ? 'other' : `${err.status}${err.errorType ? `:${err.errorType}` : ''}`
@@ -239,8 +270,15 @@ function asker($: EngineInterface, key: string, timeoutMs: number, started: numb
   )
   const counted: typeof ask = async (state, questions) => {
     try {
-      return await ask(state, questions)
+      const answers = await ask(state, questions)
+      track($, (c) => bumpCount(c.requests, '200'))
+      return answers
     } catch (err) {
+      const { status, errorType } = failureParts(err)
+      track($, (c) => {
+        bumpCount(c.requests, status)
+        bumpCount(c.failures, `${status}|${errorType}`)
+      })
       await recordFailure($, err)
       throw err
     }
@@ -382,6 +420,7 @@ async function settle($: EngineInterface, d: Decision, next: () => Promise<Sessi
     }
     if (verdict.act === 'skip') {
       await bump($, { deferred: 1, requests })
+      track($, (c) => bumpCount(c.deferred, deferReason(verdict.reason)))
       notify($, `deferred: ${verdict.reason}`)
       return { skip: `jev-compaction deferred: ${verdict.reason}` }
     }
