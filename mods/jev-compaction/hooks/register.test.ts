@@ -1567,6 +1567,8 @@ test('stream-json: the mod\'s own command with no prepared check, token count st
   expect(ran.length).toBe(1)
   expect(isBuiltin(ran[0]!.result)).toBe(true)
   expect(requests.filter((r) => r.inCommand)).toEqual([])
+  // the fallback is counted once, and nothing is counted as applied or deferred
+  expect(await stat($)).toMatch(/0 applied, 0 deferred, 1 built-in fallbacks/)
 })
 
 test('stream-json: a command that waits in the queue on the engine clock is still the mod\'s own: the hook asks Jev nothing', { options: OLD }, async ($, on) => {
