@@ -1,4 +1,5 @@
 // Ported from fast-jev-compaction (MIT), extended to judge message text.
+import { head as cutHead, tail as cutTail } from './unicode'
 import type { Message, Options, Protect, ToolCall } from './types'
 
 /** The notes this mod leaves in cut text; an item that carries one is never judged or cut again. */
@@ -32,10 +33,20 @@ const TEXT_HEAD = 400
 const TEXT_TAIL = 150
 const TOKEN_PIECES = /[A-Za-z]+|\d+|[^\sA-Za-z\d]/g
 
-/** Estimates tokens without a tokenizer: a word costs one token per six letters, a digit half, any other symbol nine tenths. */
+// A long run of letters and digits that holds both (a hash, an id, a token, base64) costs about 0.7 tokens a character,
+// not the one token per six letters of a word: measured against Jev, random hex runs 1.7 times and base64 2.3 times the
+// word estimate, which pushed a request over its 32k-token limit (400 max_tokens_exceeded).
+const CODE_RUN = /(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{16,}/g
+const CODE_TOKENS_PER_CHAR = 0.7
+
+/** Estimates tokens without a tokenizer: a word costs one token per six letters, a digit half, any other symbol nine tenths, an id or hash 0.7 a character. */
 export function estimateTokens(text: string): number {
   let tokens = 0
-  for (const [piece] of text.matchAll(TOKEN_PIECES)) {
+  const words = text.replace(CODE_RUN, (run) => {
+    tokens += run.length * CODE_TOKENS_PER_CHAR
+    return ' '
+  })
+  for (const [piece] of words.matchAll(TOKEN_PIECES)) {
     const first = piece.charCodeAt(0)
     if (first >= 48 && first <= 57) tokens += piece.length / 2
     else if ((first >= 65 && first <= 90) || (first >= 97 && first <= 122)) tokens += 1 + Math.floor((piece.length - 1) / 6)
@@ -45,7 +56,7 @@ export function estimateTokens(text: string): number {
 }
 
 export function truncate(text: string, limit: number): string {
-  return text.length <= limit ? text : `${text.slice(0, Math.max(0, limit - 1))}…`
+  return text.length <= limit ? text : `${cutHead(text, Math.max(0, limit - 1))}…`
 }
 
 export function isPinned(index: number, total: number, preserveRecentMessages: number): boolean {
@@ -160,7 +171,7 @@ export function goalFromMessages(messages: readonly Message[]): string {
 
 function abridgeForState(text: string): string {
   if (text.length <= TEXT_HEAD + TEXT_TAIL + 40) return text
-  return `${text.slice(0, TEXT_HEAD)}\n[… ${text.length - TEXT_HEAD - TEXT_TAIL} chars omitted …]\n${text.slice(-TEXT_TAIL)}`
+  return `${cutHead(text, TEXT_HEAD)}\n[… ${text.length - TEXT_HEAD - TEXT_TAIL} chars omitted …]\n${cutTail(text, TEXT_TAIL)}`
 }
 
 /**

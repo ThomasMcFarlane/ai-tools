@@ -1,6 +1,7 @@
 // Session rotation: the conversation is replaced in place by its first message, one handover message and the newest
 // messages, so the session id (and its agents, crons and tasks) survives. Pure functions; register.ts does the I/O.
 import type { PromptSubmitInput } from 'claude-code'
+import { head as cutHead, tail as cutTail } from './unicode'
 
 import { messageChars } from './compact'
 import type { Message } from './types'
@@ -90,7 +91,7 @@ export const rotationDue = (now: number, since: number, highTurns: number, c: Pi
 export const isRule = (text: string) => RULE.test(text)
 
 export const abridge = (text: string, promptsPath: string) =>
-  text.length <= ABRIDGE_OVER ? text : `${text.slice(0, HEAD)}\n[… ${text.length - HEAD - TAIL} chars abridged; the full prompt is in ${promptsPath} …]\n${text.slice(-TAIL)}`
+  text.length <= ABRIDGE_OVER ? text : `${cutHead(text, HEAD)}\n[… ${text.length - HEAD - TAIL} chars abridged; the full prompt is in ${promptsPath} …]\n${cutTail(text, TAIL)}`
 
 /** PROMPTS.md: every ledger prompt verbatim, oldest first. */
 export const promptsFile = (ledger: readonly LedgerEntry[]) =>
@@ -163,7 +164,7 @@ export function unansweredQuestions(messages: readonly Message[]): string[] {
     const last = m.text.trim().split('\n').at(-1)?.trim() ?? ''
     if (!last.endsWith('?')) continue
     const answered = messages.slice(i + 1).some((n) => n.role === 'user' && n.text.trim() !== '' && !n.text.includes(REQUEST_MARKER) && !n.text.includes('<task-notification>'))
-    if (!answered) out.push(last.slice(0, 300))
+    if (!answered) out.push(cutHead(last, 300))
   }
   return out
 }
@@ -281,7 +282,7 @@ export function verifyRotation(r: RotationInput, built: Rotation, promptsText: s
   const urls = new Set(dropped.flatMap((m) => [m.text, ...m.toolUses.map((u) => JSON.stringify(u.input) + (u.text ?? '')), ...(m.toolResults ?? []).map((t) => t.text)].flatMap((t) => t.match(PR_URL) ?? [])))
   for (const url of urls) if (!has(url)) missing.push({ item: `pull request ${url}`, fixable: true })
   // A typed prompt the ledger never saw would be lost with its row: nothing to append it from, so the rotation stops.
-  for (const t of uncoveredPrompts(dropped, ledger)) missing.push({ item: `dropped prompt not in the ledger: ${t.slice(0, 200)}`, fixable: false })
+  for (const t of uncoveredPrompts(dropped, ledger)) missing.push({ item: `dropped prompt not in the ledger: ${cutHead(t, 200)}`, fixable: false })
   for (const q of unansweredQuestions(r.messages)) if (!r.handover.pendingQuestions.some((p) => p.includes(q)) && !has(q)) missing.push({ item: `pending question: ${q}`, fixable: true })
   if (r.handover.goal.trim() === '') missing.push({ item: 'goal is empty', fixable: false })
   const first = built.messages[0]

@@ -1,6 +1,6 @@
 {
   "name": "jev-compaction",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": {
     "name": "Thomas McFarlane"
   },
@@ -144,14 +144,14 @@
       "type": "number",
       "title": "Jev state ceiling (tokens)",
       "description": "Estimated token ceiling of the conversation state sent to Jev.",
-      "default": 25000,
+      "default": 20000,
       "required": false
     },
     "maxRequestTokens": {
       "type": "number",
       "title": "Jev request ceiling (tokens)",
-      "description": "Estimated token ceiling of state plus one batch of questions.",
-      "default": 30000,
+      "description": "Estimated token ceiling of state plus one batch of questions. Jev refuses a request over about 32k tokens, and the estimate can run low (about 1.1 times for prose, more than 2 times for long runs of letters or digits), so keep it at 24000 or less. A size error shrinks the budget and retries.",
+      "default": 24000,
       "required": false
     },
     "truncateHeadChars": {

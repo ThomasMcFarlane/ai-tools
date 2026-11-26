@@ -51,6 +51,10 @@ declare module 'claude-code' {
       // Jev keep probabilities by fingerprint of tool and input (or role and text hash)
       scores: Record<string, number>
       stats: JevCompactionStats
+      // failed Jev requests by `<status>[:<error_type>]` (`400:max_tokens_exceeded`), `timeout` or `other`
+      failures: Record<string, number>
+      // the share (0.15 to 1) of maxStateTokens and maxRequestTokens in use, lowered after a 400 max_tokens_exceeded
+      budget: number
       // context tokens of the last attempt that did not reach the target; 0 when none
       guard: number
       // the messages' real share kept over their share by characters, learnt from the host's count after each applied compaction

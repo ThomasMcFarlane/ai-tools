@@ -21,6 +21,12 @@ type Setup = {
   rows?: unknown[]
   // never answer a fetch
   hang?: boolean
+  // the body of a failed request (default: a Jev success body)
+  body?: string
+  // answer 400 max_tokens_exceeded to a request whose body is longer than this many characters
+  maxChars?: number
+  // answer 400 max_tokens_exceeded to the first this many requests
+  failFirst?: number
   // an SDK or stream-json session (T3 Code), not the REPL
   headless?: boolean
   // tokens outside the `Messages` row of the host's breakdown; absent, no breakdown
@@ -76,6 +82,9 @@ async function boot($: any, on: any, setup: Setup = {}) {
     if (setup.hang) return new Promise(() => undefined) as never
     const body = JSON.parse(e.init.body)
     requests.push({ url: e.url, headers: e.init.headers, body })
+    if (setup.failFirst !== undefined && requests.length <= setup.failFirst) return { value: { status: 400, ok: false, headers: {}, text: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } }
+    if (setup.maxChars !== undefined && e.init.body.length > setup.maxChars) return { value: { status: 400, ok: false, headers: {}, text: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) } }
+    if (setup.body !== undefined) return { value: { status: setup.status ?? 400, ok: false, headers: {}, text: setup.body } }
     const answers = Object.fromEntries(Object.keys(body.questions).map((name) => [name, { noul: setup.p ?? 0 }]))
     const status = setup.status ?? 200
     return { value: { status, ok: status < 300, headers: {}, text: JSON.stringify({ answers }) } }
@@ -553,7 +562,7 @@ test('a turn that did not end in an answer neither compacts nor pre-scores', asy
 
 // ---- SDK / stream-json sessions (T3 Code) --------------------------------------------------------------------
 
-const bootHeadless = ($: any, on: any, setup: Setup = {}) => boot($, on, { ...setup, headless: true })
+const bootHeadless = ($: any, on: any, setup: Setup = {}) => boot($, on, { rows: transcript(), ...setup, headless: true })
 
 test('stream-json: a turn end at the trigger runs /compact through the host command, judged as periodic', { options: OLD }, async ($, on) => {
   const { ran, compactCalls, usage, toasts } = await bootHeadless($, on, { p: 0 })
@@ -570,16 +579,18 @@ test('stream-json: a turn end at the trigger runs /compact through the host comm
 })
 
 test('stream-json: the periodic compaction defers like an interactive one instead of falling back to the built-in summary', { options: OLD }, async ($, on) => {
-  const { ran, usage, toasts } = await bootHeadless($, on, { p: 1 })
+  const { ran, usage, toasts, requests } = await bootHeadless($, on, { p: 1 })
   usage.tokens = 410_000
   await $.turn.complete(reply())
-  expect(ran.length).toBe(1)
-  expect(ran[0]!.result.skip).toMatch(/deferred/)
+  // A deferral runs no `/compact`: the host would print "Not compacted" as the answer of the turn.
+  expect(ran.length).toBe(0)
   expect(toasts.at(-1)).toMatch(/deferred/)
+  expect(await stat($)).toMatch(/1 deferred/)
   // the regrowth guard holds as in an interactive session
+  const asked = requests.length
   usage.tokens = 440_000
   await $.turn.complete(reply())
-  expect(ran.length).toBe(1)
+  expect(requests.length).toBe(asked)
 })
 
 test('stream-json: at or above the hard limit a result that stays above it runs the built-in summary', { options: { ...OLD, hardTokens: 420_000 } }, async ($, on) => {
@@ -614,14 +625,96 @@ test('stream-json: a /compact the person sends keeps the manual policy', { optio
   expect(isBuiltin(await compact($, 'manual'))).toBe(true)
 })
 
+const sizes = (requests: { body: unknown }[]) => requests.map((r) => JSON.stringify(r.body).length)
+
+test('a 400 that Jev explains is counted by status and error type, and names both', { options: OLD }, async ($, on) => {
+  const body = JSON.stringify({ detail: { error_type: 'api_usage_error', message: 'Request contains invalid Unicode text.' } })
+  const { logs } = await boot($, on, { status: 400, body })
+  const r = await compact($, 'plugin')
+  expect(r.skip).toMatch(/Jev request failed \(400: api_usage_error, Request contains invalid Unicode text\.\)/)
+  expect(logs.some((l) => l.includes('Jev request failed (400:api_usage_error)'))).toBe(true)
+  expect(await stat($)).toMatch(/failed Jev requests: 400:api_usage_error x\d+/)
+})
+
+test('stream-json: a failed Jev request (400) runs no /compact, so the turn is not answered with "Not compacted"', { options: OLD }, async ($, on) => {
+  const { ran, usage, toasts, logs } = await bootHeadless($, on, { status: 400, body: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) })
+  usage.tokens = 410_000
+  // the turn end answers as before: the hook hands its answer on
+  const answered = await $.turn.complete(reply())
+  expect(answered).toBeDefined()
+  expect(ran.length).toBe(0)
+  expect(toasts.at(-1)).toMatch(/deferred: Jev request failed \(400: max_tokens_exceeded\)/)
+  const stats = await stat($)
+  expect(stats).toMatch(/1 deferred/)
+  expect(stats).toMatch(/failed Jev requests: 400:max_tokens_exceeded x\d+/)
+  expect(t3Payload(t3Lines(logs).at(-1)!).details).toMatchObject({ outcome: 'deferred' })
+})
+
+test('stream-json: a failed Jev request above the hard limit still hands over to the built-in summary', { options: { ...OLD, hardTokens: 420_000 } }, async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { status: 400 })
+  usage.tokens = 450_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(true)
+})
+
+test('stream-json: the decision made before /compact is used by the hook, with no second round of Jev requests', { options: OLD }, async ($, on) => {
+  const { ran, usage, requests } = await bootHeadless($, on, { p: 0 })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  // the 12 results are scored in one round: the hook asked nothing more
+  expect(requests.length).toBeGreaterThan(0)
+  expect(requests.length).toBeLessThanOrEqual(4)
+  expect(isBuiltin(ran[0]!.result)).toBe(false)
+})
+
+test('a request over Jev\'s size limit (400 max_tokens_exceeded) is retried smaller and the compaction still applies', { options: { ...OLD, maxStateTokens: 1500, maxRequestTokens: 2600 } }, async ($, on) => {
+  // The first request is about 6400 characters (state and questions); the limit below refuses it, as Jev does one over its token limit.
+  const LIMIT = 5000
+  const { requests, logs } = await boot($, on, { p: 0, maxChars: LIMIT })
+  const r = await compact($, 'plugin')
+  expect(r.skip).toBeUndefined()
+  expect(isBuiltin(r)).toBe(false)
+  const lengths = sizes(requests)
+  expect(lengths[0]!).toBeGreaterThan(LIMIT)
+  expect(lengths.at(-1)!).toBeLessThanOrEqual(LIMIT)
+  expect(logs.some((l) => l.includes('Jev request failed (400:max_tokens_exceeded)'))).toBe(true)
+  const stats = await stat($)
+  expect(stats).toMatch(/failed Jev requests: 400:max_tokens_exceeded x\d+/)
+  expect(stats).toMatch(/request budget at 60%/)
+  // The next attempt has no size error at the smaller budget: the budget wins a quarter back, and again, up to the full size.
+  await compact($, 'plugin')
+  expect(await stat($)).toMatch(/request budget at 75%/)
+})
+
+test('a round of parallel requests that are all too large shrinks the budget once, not once for each request', { options: { ...OLD, maxStateTokens: 1500, maxRequestTokens: 2600 } }, async ($, on) => {
+  // Every request is refused: each of the three rounds sends several in parallel, and each round shrinks the budget once (0.6 x 3 = 22%),
+  // where one shrink for each failed request pinned it at the 15% floor.
+  const { requests } = await boot($, on, { p: 0, maxChars: 100 })
+  const r = await $.session.compact({ trigger: 'plugin', messages: transcript(40) } as never)
+  expect(r.skip).toMatch(/max_tokens_exceeded/)
+  expect(requests.length).toBeGreaterThanOrEqual(6)
+  expect(await stat($)).toMatch(/request budget at 22%/)
+})
+
+test('a transcript with a lone surrogate (an emoji cut in two) reaches Jev as well-formed text', { options: OLD }, async ($, on) => {
+  const { requests } = await boot($, on, { p: 0 })
+  const messages = transcript()
+  messages[0] = { ...messages[0]!, text: `start \ud83d and \ude00 and ${'\ud83d\ude00'}` }
+  await $.session.compact({ trigger: 'plugin', messages } as never)
+  expect(requests.length).toBeGreaterThan(0)
+  for (const r of requests) expect(JSON.stringify(r.body)).not.toMatch(/\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])|(?<!\\ud[89ab][0-9a-f]{2})\\ud[c-f][0-9a-f]{2}/i)
+})
+
 test('stream-json: /jev-compact now compacts at the next turn end', async ($, on) => {
-  const { ran, usage } = await bootHeadless($, on, { p: 1 })
+  const { ran, usage, toasts } = await bootHeadless($, on, { p: 1 })
   usage.tokens = 100_000
   const { text } = await $.command.run({ command: 'jev-compact', args: 'now' } as never)
   expect(text).toContain('next turn ends')
   await $.turn.complete(reply())
-  expect(ran.length).toBe(1)
-  expect(ran[0]!.result.skip).toMatch(/deferred/)
+  expect(ran.length).toBe(0)
+  expect(toasts.at(-1)).toMatch(/deferred/)
 })
 
 // ---- compression on entry (session.append) ----------------------------------------------------------------
@@ -838,4 +931,53 @@ test('reporting: a failing ui.log never changes the compaction', async ($, on) =
   expect(isBuiltin(await compact($, 'plugin'))).toBe(false)
   expect(logs.some((l) => l.startsWith('jev-compaction: compacted'))).toBe(true)
   expect(t3Lines(logs)).toEqual([])
+})
+
+// A history of this many messages: `$.session.messages()` is the newest 4096 only, so a list just under the cap may be a cut.
+const rowsOf = (n: number): Message[] => [
+  { role: 'user', text: 'start', toolUses: [], handle: 'h0' },
+  ...Array.from({ length: n - 1 }, (_, i): Message => ({ role: i % 2 === 0 ? 'assistant' : 'user', text: `step ${i}`, toolUses: [], handle: `m${i}` })),
+]
+
+test('stream-json: a host list at the cap may be a cut of a longer one, so no Jev request and no /compact below the hard limit', { options: OLD }, async ($, on) => {
+  const { ran, usage, requests, logs } = await bootHeadless($, on, { p: 1, rows: rowsOf(4090) })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(0)
+  expect(requests.length).toBe(0)
+  expect(logs.some((l) => l.includes('may be a cut of a longer one'))).toBe(true)
+})
+
+test('stream-json: a host list at the cap above the hard limit still runs the host summary', { options: { ...OLD, hardTokens: 420_000 } }, async ($, on) => {
+  const { ran, usage } = await bootHeadless($, on, { p: 1, rows: rowsOf(4090) })
+  usage.tokens = 430_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+})
+
+test('stream-json: the decision made before /compact is the one the hook applies, so Jev is asked once', { options: OLD }, async ($, on) => {
+  const { ran, usage, requests } = await bootHeadless($, on, { p: 0 })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(isBuiltin(ran[0]!.result)).toBe(false)
+  // The hook runs after the check and the scores are remembered: asking again would count no request, so the total is the check's.
+  expect(requests.length).toBeGreaterThan(0)
+  expect(await stat($)).toContain(`${requests.length} Jev requests`)
+})
+
+test('a compaction whose every request is refused as too large is tried again with a smaller budget', { options: OLD }, async ($, on) => {
+  const { requests } = await boot($, on, { p: 0, failFirst: 1 })
+  const r = await compact($, 'plugin')
+  expect(r.skip).toBeUndefined()
+  expect(isBuiltin(r)).toBe(false)
+  expect(requests.length).toBe(2)
+  expect(await stat($)).toMatch(/failed Jev requests: 400:max_tokens_exceeded x1.*request budget at 60%/)
+})
+
+test('a compaction whose three tries are all refused as too large defers, and says why', { options: OLD }, async ($, on) => {
+  const { requests } = await boot($, on, { p: 0, failFirst: 3 })
+  const r = await compact($, 'plugin')
+  expect(r.skip).toMatch(/max_tokens_exceeded/)
+  expect(requests.length).toBe(3)
 })

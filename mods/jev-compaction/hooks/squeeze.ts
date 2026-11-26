@@ -1,6 +1,8 @@
 // Text shrinking without the engine: deterministic word-level compression (English prose only), sentence
 // splitting and dropping, and chunking of long tool output. Everything here is a pure function.
 
+import { head as cutHead, tail as cutTail } from './unicode'
+
 export const SIGNAL_LINES =
   /\b(error|errors|fail|failed|failure|failing|exception|traceback|panic|fatal|denied|refused|warning|warn|assert\w*|expected|received|not found|cannot|unable|segfault|exit code [1-9]|status [45]\d\d)\b/i
 export const SIGNAL_MAX_CHARS = 1500
@@ -311,7 +313,7 @@ export function planSentences(text: string): SentencePlan {
 }
 
 export const sentenceQuestion = (where: string, text: string) =>
-  `This sentence of ${where} carries information still needed (a fact, decision, result, constraint, path, command or next step), not padding, a recap or a pleasantry: ${JSON.stringify(text.length > 240 ? `${text.slice(0, 239)}…` : text)}`
+  `This sentence of ${where} carries information still needed (a fact, decision, result, constraint, path, command or next step), not padding, a recap or a pleasantry: ${JSON.stringify(text.length > 240 ? `${cutHead(text, 239)}…` : text)}`
 
 /** Segments scoring below the threshold, lowest first, never more than `ratio` of all the message's sentences. */
 export function pickDrops(plan: Pick<SentencePlan, 'total'>, scored: readonly { segment: number; p: number }[], threshold: number, ratio: number): Set<number> {
@@ -381,7 +383,7 @@ export function chunkText(text: string): Chunk[] {
 }
 
 export const chunkQuestion = (tool: string, from: number, to: number, total: number, text: string) =>
-  `This chunk (characters ${from} to ${to} of ${total}) of the output of a ${tool} tool call carries information still needed (a result, value, error, name or path), not repeated listing, boilerplate or progress noise: ${JSON.stringify(text.length > 320 ? `${text.slice(0, 220)} … ${text.slice(-100)}` : text)}`
+  `This chunk (characters ${from} to ${to} of ${total}) of the output of a ${tool} tool call carries information still needed (a result, value, error, name or path), not repeated listing, boilerplate or progress noise: ${JSON.stringify(text.length > 320 ? `${cutHead(text, 220)} … ${cutTail(text, 100)}` : text)}`
 
 /** Joins the kept chunks; each run of dropped ones leaves its failure lines and one omission note. */
 export function joinChunks(chunks: readonly Chunk[], keep: readonly boolean[], entry = false): string {
