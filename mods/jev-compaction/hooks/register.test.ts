@@ -35,6 +35,16 @@ type Setup = {
   failReport?: boolean
   // the node-exporter textfile directory exists (the counters are written to it)
   metrics?: boolean
+  // files already in that directory, by name: when they were last written (ms since the epoch) and their size
+  dirFiles?: Record<string, { mtimeMs: number; size?: number }>
+  // the host cannot run commands (no `mv`, no `rm`)
+  noRun?: boolean
+  // `/proc/self/stat` (default: pid 4242, start time 987654); `none`: unreadable
+  stat?: string | 'none'
+  // the host name (default pod-a)
+  host?: string
+  // every write into the metrics directory fails
+  failMetricsWrite?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -65,16 +75,48 @@ async function boot($: any, on: any, setup: Setup = {}) {
   const stored = { get: () => rows.appended().map((r) => r.message as any) }
   mock.env(on, setup.env ?? { JEV_COMPACTION_API_KEY: KEY, HOME: '/home/u' })
   const written: Record<string, string> = {}
+  const commands: string[][] = []
+  const DIR = '/var/lib/node-exporter/textfile-collector'
+  const dirFiles = { ...(setup.dirFiles ?? {}) }
   on('fs.read', (_$: any, e: any) => {
-    if (e.path === '/proc/self/stat') return { value: '4242 (claude) S 1 4242' }
+    if (e.path === '/proc/self/stat') {
+      if (setup.stat === 'none') throw new Error('ENOENT')
+      return { value: setup.stat ?? '4242 (claude) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 987654 1000 1000' }
+    }
+    if (e.path === '/etc/hostname') return { value: `${setup.host ?? 'pod-a'}\n` }
     const text = (setup.files ?? {})[e.path] ?? written[e.path]
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
   on('fs.exists', (_$: any, e: any) => ({ value: e.path.startsWith('/proc/') ? e.path === '/proc/4242' : Boolean(setup.metrics) && e.path === '/var/lib/node-exporter/textfile-collector' }))
   on('fs.write', (_$: any, e: any) => {
+    if (setup.failMetricsWrite && e.path.startsWith(`${DIR}/`)) throw new Error('EACCES')
     written[e.path] = String(e.text ?? '')
+    if (e.path.startsWith(`${DIR}/`)) dirFiles[e.path.slice(DIR.length + 1)] = { mtimeMs: Date.now(), size: written[e.path].length }
     return { value: undefined }
+  })
+  on('fs.list', (_$: any, e: any) => ({
+    value: e.path === DIR ? Object.entries(dirFiles).map(([name, f]) => ({ name, kind: 'file' as const, size: f.size ?? 100, mtimeMs: f.mtimeMs, isLink: false })) : [],
+  }))
+  // `mv` and `rm` on the metrics directory, as the host does them
+  on('process.run', (_$: any, e: any) => {
+    commands.push([...e.argv])
+    if (setup.noRun) throw new Error('commands are not available')
+    const [cmd, ...args] = e.argv as string[]
+    const paths = args.filter((a) => a.startsWith('/'))
+    const name = (path: string) => path.slice(DIR.length + 1)
+    if (cmd === 'mv' && paths.length === 2) {
+      written[paths[1]!] = written[paths[0]!] ?? ''
+      delete written[paths[0]!]
+      dirFiles[name(paths[1]!)] = { mtimeMs: Date.now(), size: written[paths[1]!].length }
+      delete dirFiles[name(paths[0]!)]
+    } else if (cmd === 'rm') {
+      for (const path of paths) {
+        delete written[path]
+        delete dirFiles[name(path)]
+      }
+    }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   const clock = mock.clock(on)
   const usage = { tokens: setup.tokens ?? 450_000, window: setup.window ?? 1_000_000 }
@@ -124,7 +166,7 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
-  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written }
+  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written, commands, dirFiles }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -944,17 +986,37 @@ test('reporting: a failing ui.log never changes the compaction', async ($, on) =
 
 // --- Prometheus counters in the node-exporter textfile (metrics.ts) ---
 
-const PROM = '/var/lib/node-exporter/textfile-collector/jev_compaction.prom'
+const DIR = '/var/lib/node-exporter/textfile-collector'
+const FILE = 'jev_compaction_pod-a_4242-987654.prom'
+const PROM = `${DIR}/${FILE}`
 const flush = async () => {
-  for (let i = 0; i < 200; i++) await Promise.resolve()
+  for (let i = 0; i < 400; i++) await Promise.resolve()
 }
 const series = (text: string | undefined, name: string, labels: string) => {
   const line = (text ?? '').split('\n').find((l) => l.startsWith(`${name}{`) && labels.split(',').every((p) => l.includes(p)))
   return line === undefined ? undefined : Number(line.slice(line.lastIndexOf(' ') + 1))
 }
+const TOO_BIG = JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } })
+
+test('metrics: the file is written at the session start with every usual series at 0, so a first failure counts in increase()', async ($, on) => {
+  const { written } = await boot($, on, { metrics: true, headless: true })
+  await flush()
+  const text = written[PROM]
+  expect(text).toBeDefined()
+  expect(series(text, 'jev_compaction_requests_total', 'status="200"')).toBe(0)
+  expect(series(text, 'jev_compaction_failures_total', 'status="400",error_type="max_tokens_exceeded"')).toBe(0)
+  expect(series(text, 'jev_compaction_deferred_total', 'reason="transcript_cut"')).toBe(0)
+  expect(text).toContain('host="pod-a",process="4242-987654"')
+})
+
+test('metrics: a one-shot -p run writes no file', async ($, on) => {
+  const { written } = await boot($, on, { metrics: true, headless: true, files: { '/proc/self/cmdline': ['claude', '-p', 'hi'].join('\0') } })
+  await flush()
+  expect(Object.keys(written).filter((k) => k.startsWith(DIR))).toEqual([])
+})
 
 test('metrics: a 400 max_tokens_exceeded counts in requests and failures by status and error type', { options: OLD }, async ($, on) => {
-  const { written } = await boot($, on, { status: 400, body: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }), metrics: true })
+  const { written } = await boot($, on, { status: 400, body: TOO_BIG, metrics: true })
   await compact($, 'plugin')
   await flush()
   const text = written[PROM]
@@ -962,9 +1024,6 @@ test('metrics: a 400 max_tokens_exceeded counts in requests and failures by stat
   expect(series(text, 'jev_compaction_failures_total', 'status="400",error_type="max_tokens_exceeded"')).toBeGreaterThanOrEqual(1)
   expect(series(text, 'jev_compaction_requests_total', 'status="400"')).toBeGreaterThanOrEqual(1)
   expect(series(text, 'jev_compaction_deferred_total', 'reason="jev_error"')).toBeGreaterThanOrEqual(1)
-  expect(text).toContain('pid="4242"')
-  // every usual series exists from the first write, so a first failure counts in increase()
-  expect(series(text, 'jev_compaction_failures_total', 'status="401",error_type="none"')).toBe(0)
 })
 
 test('metrics: a deferral that frees too little counts under its own reason, and a good request counts as 200', { options: OLD }, async ($, on) => {
@@ -973,15 +1032,110 @@ test('metrics: a deferral that frees too little counts under its own reason, and
   await flush()
   const text = written[PROM]
   expect(series(text, 'jev_compaction_requests_total', 'status="200"')).toBeGreaterThanOrEqual(1)
-  if (r.skip) expect(series(text, 'jev_compaction_deferred_total', 'reason="frees_too_little"')).toBeGreaterThanOrEqual(1)
+  expect(r.skip).toMatch(/frees only/)
+  expect(series(text, 'jev_compaction_deferred_total', 'reason="frees_too_little"')).toBeGreaterThanOrEqual(1)
+})
+
+test('metrics: a status that is not in the usual list adds its series when it first happens', { options: OLD }, async ($, on) => {
+  const { written } = await boot($, on, { status: 429, body: '{}', metrics: true })
+  await compact($, 'plugin')
+  await flush()
+  expect(series(written[PROM], 'jev_compaction_requests_total', 'status="429"')).toBeGreaterThanOrEqual(1)
+  expect(series(written[PROM], 'jev_compaction_failures_total', 'status="429",error_type="none"')).toBeGreaterThanOrEqual(1)
+})
+
+test('metrics: the file is written to a temp name and renamed, so a scrape never reads half of it', { options: OLD }, async ($, on) => {
+  const { written, commands } = await boot($, on, { status: 400, body: TOO_BIG, metrics: true })
+  await compact($, 'plugin')
+  await flush()
+  expect(commands.some((c) => c[0] === 'mv' && c.includes(`${PROM}.tmp`) && c.includes(PROM))).toBe(true)
+  expect(Object.keys(written).filter((k) => k.endsWith('.tmp'))).toEqual([])
+  expect(written[PROM]).toBeDefined()
+})
+
+test('metrics: a host that cannot run commands still gets its own file, written in place', { options: OLD }, async ($, on) => {
+  const { written } = await boot($, on, { status: 400, body: TOO_BIG, metrics: true, noRun: true })
+  await compact($, 'plugin')
+  await flush()
+  expect(series(written[PROM], 'jev_compaction_requests_total', 'status="400"')).toBeGreaterThanOrEqual(1)
+})
+
+test('metrics: an unreadable /proc/self/stat gives a random process name, never one shared name', async ($, on) => {
+  const { written } = await boot($, on, { metrics: true, stat: 'none' })
+  await flush()
+  const files = Object.keys(written).filter((k) => k.startsWith(`${DIR}/jev_compaction_pod-a_r`))
+  expect(files.length).toBe(1)
+  expect(files[0]).not.toMatch(/unknown/)
+})
+
+test('metrics: two pods on one node with the same pid write two files with two host labels', async ($, on) => {
+  const a = await boot($, on, { metrics: true, host: 'pod-a' })
+  await flush()
+  expect(Object.keys(a.written).some((k) => k === `${DIR}/jev_compaction_pod-a_4242-987654.prom`)).toBe(true)
+  expect(a.written[`${DIR}/jev_compaction_pod-a_4242-987654.prom`]).toContain('host="pod-a"')
+})
+
+test('metrics: files nothing wrote for a day are removed, whatever /proc says; younger ones, and files of other tools, stay', async ($, on) => {
+  const day = 24 * 3600 * 1000
+  const now = Date.now()
+  const { commands, dirFiles } = await boot($, on, {
+    metrics: true,
+    dirFiles: {
+      'jev_compaction_pod-b_17-5.prom': { mtimeMs: now - day - 60_000 },
+      'jev_compaction_pod-b_18-6.prom.tmp': { mtimeMs: now - day - 60_000 },
+      'jev_compaction_pod-b_19-7.prom': { mtimeMs: now - day + 3_600_000 },
+      'node_other.prom': { mtimeMs: now - 10 * day },
+    },
+  })
+  await flush()
+  expect(dirFiles['jev_compaction_pod-b_17-5.prom']).toBeUndefined()
+  expect(dirFiles['jev_compaction_pod-b_18-6.prom.tmp']).toBeUndefined()
+  expect(dirFiles['jev_compaction_pod-b_19-7.prom']).toBeDefined()
+  expect(dirFiles['node_other.prom']).toBeDefined()
+  expect(dirFiles[FILE]).toBeDefined()
+  expect(commands.some((c) => c[0] === 'rm' && c.includes(`${DIR}/jev_compaction_pod-b_17-5.prom`))).toBe(true)
+})
+
+test('metrics: where rm is not possible an old file is emptied, so its series go', async ($, on) => {
+  const day = 24 * 3600 * 1000
+  const { written } = await boot($, on, { metrics: true, noRun: true, dirFiles: { 'jev_compaction_pod-b_17-5.prom': { mtimeMs: Date.now() - 2 * day } } })
+  await flush()
+  expect(written[`${DIR}/jev_compaction_pod-b_17-5.prom`]).toBe('')
+})
+
+test('metrics: a round of parallel failures writes the file far fewer times than it has requests', { options: OLD }, async ($, on) => {
+  const { commands } = await boot($, on, { status: 400, body: TOO_BIG, metrics: true })
+  await compact($, 'plugin')
+  await flush()
+  const moves = commands.filter((c) => c[0] === 'mv').length
+  expect(moves).toBeGreaterThanOrEqual(2)
+  expect(moves).toBeLessThanOrEqual(8)
 })
 
 test('metrics: no textfile directory (a pod without the mount) writes nothing and changes nothing', { options: OLD }, async ($, on) => {
-  const { written } = await boot($, on, { status: 400, body: JSON.stringify({ detail: { error_type: 'max_tokens_exceeded' } }) })
+  const { written, commands } = await boot($, on, { status: 400, body: TOO_BIG })
   const r = await compact($, 'plugin')
   await flush()
   expect(r.skip).toMatch(/Jev request failed \(400/)
   expect(Object.keys(written)).toEqual([])
+  expect(commands).toEqual([])
+})
+
+test('metrics: a metrics failure never changes the compaction', { options: OLD }, async ($, on) => {
+  const { written } = await boot($, on, { p: 0, metrics: true, noRun: true, failMetricsWrite: true })
+  const r = await compact($, 'plugin')
+  await flush()
+  expect(isBuiltin(r)).toBe(false)
+  expect(r.messages?.length).toBeGreaterThan(0)
+  expect(Object.keys(written).filter((k) => k.startsWith(DIR))).toEqual([])
+})
+
+test('metrics: a transcript that may be a cut counts as a deferral under transcript_cut', { options: OLD }, async ($, on) => {
+  const { usage, written } = await bootHeadless($, on, { p: 1, rows: rowsOf(4090), metrics: true })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  await flush()
+  expect(series(written[PROM], 'jev_compaction_deferred_total', 'reason="transcript_cut"')).toBe(1)
 })
 
 // A history of this many messages: `$.session.messages()` is the newest 4096 only, so a list just under the cap may be a cut.

@@ -617,6 +617,29 @@ describe('cuts never split a surrogate pair', () => {
       expect(abridgeText(text, 400, 150)).not.toMatch(lone)
     }
   })
+  test('the signal lines of the omitted middle never start or end inside a pair, at the head cut and at the tail cut', () => {
+    // The pair sits on the head boundary and the signal line starts with it; the same at the tail boundary. Short filler lines keep the context small.
+    const filler = `${'y'.repeat(40)}\n`.repeat(60)
+    const headSide = `${'x'.repeat(399)}\u{1F600}Error: failed at the head\n${filler}${'z'.repeat(150)}`
+    const tailSide = `${'x'.repeat(400)}\n${filler}Error: failed at the tail \u{1F600}${'z'.repeat(149)}`
+    for (const text of [headSide, tailSide]) {
+      const out = abridgeText(text, 400, 150)
+      expect(out).toContain('Error: failed')
+      expect(out).not.toMatch(lone)
+    }
+  })
+  test('the signal lines of a truncated result never start inside a pair at the cut', () => {
+    const body = `${'x'.repeat(299)}\u{1F600}Error: failed at the cut\n${'y'.repeat(600)}`
+    const messages: Message[] = [
+      { role: 'user', text: 'start', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c1', tool: 'Bash', input: { command: 'ls' }, text: body }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'c1', text: body, isError: false }] },
+    ]
+    const out = applyDecisions(messages, new Map([['c1', 'drop_result' as const]]), new Map(), 300)
+    const text = out.flatMap((m) => m.toolResults ?? []).map((r) => r.text).join('\n')
+    expect(text).toContain('Error: failed at the cut')
+    expect(text).not.toMatch(lone)
+  })
   test('a truncated tool result, and the signal lines it keeps', () => {
     for (let shift = -2; shift <= 2; shift++) {
       const body = `${'x'.repeat(298 + shift)}\u{1F600}${'y'.repeat(400)}\nError: failed \u{1F600} here\n${'z'.repeat(400)}`

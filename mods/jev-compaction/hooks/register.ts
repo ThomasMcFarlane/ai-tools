@@ -10,7 +10,8 @@ import type { Config, Estimate, Verdict } from './policy'
 import { buildRotation, handoffFile, isRule, lastRotationOf, ledgerFromPrompt, ledgerFromRow, lineSplitter, parseHandover, promptsFile, REQUEST_MARKER, rotationDue, standingRules, unfinishedShells, verifyRotation } from './rotate'
 import type { LedgerEntry, RotationInput } from './rotate'
 import { goalFromMessages, truncate } from './state'
-import { DEFAULT_METRICS_DIR, bumpCount, deferReason, emptyCounts, writeMetrics } from './metrics'
+import { DEFAULT_METRICS_DIR, PRUNE_EVERY_SECONDS, bumpCount, deferReason, emptyCounts, processId, pruneMetrics, writeMetrics } from './metrics'
+import type { MetricsIo, ProcessId } from './metrics'
 import { head as cutHead } from './unicode'
 import type { CompactResult, Message, Protect } from './types'
 
@@ -202,27 +203,67 @@ async function fetchWithin($: EngineInterface, url: string, init: { method?: str
   }
 }
 
-// Counters for the node-exporter textfile (see metrics.ts). Kept in module memory: one process, one set of series.
+// Counters for the node-exporter textfile (see metrics.ts). Kept in module memory: one process, one file, one set of series.
 const counts = emptyCounts()
-let metricsPid: string | undefined
+let metricsId: Promise<ProcessId> | undefined
 let metricsChain: Promise<unknown> = Promise.resolve()
+let metricsQueued = false
+let lastPrune = 0
 
-/** Counts an event and writes the file. Never throws and never waits for the disk: a counter must not change a compaction. */
+/** The io of the metrics file, spelled out at each call site so the engine sees the real `$.fs` and `$.process` calls. */
+const metricsIo = ($: EngineInterface): MetricsIo => ({
+  read: (path) => $.fs.read(path),
+  write: (path, text) => $.fs.write(path, text),
+  exists: (path) => $.fs.exists(path),
+  list: (path) => $.fs.list(path),
+  run: (argv) => $.process.run(argv),
+})
+
+const randomWord = () => `${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36)}`
+
+/** Who this process is: the host or pod name, and its pid with its start time, so two processes never share a file. */
+function identity($: EngineInterface): Promise<ProcessId> {
+  metricsId ??= (async () => {
+    const text = (path: string) => $.fs.read(path).then((v) => String(v).trim(), () => '')
+    const host = (await text('/etc/hostname')) || (await text('/proc/sys/kernel/hostname')) || ((await $.env.get('HOSTNAME').catch(() => undefined)) ?? '') || 'host'
+    return processId(host, (await text('/proc/self/stat')) || undefined, randomWord)
+  })()
+  return metricsId
+}
+
+/** Writes the file now (and looks for old ones once an hour). Never throws. */
+async function flushMetrics($: EngineInterface): Promise<void> {
+  try {
+    const id = await identity($)
+    const dir = (await $.env.get('JEV_COMPACTION_METRICS_DIR')) || DEFAULT_METRICS_DIR
+    const io = metricsIo($)
+    const now = Date.now()
+    if (!(await writeMetrics(io, dir, id, counts, Math.floor(now / 1000)))) return
+    if (now / 1000 - lastPrune >= PRUNE_EVERY_SECONDS) {
+      lastPrune = now / 1000
+      await pruneMetrics(io, dir, id, now)
+    }
+  } catch {
+    // metrics are best effort
+  }
+}
+
+/**
+ * Counts an event and writes the file. Never throws and never waits for the disk: a counter must not change a compaction.
+ * A write that is queued but has not begun covers every event that comes before it starts, so a round of parallel requests
+ * writes the file once or twice, not once for each request.
+ */
 function track($: EngineInterface, change: (c: typeof counts) => void): void {
   try {
     change(counts)
   } catch {
     return
   }
-  metricsChain = metricsChain.then(async () => {
-    try {
-      metricsPid ??= String((await $.fs.read('/proc/self/stat').catch(() => 'unknown')).split(' ')[0] ?? '').replace(/\D/g, '') || 'unknown'
-      const dir = (await $.env.get('JEV_COMPACTION_METRICS_DIR')) || DEFAULT_METRICS_DIR
-      const fs = { read: (path: string) => $.fs.read(path), write: (path: string, text: string) => $.fs.write(path, text), exists: (path: string) => $.fs.exists(path) }
-      await writeMetrics(fs, dir, metricsPid, counts, Math.floor(Date.now() / 1000))
-    } catch {
-      // metrics are best effort
-    }
+  if (metricsQueued) return
+  metricsQueued = true
+  metricsChain = metricsChain.then(() => {
+    metricsQueued = false
+    return flushMetrics($)
   })
 }
 
@@ -275,7 +316,7 @@ function asker($: EngineInterface, key: string, timeoutMs: number, started: numb
       const { status, errorType } = failureParts(err)
       track($, (c) => {
         bumpCount(c.requests, status)
-        bumpCount(c.failures, `${status}|${errorType}`)
+        bumpCount(c.failures, `${status}|${errorType}`, 'other|none')
       })
       onFailure?.(err)
       await recordFailure($, err)
@@ -455,7 +496,7 @@ async function settle($: EngineInterface, d: Decision, next: () => Promise<Sessi
     }
     if (verdict.act === 'skip') {
       await bump($, { deferred: 1, requests })
-      track($, (c) => bumpCount(c.deferred, deferReason(verdict.reason)))
+      track($, (c) => bumpCount(c.deferred, deferReason(verdict.reason), 'jev_error'))
       notify($, `deferred: ${verdict.reason}`)
       return { skip: `jev-compaction deferred: ${verdict.reason}` }
     }
@@ -472,7 +513,7 @@ async function settle($: EngineInterface, d: Decision, next: () => Promise<Sessi
 // or hands over to the host's summary. Cleared when the hook has read it, or when the command ends.
 let prepared: { decision: Decision; messages: Message[] } | undefined
 // The rotation built and verified before `/compact` ran, with the transcript it was built on.
-let preparedRotation: { messages: Message[]; result: SessionCompactResult } | undefined
+let preparedRotation: { messages: Message[]; result: SessionCompactResult; used: boolean } | undefined
 
 const sameTranscript = (a: readonly Message[], b: readonly Message[]) => a.length === b.length && a.at(-1)?.text === b.at(-1)?.text && a[0]?.text === b[0]?.text
 
@@ -483,8 +524,13 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
       // Built and judged before the command ran (see rotationTurn): the same transcript gets the same answer, once.
       const p = preparedRotation
       preparedRotation = undefined
-      return p && sameTranscript(p.messages, e.messages) ? p.result : onRotate($, e, rotating.dry)
+      if (p && sameTranscript(p.messages, e.messages)) {
+        p.used = true
+        return p.result
+      }
+      return onRotate($, e, rotating.dry)
     }
+    track($, (c) => bumpCount(c.deferred, 'rotation_skipped'))
     notify($, 'rotation skipped: the compaction carried no transcript')
     await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: 'rotation skipped, the compaction carried no transcript' } })
     return { skip: 'jev-compaction: rotation skipped, no transcript' }
@@ -505,7 +551,9 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
   if (e.messages.length >= TRANSCRIPT_CAP) {
     if (trigger !== 'plugin' && !now) return next(e)
     const usage = await $.session.usage().then((u) => u.context, () => undefined)
-    return usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard ? next(e) : { skip: 'jev-compaction: transcript over 4096 messages' }
+    if (usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard) return next(e)
+    track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
+    return { skip: 'jev-compaction: transcript over 4096 messages' }
   }
   // Decided before the command ran (see compactBetweenTurns), on this very transcript: use it, ask Jev no second time.
   if (ours && decided && !sameTranscript(decided.messages, e.messages)) $.ui.log(`jev-compaction: the transcript changed since the check (${decided.messages.length} to ${e.messages.length} messages), asking Jev again`)
@@ -554,6 +602,7 @@ async function preflight($: EngineInterface): Promise<{ result: SessionCompactRe
     const usage = await $.session.usage().then((u) => u.context, () => undefined)
     if (usage?.tokens !== undefined && usage.tokens >= thresholdsFor(config, usage.window).hard) return undefined
     $.ui.log(`jev-compaction: no compaction now, the host list of ${messages.length} messages may be a cut of a longer one`)
+    track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
     return { result: { skip: 'jev-compaction: transcript over 4096 messages' } }
   }
   const decision = await decide($, messages, 'plugin', now)
@@ -895,8 +944,22 @@ async function jevRules($: EngineInterface, older: readonly LedgerEntry[]): Prom
  */
 export const mayBeCut = (length: number) => length >= TRANSCRIPT_CAP - 96 && length <= TRANSCRIPT_CAP
 
-/** Phase 2: build, verify and apply (or, on a dry run, preview). Never the built-in summary. */
-export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: boolean): Promise<SessionCompactResult> {
+/** A rotation built and verified: its answer for the engine, and the one place that tells the person and T3 Code about it. */
+export type BuiltRotation = { result: SessionCompactResult; report: () => Promise<void> }
+
+/**
+ * Phase 2: build and verify the rotation (or, on a dry run, write the preview). Never the built-in summary, and no toast or T3
+ * line: `report` does those, so the caller can say "applied" only when the compaction really ran.
+ */
+export async function buildRotationResult($: EngineInterface, e: SessionCompactInput, dry: boolean): Promise<BuiltRotation> {
+  const deferred = (toast: string, skip: string, reason: string): BuiltRotation => ({
+    result: { skip },
+    report: async () => {
+      track($, (c) => bumpCount(c.deferred, 'rotation_skipped'))
+      notify($, toast)
+      await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason } })
+    },
+  })
   try {
     if (mayBeCut(e.messages.length)) throw new Error(`transcript at the ${TRANSCRIPT_CAP}-message cap (${e.messages.length} messages), its first message is not known`)
     const rot = await readRotation($)
@@ -930,27 +993,30 @@ export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: 
       missing = verifyRotation(input, built, await readPrompts(), ledger)
     }
     const kept = `keeps the first message, the handover and the newest ${e.messages.length - built.start} of ${e.messages.length} messages`
-    const gate = missing.length > 0 ? `gate failed: ${missing.map((m) => m.item.slice(0, 200)).join('; ')}` : `gate passed; ${kept}`
+    const gate = missing.length > 0 ? `gate failed: ${missing.map((m) => cutHead(m.item, 200)).join('; ')}` : `gate passed; ${kept}`
     if (dry) {
       const path = `${h.handoverDir}/HANDOFF.preview.md`
       await $.fs.write(path, `${built.text}\n\n## Dry run\n\n${missing.length > 0 ? `Gate failed:\n\n${missing.map((m) => `- ${m.item}`).join('\n')}` : `Gate passed; ${kept}.`}\n`)
-      notify($, `rotation dry run: preview at ${path}; ${missing.length > 0 ? 'gate failed' : 'gate passed'}; nothing applied`)
-      await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: 'rotation dry run, nothing applied' } })
-      return { skip: `jev-compaction: rotation dry run, preview at ${path}` }
+      return deferred(`rotation dry run: preview at ${path}; ${missing.length > 0 ? 'gate failed' : 'gate passed'}; nothing applied`, `jev-compaction: rotation dry run, preview at ${path}`, 'rotation dry run, nothing applied')
     }
-    if (missing.length > 0) {
-      notify($, `rotation skipped: ${gate}`)
-      await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: `rotation skipped, ${gate}` } })
-      return { skip: `jev-compaction: rotation skipped, ${gate}` }
+    if (missing.length > 0) return deferred(`rotation skipped: ${gate}`, `jev-compaction: rotation skipped, ${gate}`, `rotation skipped, ${gate}`)
+    return {
+      result: { messages: built.messages },
+      report: async () => {
+        notify($, `rotated: ${kept}; handover in ${h.handoffPath}`)
+        await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'applied', messages: { before: e.messages.length, after: built.messages.length } } })
+      },
     }
-    notify($, `rotated: ${kept}; handover in ${h.handoffPath}`)
-    await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'applied', messages: { before: e.messages.length, after: built.messages.length } } })
-    return { messages: built.messages }
   } catch (err) {
-    notify($, `rotation skipped: ${message(err)}`)
-    await reportToT3($, { v: 1, details: { trigger: PLUGIN_TRIGGER, outcome: 'deferred', reason: `rotation skipped, ${message(err)}` } })
-    return { skip: `jev-compaction: rotation skipped, ${message(err)}` }
+    return deferred(`rotation skipped: ${message(err)}`, `jev-compaction: rotation skipped, ${message(err)}`, `rotation skipped, ${message(err)}`)
   }
+}
+
+/** Phase 2 in the hook: build, report at once, answer. */
+export async function onRotate($: EngineInterface, e: SessionCompactInput, dry: boolean): Promise<SessionCompactResult> {
+  const built = await buildRotationResult($, e, dry)
+  await built.report()
+  return built.result
 }
 
 /** The rotation's part of a main turn end; true when it acted, so no periodic compaction runs at the same end. */
@@ -974,11 +1040,17 @@ async function rotationTurn($: EngineInterface, tokens: number | undefined): Pro
           // The host prints "Not compacted" for a skip, and that line answers whatever started the turn. So the rotation is
           // built and verified here, from the host's list, and `/compact` runs only when the result applies.
           const messages = await $.session.messages()
-          const built = await onRotate($, { trigger: 'plugin', messages } as SessionCompactInput, dry)
-          if (built.skip) result = built
-          else {
-            preparedRotation = { messages, result: built }
+          const built = await buildRotationResult($, { trigger: 'plugin', messages } as SessionCompactInput, dry)
+          if (built.result.skip) {
+            await built.report()
+            result = built.result
+          } else {
+            const prepared = { messages, result: built.result, used: false }
+            preparedRotation = prepared
             result = await compactBetweenTurns($)
+            // Said only now: the command ran and the hook answered with this very result. A hook that built its own (the transcript
+            // changed) has reported it already, and a command that failed reports nothing.
+            if (prepared.used && result && !result.skip) await built.report()
           }
         }
       } catch (err) {
@@ -1045,6 +1117,8 @@ export const register: Register = (on, options) => {
       }
     }
     await $.state.set(ONE_SHOT, oneShot)
+    // The file starts with every usual series at 0, so a first failure counts in `increase()`. A one-shot run never compacts: no series for it.
+    if (!oneShot) track($, () => undefined)
     $.ui.log(`jev-compaction: ${activeThresholds(config)}`)
     try {
       await $.command.register({ name: 'jev-compact', description: 'Compact the conversation with Jev (now), show totals (stats), or rotate the session (rotate [dry])', argumentHint: 'now | stats | rotate [dry]' })

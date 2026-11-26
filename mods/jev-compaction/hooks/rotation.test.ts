@@ -46,11 +46,12 @@ const fields = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 })
 
-type Setup = { headless?: boolean; env?: Record<string, string>; agents?: { id: string; description: string; status: string; type: string }[]; dropWrites?: RegExp; now?: number; grepEnd?: { code: number | null; signal: string | null } }
+type Setup = { headless?: boolean; commandFails?: boolean; hookMessages?: (messages: Message[]) => Message[]; env?: Record<string, string>; agents?: { id: string; description: string; status: string; type: string }[]; dropWrites?: RegExp; now?: number; grepEnd?: { code: number | null; signal: string | null } }
 
 async function boot($: any, on: any, setup: Setup = {}) {
   const files: Record<string, string> = {}
   const toasts: string[] = []
+  const logs: string[] = []
   const submitted: string[] = []
   const registered: string[] = []
   const spawned: string[][] = []
@@ -107,19 +108,21 @@ async function boot($: any, on: any, setup: Setup = {}) {
     return { value: undefined }
   })
   on('ui.log', (_$: any, e: any) => {
+    logs.push(e.text)
     return { value: undefined }
   })
   on('command.register', () => ({ value: undefined as never }))
   // An SDK session: the host's `/compact`, which the mod runs there, raises the compaction with the transcript.
   on('command.run', { command: 'compact' }, async () => {
     commandRuns.count++
-    await $.session.compact({ trigger: 'manual', messages } as never)
+    if (setup.commandFails) throw new Error('the host could not run /compact')
+    await $.session.compact({ trigger: 'manual', messages: setup.hookMessages ? setup.hookMessages(messages) : messages } as never)
     return {}
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
   const agents = setup.agents ?? [{ id: 'agent-1', description: 'e2e suite', status: 'running', type: 'general-purpose' }]
-  return { files, toasts, submitted, registered, spawned, compactCalls, commandRuns, messages, clock, agents, dropWrites: setup.dropWrites }
+  return { files, toasts, logs, submitted, registered, spawned, compactCalls, commandRuns, messages, clock, agents, dropWrites: setup.dropWrites }
 }
 
 const user = (text: string): Message => ({ role: 'user', text, toolUses: [] })
@@ -564,4 +567,49 @@ test('stream-json: a transcript at the host cap (it may be a cut) runs no /compa
   await rotateTurns($, 'rotate', b)
   expect(b.commandRuns.count).toBe(0)
   expect(b.toasts.join('\n')).toMatch(/4096-message cap/)
+})
+
+// ---- stream-json: the rotation says "applied" once, and only when /compact ran and the hook answered with it ----
+
+const appliedLines = (b: Booted) => b.logs.filter((l) => l.startsWith('t3.compaction/v1 ') && l.includes('"outcome":"applied"'))
+const rotatedToasts = (b: Booted) => b.toasts.filter((x) => /^(jev-compaction: )?rotated: /.test(x))
+
+test('stream-json: a rotation that applies says so once, after the command', async ($, on) => {
+  const b = await boot($, on, { headless: true })
+  await rotateTurns($, 'rotate', b)
+  expect(rotatedToasts(b).length).toBe(1)
+  expect(appliedLines(b).length).toBe(1)
+})
+
+test('stream-json: when /compact fails, no toast and no T3 line says the rotation applied, and it is tried again', async ($, on) => {
+  const b = await boot($, on, { headless: true, commandFails: true })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  expect(rotatedToasts(b)).toEqual([])
+  expect(appliedLines(b)).toEqual([])
+  expect(b.logs.some((l) => l.includes('rotation failed'))).toBe(true)
+})
+
+test('stream-json: when the hook sees another transcript than the check did, the rotation is built again and says applied once', async ($, on) => {
+  const b = await boot($, on, { headless: true, hookMessages: (m) => [...m, { role: 'user', text: 'one more', toolUses: [] }] })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(1)
+  expect(rotatedToasts(b).length).toBe(1)
+  expect(appliedLines(b).length).toBe(1)
+})
+
+test('stream-json: a skipped rotation reports its deferral once and runs no /compact', async ($, on) => {
+  const b = await boot($, on, { headless: true, dropWrites: /PROMPTS\.md$/ })
+  await rotateTurns($, 'rotate', b)
+  expect(b.commandRuns.count).toBe(0)
+  expect(b.logs.filter((l) => l.startsWith('t3.compaction/v1 ') && l.includes('"outcome":"deferred"')).length).toBe(1)
+  expect(appliedLines(b)).toEqual([])
+})
+
+test('stream-json: a gate failure text of 200 characters is cut on a character, never inside an emoji', async ($, on) => {
+  const b = await boot($, on, { headless: true, dropWrites: /PROMPTS\.md$/ })
+  b.messages.push({ role: 'user', text: `${'a'.repeat(199)}😀 and then more words so that the dropped prompt is long`, toolUses: [] })
+  await say($, `${'b'.repeat(199)}😀 a typed prompt that the ledger never saw`)
+  await rotateTurns($, 'rotate', b)
+  expect(b.toasts.join('\n')).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
 })
