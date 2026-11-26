@@ -45,6 +45,9 @@ type Setup = {
   host?: string
   // every write into the metrics directory fails
   failMetricsWrite?: boolean
+  // the host's rows are an append-only history (`$.session.messages()`): a compaction's output is appended after the old rows, and the
+  // next `/compact` is given the output and what came after it. The tests add rows with `hostRows.push(...)`.
+  appendOnly?: boolean
 }
 
 const KEY = 'k-secret-123'
@@ -105,7 +108,9 @@ async function boot($: any, on: any, setup: Setup = {}) {
     const [cmd, ...args] = e.argv as string[]
     const paths = args.filter((a) => a.startsWith('/'))
     const name = (path: string) => path.slice(DIR.length + 1)
-    if (cmd === 'mv' && paths.length === 2) {
+    if (cmd === 'chmod') {
+      // nothing to do in memory
+    } else if (cmd === 'mv' && paths.length === 2) {
       written[paths[1]!] = written[paths[0]!] ?? ''
       delete written[paths[0]!]
       dirFiles[name(paths[1]!)] = { mtimeMs: Date.now(), size: written[paths[1]!].length }
@@ -127,7 +132,11 @@ async function boot($: any, on: any, setup: Setup = {}) {
         : undefined
     return { value: { startedAt: 0, context: { ...usage, ...(breakdown && { breakdown }) }, rateLimits: [] } }
   })
-  on('session.messages', (_$: any, e: any) => ({ value: ((e.as === 'api' ? setup.api : setup.rows) ?? []) as never }))
+  const hostRows: Message[] = [...((setup.rows ?? []) as Message[])]
+  let listFrom = 0
+  on('session.messages', (_$: any, e: any) => ({
+    value: (e.as === 'api' ? (setup.api ?? []) : setup.appendOnly ? hostRows.map((m) => ({ ...m, handle: undefined })) : (setup.rows ?? [])) as never,
+  }))
   on('turn.complete', (_$: any, e: any) => ({ text: e.answer }))
   on('http.fetch', (_$: any, e: any) => {
     if (setup.hang) return new Promise(() => undefined) as never
@@ -161,12 +170,21 @@ async function boot($: any, on: any, setup: Setup = {}) {
   })
   // The host runs `/compact` in an SDK session: the session.compact chain with trigger `manual`, this plugin's hook included.
   on('command.run', { command: 'compact' }, async (_$: any, e: any) => {
+    if (setup.appendOnly) {
+      const result = await compact($, 'manual', { messages: hostRows.slice(listFrom) })
+      ran.push({ args: e.args, result })
+      if (result.messages) {
+        listFrom = hostRows.length
+        hostRows.push(...result.messages)
+      }
+      return {}
+    }
     ran.push({ args: e.args, result: await compact($, 'manual') })
     return {}
   })
   on('session.start', () => ({ cwd: '/work' }))
   await $.session.start({ cwd: '/work', surface: setup.headless ? null : 'terminal', isInteractive: !setup.headless } as never)
-  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written, commands, dirFiles }
+  return { requests, toasts, logs, compactCalls, usage, clock, stored, ran, written, commands, dirFiles, hostRows }
 }
 
 const compact = ($: any, trigger: string, extra: Record<string, unknown> = {}) =>
@@ -1049,6 +1067,8 @@ test('metrics: the file is written to a temp name and renamed, so a scrape never
   await compact($, 'plugin')
   await flush()
   expect(commands.some((c) => c[0] === 'mv' && c.includes(`${PROM}.tmp`) && c.includes(PROM))).toBe(true)
+  // node-exporter runs as another user: the file is made readable before it takes its name
+  expect(commands.findIndex((c) => c[0] === 'chmod' && c.includes('0644'))).toBeLessThan(commands.findIndex((c) => c[0] === 'mv'))
   expect(Object.keys(written).filter((k) => k.endsWith('.tmp'))).toEqual([])
   expect(written[PROM]).toBeDefined()
 })
@@ -1185,4 +1205,67 @@ test('a compaction whose three tries are all refused as too large defers, and sa
   const r = await compact($, 'plugin')
   expect(r.skip).toMatch(/max_tokens_exceeded/)
   expect(requests.length).toBe(3)
+})
+
+// --- the host's rows keep what a compaction replaced: the check must judge the list the compaction will be given ---
+
+/** `n` more tool calls with big results, as rows. */
+const moreCalls = (from: number, n: number): Message[] =>
+  Array.from({ length: n }, (_, i) => from + i).flatMap((i): Message[] => {
+    const text = String(i).repeat(30_000)
+    return [
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: `n${i}`, tool: 'Read', input: { file_path: `/src/n${i}.ts` }, text }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: `n${i}`, text, isError: false }] },
+    ]
+  })
+
+test('stream-json: after a compaction the check judges the list the next /compact is given, not the rows with the old ones, so it never judges twice', { options: OLD }, async ($, on) => {
+  const { ran, usage, logs, hostRows, toasts } = await bootHeadless($, on, { p: 0, appendOnly: true, rows: transcript() })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(ran[0]!.result.messages).toBeDefined()
+  hostRows.push(...moreCalls(100, 9))
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(2)
+  expect(ran[1]!.result.messages).toBeDefined()
+  hostRows.push(...moreCalls(200, 9))
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(3)
+  expect(ran[2]!.result.messages).toBeDefined()
+  expect(logs.filter((l) => l.includes('differs from the host')).length).toBe(0)
+  expect(toasts.filter((x) => x.includes('compacted ~')).length).toBe(3)
+})
+
+test('stream-json: the old rows a compaction replaced are not judged again: little new content defers with no command', { options: OLD }, async ($, on) => {
+  const { ran, usage, hostRows, toasts, requests } = await bootHeadless($, on, { p: 0, appendOnly: true, rows: transcript() })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  const asked = requests.length
+  // one small exchange after the compaction; the host rows still hold the 12 big tool results from before it
+  hostRows.push({ role: 'user', text: 'one more thing', toolUses: [] }, { role: 'assistant', text: 'ok', toolUses: [] })
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  expect(toasts.some((x) => x.startsWith('jev-compaction: deferred'))).toBe(true)
+  expect(requests.length).toBeGreaterThanOrEqual(asked)
+})
+
+test('stream-json: a deferral between two compactions leaves the boundary where it was', { options: OLD }, async ($, on) => {
+  const { ran, usage, hostRows, logs } = await bootHeadless($, on, { p: 0, appendOnly: true, rows: transcript() })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  // the context is small again after a compaction, and grows back to the trigger
+  usage.tokens = 100_000
+  await $.turn.complete(reply())
+  hostRows.push({ role: 'user', text: 'one more thing', toolUses: [] }, { role: 'assistant', text: 'ok', toolUses: [] })
+  usage.tokens = 410_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(1)
+  hostRows.push(...moreCalls(100, 9))
+  usage.tokens = 470_000
+  await $.turn.complete(reply())
+  expect(ran.length).toBe(2)
+  expect(ran[1]!.result.messages).toBeDefined()
+  expect(logs.filter((l) => l.includes('differs from the host')).length).toBe(0)
 })

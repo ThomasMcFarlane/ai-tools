@@ -29,7 +29,9 @@ function memoryIo(opts: { run?: 'ok' | 'fail' | 'throws'; dir?: boolean; files?:
       if (opts.run === 'fail') return { exitCode: 1 }
       const [cmd, ...rest] = argv
       const paths = rest.filter((a) => a.startsWith('/'))
-      if (cmd === 'mv') {
+      if (cmd === 'chmod') {
+        // nothing to do in memory
+      } else if (cmd === 'mv') {
         files[paths[1]!] = { ...files[paths[0]!]!, mtimeMs: NOW * 1000 }
         delete files[paths[0]!]
       } else if (cmd === 'rm') for (const p of paths) delete files[p]
@@ -94,7 +96,11 @@ test('counters grow, an unusual label is made safe, and a table never holds more
 test('a file is written to a temp name that node-exporter ignores, then renamed over its name', async () => {
   const { io, files, commands } = memoryIo()
   expect(await writeAtomic(io, '/d/x.prom', 'text\n')).toBe('renamed')
-  expect(commands).toEqual([['mv', '-f', '--', '/d/x.prom.tmp', '/d/x.prom']])
+  // readable by node-exporter (another user) before it appears under its name
+  expect(commands).toEqual([
+    ['chmod', '0644', '--', '/d/x.prom.tmp'],
+    ['mv', '-f', '--', '/d/x.prom.tmp', '/d/x.prom'],
+  ])
   expect(Object.keys(files)).toEqual(['/d/x.prom'])
   expect(files['/d/x.prom']!.text).toBe('text\n')
 })

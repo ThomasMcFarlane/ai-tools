@@ -112,17 +112,28 @@ export function renderFile(id: ProcessId, counts: Counts, nowSeconds: number): s
 
 const dirPath = (dir: string, name: string) => `${dir.replace(/\/+$/, '')}/${name}`
 
-/** Writes `text` to `path` so a reader never sees half of it: to `<path>.tmp`, then `mv`. Falls back to a write in place. */
+/** Makes a file readable by node-exporter, which runs as another user (`nobody` on hq0); the host creates files as 0600. Best effort. */
+async function makeReadable(io: MetricsIo, path: string): Promise<void> {
+  try {
+    await io.run(['chmod', '0644', '--', path])
+  } catch {
+    // no `chmod` here
+  }
+}
+
+/** Writes `text` to `path` so a reader never sees half of it: to `<path>.tmp`, made readable, then `mv`. Falls back to a write in place. */
 export async function writeAtomic(io: MetricsIo, path: string, text: string): Promise<'renamed' | 'in place'> {
   const tmp = `${path}.tmp`
   try {
     await io.write(tmp, text)
+    await makeReadable(io, tmp)
     const { exitCode } = await io.run(['mv', '-f', '--', tmp, path])
     if (exitCode === 0) return 'renamed'
   } catch {
     // no `mv` here: write in place below
   }
   await io.write(path, text)
+  await makeReadable(io, path)
   return 'in place'
 }
 

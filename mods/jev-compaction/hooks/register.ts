@@ -511,20 +511,55 @@ async function settle($: EngineInterface, d: Decision, next: () => Promise<Sessi
 
 // What compactBetweenTurns decided before it ran `/compact`, for the hook to use: the compaction that follows applies it
 // or hands over to the host's summary. Cleared when the hook has read it, or when the command ends.
-let prepared: { decision: Decision; messages: Message[] } | undefined
+let prepared: { decision: Decision; messages: Message[]; rebuilt: boolean } | undefined
+// Where the newest compaction left the host's rows. `$.session.messages()` is the whole history: the rows from before a compaction stay,
+// and the compaction's output is appended after them. The list a later `/compact` is given starts at that output (Claude Code 2.1.325,
+// measured: output of 8 rows after 9 old ones, 7 rows later, and the hook was given 15). So the list the next compaction will see is the
+// output, then the rows that came after it. `rows` is how many rows there were when the compaction ran.
+let boundary: { rows: number; result: Message[] } | undefined
 // The rotation built and verified before `/compact` ran, with the transcript it was built on.
-let preparedRotation: { messages: Message[]; result: SessionCompactResult; used: boolean } | undefined
+let preparedRotation: { messages: Message[]; result: SessionCompactResult; used: boolean; rebuilt: boolean } | undefined
 
 const sameTranscript = (a: readonly Message[], b: readonly Message[]) => a.length === b.length && a.at(-1)?.text === b.at(-1)?.text && a[0]?.text === b[0]?.text
 
+/**
+ * The list the host gives the next `/compact`, rebuilt from the rows: the output of the newest compaction, then the rows after it.
+ * The rows themselves when no compaction was seen, when the list may be a cut, or when the rows do not fit what was recorded.
+ */
+export function sinceBoundary(rows: Message[]): { messages: Message[]; rebuilt: boolean } {
+  if (!boundary || rows.length >= TRANSCRIPT_CAP - 96) return { messages: rows, rebuilt: false }
+  const from = boundary.rows + boundary.result.length
+  if (rows.length < from) return { messages: rows, rebuilt: false }
+  // The engine's handles of an older list mean nothing to the next one.
+  return { messages: [...boundary.result.map((m) => ({ ...m, handle: undefined })), ...rows.slice(from)], rebuilt: true }
+}
+
+/** Keeps track of where each compaction that stands leaves the rows (see `boundary`). A skip leaves it as it was. */
 async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
+  if (e.agentId !== undefined || e.trigger === 'precompute') return judgeCompact($, e, next)
+  const before = boundary
+  const rows = await $.session.messages().then((r) => r.length, () => undefined)
+  boundary = undefined
+  let out: Awaited<ReturnType<typeof judgeCompact>>
+  try {
+    out = await judgeCompact($, e, next)
+  } catch (err) {
+    boundary = before
+    throw err
+  }
+  if (out?.skip) boundary = before
+  else if (out?.messages && rows !== undefined) boundary = { rows, result: [...out.messages] as Message[] }
+  return out
+}
+
+async function judgeCompact($: EngineInterface, e: SessionCompactInput, next: Next<'session.compact'>) {
   // The rotation's own compaction, and no other: it applies or skips, and never falls through to the built-in summary.
   if (rotating && e.agentId === undefined && e.trigger !== 'precompute') {
     if (Array.isArray(e.messages)) {
       // Built and judged before the command ran (see rotationTurn): the same transcript gets the same answer, once.
       const p = preparedRotation
       preparedRotation = undefined
-      if (p && sameTranscript(p.messages, e.messages)) {
+      if (p && !p.rebuilt && sameTranscript(p.messages, e.messages)) {
         p.used = true
         return p.result
       }
@@ -556,8 +591,11 @@ async function onCompact($: EngineInterface, e: SessionCompactInput, next: Next<
     return { skip: 'jev-compaction: transcript over 4096 messages' }
   }
   // Decided before the command ran (see compactBetweenTurns), on this very transcript: use it, ask Jev no second time.
-  if (ours && decided && !sameTranscript(decided.messages, e.messages)) $.ui.log(`jev-compaction: the transcript changed since the check (${decided.messages.length} to ${e.messages.length} messages), asking Jev again`)
-  const d = ours && decided && sameTranscript(decided.messages, e.messages) ? decided.decision : await decide($, e.messages, trigger, now)
+  // A list rebuilt from the rows has no handles of this list, so it is only a check: the compaction is judged again here, on the
+  // real list, from the scores the check kept (no new request when the lists are the same).
+  if (ours && decided && sameTranscript(decided.messages, e.messages)) $.ui.log(`jev-compaction: the ${decided.rebuilt ? 'rebuilt list' : 'transcript'} equals the host's (${e.messages.length} messages)`)
+  if (ours && decided && !sameTranscript(decided.messages, e.messages)) $.ui.log(`jev-compaction: the ${decided.rebuilt ? 'rebuilt list' : 'transcript'} differs from the host's (${decided.messages.length} and ${e.messages.length} messages), judging again`)
+  const d = ours && decided && !decided.rebuilt && sameTranscript(decided.messages, e.messages) ? decided.decision : await decide($, e.messages, trigger, now)
   return settle($, d, () => next(e))
 }
 
@@ -605,9 +643,10 @@ async function preflight($: EngineInterface): Promise<{ result: SessionCompactRe
     track($, (c) => bumpCount(c.deferred, 'transcript_cut'))
     return { result: { skip: 'jev-compaction: transcript over 4096 messages' } }
   }
-  const decision = await decide($, messages, 'plugin', now)
+  const list = sinceBoundary(messages)
+  const decision = await decide($, list.messages, 'plugin', now)
   if (decision.verdict.act === 'skip') return { result: await settle($, decision, () => undefined) }
-  prepared = { decision, messages }
+  prepared = { decision, messages: list.messages, rebuilt: list.rebuilt }
   return undefined
 }
 
@@ -1039,13 +1078,14 @@ async function rotationTurn($: EngineInterface, tokens: number | undefined): Pro
         else {
           // The host prints "Not compacted" for a skip, and that line answers whatever started the turn. So the rotation is
           // built and verified here, from the host's list, and `/compact` runs only when the result applies.
-          const messages = await $.session.messages()
+          const list = sinceBoundary(await $.session.messages())
+          const messages = list.messages
           const built = await buildRotationResult($, { trigger: 'plugin', messages } as SessionCompactInput, dry)
           if (built.result.skip) {
             await built.report()
             result = built.result
           } else {
-            const prepared = { messages, result: built.result, used: false }
+            const prepared = { messages, result: built.result, used: false, rebuilt: list.rebuilt }
             preparedRotation = prepared
             result = await compactBetweenTurns($)
             // Said only now: the command ran and the hook answered with this very result. A hook that built its own (the transcript
