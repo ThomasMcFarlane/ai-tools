@@ -360,6 +360,18 @@ describe('partial failures, pre-scoring and notes', () => {
     expect(jev.requests()).toBeGreaterThan(before)
   })
 
+  test('a judgement with no request (maxBatches 0) of a history Jev could not take whole still answers, and asks nothing', async () => {
+    const jev = fakeJev({}, 0.05)
+    // the newest messages are pinned and long: the state cannot be made small enough for any request
+    const heavy = [user('start'), ...many(6).slice(1, -6), ...Array.from({ length: 3 }, (_, i) => [assistant(`${i}`.repeat(5000)), user(`${i}`.repeat(5000))]).flat()]
+    const tiny = { maxStateTokens: 40, maxRequestTokens: 100 }
+    // the same call fails when it may ask: the history does not fit
+    await expect(compact(heavy, jev.ask, tiny, {}, { reuseAll: true })).rejects.toThrow(/too large/)
+    const { messages: out } = await compact(heavy, jev.ask, tiny, {}, { reuseAll: true, maxBatches: 0 })
+    expect(out.length).toBe(heavy.length)
+    expect(jev.requests()).toBe(0)
+  })
+
   test('only the mod notes pin an item: a path that contains the name does not', async () => {
     const path = '/home/u/.worktrees/jev-compaction/src/a.ts'
     const messages = [user('start'), assistant(`I edited ${path} ` + body(1000)), user('ok'), ...call('p', `${path}\n` + long(2000), { file_path: path }), ...tail()]
@@ -616,6 +628,29 @@ describe('cuts never split a surrogate pair', () => {
       const text = `${'x'.repeat(398 + shift)}\u{1F600}${'y'.repeat(3000)}\u{1F600}\u{1F600}${'z'.repeat(148 + shift)}`
       expect(abridgeText(text, 400, 150)).not.toMatch(lone)
     }
+  })
+  test('the signal lines of the omitted middle never start or end inside a pair, at the head cut and at the tail cut', () => {
+    // The pair sits on the head boundary and the signal line starts with it; the same at the tail boundary. Short filler lines keep the context small.
+    const filler = `${'y'.repeat(40)}\n`.repeat(60)
+    const headSide = `${'x'.repeat(399)}\u{1F600}Error: failed at the head\n${filler}${'z'.repeat(150)}`
+    const tailSide = `${'x'.repeat(400)}\n${filler}Error: failed at the tail \u{1F600}${'z'.repeat(149)}`
+    for (const text of [headSide, tailSide]) {
+      const out = abridgeText(text, 400, 150)
+      expect(out).toContain('Error: failed')
+      expect(out).not.toMatch(lone)
+    }
+  })
+  test('the signal lines of a truncated result never start inside a pair at the cut', () => {
+    const body = `${'x'.repeat(299)}\u{1F600}Error: failed at the cut\n${'y'.repeat(600)}`
+    const messages: Message[] = [
+      { role: 'user', text: 'start', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c1', tool: 'Bash', input: { command: 'ls' }, text: body }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'c1', text: body, isError: false }] },
+    ]
+    const out = applyDecisions(messages, new Map([['c1', 'drop_result' as const]]), new Map(), 300)
+    const text = out.flatMap((m) => m.toolResults ?? []).map((r) => r.text).join('\n')
+    expect(text).toContain('Error: failed at the cut')
+    expect(text).not.toMatch(lone)
   })
   test('a truncated tool result, and the signal lines it keeps', () => {
     for (let shift = -2; shift <= 2; shift++) {
