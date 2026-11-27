@@ -12,11 +12,17 @@ Three CLIs let you check external state, wait for changes, resume work, and quiz
 - Resolver presets: cloudflare, google, quad9, opendns, adguard, yandex (or `system`, `all`, literal IPs)
 - Persistent watches: `dns-checker watch add|list|show|remove|check|run|events`
 
-### gh-watcher (GitHub Actions, requires authenticated `gh` CLI)
+### gh-watcher (GitHub Actions and pull requests)
 
-- One check: `gh-watcher status --repo octo-org/hello-world --pr 17 --json`
-- Block until terminal state: `gh-watcher wait --repo octo-org/hello-world --pr 17 --json`
-- Persistent watches: `gh-watcher watch add <name> --repo <owner/name> --pr <n> [--on failure|success|complete] [--hook <spec>]`, plus `list|show|remove|check|run|events`
+Use `gh-watcher` for every GitHub Actions and pull request lifecycle wait. Start each wait in the background with `--json`. Keep the session active and receive the command's JSON and exit code before you act on the result.
+
+- Before merging, wait for checks with `gh-watcher wait --repo octo-org/hello-world --pr 17 --json`.
+- For lifecycle events, use `gh-watcher pr wait --repo octo-org/hello-world --pr 17 --on merged,closed --json`.
+- Find exact run IDs in `runs[].databaseId` with `gh-watcher status --repo octo-org/hello-world --commit "$SHA" --json`. Use a full 40-character SHA. Read `state` because `status` returns `0` for any report.
+- Wait on each exact run with `gh-watcher wait --repo octo-org/hello-world --run 123456789 --json`. Include post-merge publication, release, promotion and deployment. If no run exists, wait with `--commit "$SHA"`, then identify and wait for each exact run. Verify the live deployment separately when applicable.
+- On `0`, inspect the successful check or matched event. On `1`, inspect `failedSteps` and `failedChecks` and fix failures you own. On `2`, correct the command or report the relay defect. On `124`, report the timeout or start a new bounded wait.
+
+Set `GH_WATCHER_EVENTS_URL` or use `--events-url <url>`. T3 `watch_pull_request` and other notifications can supplement the wait. Never use them as the sole trigger to resume. Do not use GitHub CLI watch commands, sleep loops, manual status polling or a direct GitHub polling fallback. See the [canonical gh-watcher skill](https://github.com/ThomasMcFarlane/ai-tools/blob/main/skills/claude-code/gh-watcher/SKILL.md).
 
 ### repo-ready (learning a repository)
 
@@ -41,7 +47,6 @@ Run `wait` (or `watch run`) as a background task. The CLI blocks quietly, then p
 
 ```sh
 dns-checker wait example.com -t A --expect 203.0.113.10 --timeout 15m --json
-gh-watcher wait --repo octo-org/hello-world --pr 17 --json
 ```
 
 ### Exit codes

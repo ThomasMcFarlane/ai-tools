@@ -1,79 +1,79 @@
 ---
 name: gh-watcher
-description: Check GitHub Actions run state, wait for PR or branch checks, manage watchers, via the gh CLI.
+description: Use gh-watcher for every GitHub Actions and pull request lifecycle wait. Wait for checks before merging, follow exact workflow runs through publication and deployment, and wait for reviews, merges and other pull request events.
 ---
 
 # gh-watcher
 
-## When to use
+**Use `gh-watcher` for every GitHub Actions and pull request lifecycle wait.**
+Start each wait as a background command with `--json`. Keep the session active and continue independent work during the wait. Receive the command's JSON and exit code, then act on the result.
 
-Use this skill whenever a task depends on GitHub Actions state: waiting for PR checks before merging, learning which job step failed, or continuing work once a run finishes. Requires the `gh` CLI installed and authenticated.
+T3 `watch_pull_request` and other harness notifications can supplement the command. Never use a notification in place of the wait or as the sole trigger to resume work. Do not use `gh run watch`, `gh pr checks --watch`, sleep loops, manual status polling or a direct GitHub polling fallback.
 
-## Command reference
+- **Claude Code in T3.** Start Bash with `run_in_background: true`. Call `t3_background_wait` with the task ID and keep the turn open until the command completes.
+- **Codex in T3.** Use the shell tool's long-running command support. Keep the turn open and use its command session handle to receive the output and exit code.
+- **Other harnesses.** Use the harness's background command support and collect the completion result in the active session.
 
-The binary is at `<repo>/tools/gh-watcher/dist/cli.js`. Examples below call it as `gh-watcher`.
+## Relay configuration
 
-Every command targets runs with:
+Use gh-watcher 0.7.0 or later. Set `GH_WATCHER_EVENTS_URL` or pass `--events-url <url>`. Use `--repo OWNER/NAME` or set `GH_REPO`.
 
-- `--repo <owner/name>` (defaults to `GH_REPO`)
-- `--pr <number>`, or `--branch <name>`, or `--commit <sha>`, or `--run <id>`
+The CLI reads state only from the relay. The relay shares GitHub webhook data across waiters. For owners without webhooks, the relay can poll GitHub and returns a `warning` in the result. The CLI needs no authenticated `gh` session.
 
-### status: one check, no blocking
+The wait commands accept `--timeout` (default 30 minutes, maximum 24 hours). Omit the removed polling flags `--source`, `--interval` and `--fallback-interval` from waits. A missing relay configuration fails immediately. If the relay is unreachable, the CLI retries only the relay and returns exit `2` if it remains unreachable at the timeout.
 
-```sh
-gh-watcher status --repo octo-org/hello-world --pr 17
-gh-watcher status --pr 17 --json
-```
-
-### wait: block until runs succeed or fail
+## Wait for checks before merging
 
 ```sh
-gh-watcher wait --repo octo-org/hello-world --pr 17
-gh-watcher wait --branch main --timeout 20m --json
+gh-watcher wait --repo octo-org/hello-world --pr 17 --timeout 45m --json
 ```
 
-- `--interval <duration>` (default 30s)
-- `--timeout <duration>` (default 30m, capped at 24h)
-- `--source auto|events|poll` (default auto): with `--events-url <url>` or `GH_WATCHER_EVENTS_URL` set and a compatible private webhook relay, `wait` blocks on events and makes almost no GitHub API calls; otherwise it polls. It falls back to polling if the relay fails. `--fallback-interval <duration>` (default 5m) is the event-mode safety net. The JSON outcome includes `source`. `watch run` stays poll-only. See the tool README, "Event mode".
-- `--json`: emit the outcome as JSON
+The PR target follows the current head and keeps the latest run of each workflow. The aggregate includes Actions runs, checks from other apps and commit statuses. A target with no checks stays in state `none` until checks appear or the wait times out.
 
-### watch: persistent watches with hooks
+## Follow each Actions run to completion
+
+For CI or releases you own, wait for each exact Actions run, including post-merge publication, release, promotion and deployment.
 
 ```sh
-gh-watcher watch add <name> --repo <owner/name> (--pr | --branch | --commit | --run) [--on failure|success|complete]
-gh-watcher watch list --json
-gh-watcher watch show <name>
-gh-watcher watch remove <name>
-gh-watcher watch check [names...] --json   # check once, fire hooks on triggers
-gh-watcher watch run [names...]            # run the daemon until interrupted
-gh-watcher watch events --tail 20 --json
+gh-watcher status --repo octo-org/hello-world --commit "$SHA" --json
+gh-watcher wait --repo octo-org/hello-world --run 123456789 --timeout 45m --json
 ```
 
-`--on` controls the trigger: `failure`, `success` or `complete` (any terminal state; default `complete`). `--hook <spec>` accepts `none` (default), `exec:<command>`, `webhook:<url>`, `file:<path>`, `notify:claude`, `notify:codex` or `notify:opencode`.
+Use the full 40-character SHA of the commit that triggers the workflow. Read `runs[].databaseId`, `workflowName` and `url` from the status report. Start a wait for each relevant run ID. The `status` command returns exit `0` for any report, so read its `state`.
 
-## Wait for PR checks, then continue
-
-1. Run in the background: `gh-watcher wait --repo octo-org/hello-world --pr 17 --json`
-2. The CLI polls quietly, then prints one JSON outcome.
-3. Exit code `0` means the runs succeeded; `1` means a failure was detected (the event lists the failed job steps); `124` means timed out; `2` means error.
-4. On `0`, continue the task. On `1`, read `failedSteps` from the JSON and fix the failing step.
-
-## Watchers with notify:claude
+If no run exists yet, start a wait on the full SHA.
 
 ```sh
-gh-watcher watch add pr-17 \
-  --repo octo-org/hello-world --pr 17 \
-  --on complete --interval 60s --hook notify:claude
-gh-watcher watch run
+gh-watcher wait --repo octo-org/hello-world --commit "$SHA" --timeout 45m --json
 ```
 
-When the PR reaches a terminal state, the daemon runs `claude -p "<event prompt>"` with a summary (and, on failure, the failing step names) asking the agent to continue the task that created the watcher. `--hook exec:<command>` gets `EVENT` and `EVENT_SUMMARY` variables plus the event JSON on stdin.
+After that wait resolves, use `status --commit` to identify the runs and wait for each exact ID. The commit wait can finish when other checks finish. Keep any expected workflow pending until you confirm its run result. Report each outcome with the run link. For deployments, separately verify the live version and service health at the deployed endpoint.
 
-## Exit codes
+## Wait for pull request lifecycle events
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Success: runs succeeded (`wait`) or events fired (`watch check`) |
-| 1 | Runs failed, no match, or not found |
-| 2 | Error |
-| 124 | Timed out (`wait`) |
+```sh
+gh-watcher pr wait --repo octo-org/hello-world --pr 17 --on merged,closed --timeout 2h --json
+gh-watcher pr wait --repo octo-org/hello-world --pr 17 --on review,comment --since "$ACTED_AT" --json
+gh-watcher pr wait --repo octo-org/hello-world --branch feature/example --on opened --json
+```
+
+- Use one of `--pr` and `--branch`. To read a single snapshot, use `gh-watcher pr status` with the same target and `--json`.
+- Separate event kinds with commas. The kinds are `opened`, `reopened`, `closed`, `merged`, `draft`, `ready`, `comment`, `review`, `review_comment`, `push` and `review_decision`. The default is `any`.
+- A named state can match the initial snapshot. Use `--changes-only` to require a new change. The default `any` does not match an initial state.
+- Set `--since` to the ISO 8601 time before you act to include comments and reviews that arrive before the wait starts.
+- Read `events` and `pr` from the JSON. Check the event kind and review state before acting.
+
+## Act on the wait result
+
+| Exit  | Meaning                                                         | Action                                                                               |
+| ----- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `0`   | Checks succeeded or a requested PR event matched                | Read the JSON and continue.                                                          |
+| `1`   | A check failed (`wait`)                                         | Read `failedSteps` and `failedChecks`. Report the failure and fix it if you own it.  |
+| `2`   | Command or relay error                                          | Read the JSON error or stderr. Correct invalid arguments or report the relay defect. |
+| `124` | The target did not reach the requested state before the timeout | Report the timeout or start a new bounded wait if the task still requires it.        |
+
+## Persistent watches
+
+For monitoring beyond one session, `gh-watcher watch add` registers a persistent watch. Its `--interval` option sets how often the daemon reads the relay. A `notify:*` hook launches a separate agent session and requires a request for that follow-up. Stop the watch daemon and remove the watch when its work ends.
+
+See the command and hook reference in [the gh-watcher README](https://github.com/ThomasMcFarlane/ai-tools/blob/main/tools/gh-watcher/README.md).
