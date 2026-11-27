@@ -17,6 +17,8 @@ The tools work from any agent that can run shell commands. The files here add pl
 
 ## Install examples
 
+Use [`claude-code/gh-watcher/SKILL.md`](claude-code/gh-watcher/SKILL.md) as the canonical source for a shared AIS installation. Copy that file into the `gh-watcher` skill directory of the shared skills plugin. Use the platform prompts or generic snippet for standalone installs.
+
 Claude Code:
 
 ```sh
