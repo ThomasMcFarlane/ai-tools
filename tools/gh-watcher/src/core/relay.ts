@@ -141,13 +141,34 @@ export class RelayNotConfiguredError extends Error {
   }
 }
 
-/** The relay cannot be reached before the deadline. The caller exits 2 with `relay_unreachable`. */
+/** How one relay request failed. */
+export type RelayFailureKind = 'timeout' | 'http' | 'connection' | 'invalid';
+
+/**
+ * One failed relay request. The message names the real cause: a timeout, an HTTP status from a
+ * relay that answered, a connection error, or an answer that cannot be read.
+ */
+export class RelayFailure extends Error {
+  readonly kind: RelayFailureKind;
+  constructor(kind: RelayFailureKind, message: string) {
+    super(message);
+    this.name = 'RelayFailure';
+    this.kind = kind;
+  }
+}
+
+/**
+ * The relay did not give a good answer before the deadline. The caller exits 2 with the JSON
+ * code `relay_unreachable` (kept for scripts). The message names the real cause, see `kind`.
+ */
 export class RelayUnreachableError extends Error {
   readonly url: string;
-  constructor(url: string, detail: string) {
-    super(`relay unreachable at ${url}: ${detail}`);
+  readonly kind: RelayFailureKind | undefined;
+  constructor(url: string, message: string, kind?: RelayFailureKind) {
+    super(message);
     this.name = 'RelayUnreachableError';
     this.url = url;
+    this.kind = kind;
   }
 }
 
@@ -161,6 +182,23 @@ export class RelayRequestError extends Error {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The errno (ECONNREFUSED, ENOTFOUND and so on) or the message of a connection error. */
+function connectionDetail(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = (error as { cause?: unknown }).cause;
+    for (const candidate of [cause, error]) {
+      const code = (candidate as { code?: unknown } | undefined)?.code;
+      if (typeof code === 'string' && code.length > 0) {
+        return code;
+      }
+    }
+    if (cause instanceof Error && cause.message.length > 0) {
+      return cause.message;
+    }
+  }
+  return describe(error);
 }
 
 function text(value: unknown): string {
@@ -626,14 +664,24 @@ export class RelaySession {
         throw new RelayRequestError(`relay rejected the request: ${(await response.text()).trim().slice(0, 300)}`);
       }
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new RelayFailure('http', `relay answered HTTP ${response.status} at ${base}`);
       }
-      return await response.json();
+      try {
+        return await response.json();
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw error;
+        }
+        throw new RelayFailure('invalid', `relay sent an unreadable answer at ${base}: ${describe(error)}`);
+      }
     } catch (error) {
-      if (error instanceof RelayRequestError) {
+      if (error instanceof RelayRequestError || error instanceof RelayFailure) {
         throw error;
       }
-      throw new Error(controller.signal.aborted ? 'timed out' : describe(error));
+      if (controller.signal.aborted) {
+        throw new RelayFailure('timeout', `relay timed out after ${waitSeconds + 10} s at ${base}`);
+      }
+      throw new RelayFailure('connection', `relay connection failed at ${base}: ${connectionDetail(error)}`);
     } finally {
       clearTimeout(timer);
     }
@@ -649,23 +697,30 @@ export class RelaySession {
     const wait = Math.max(0, Math.min(MAX_EVENT_WAIT_SECONDS, Math.floor(waitSeconds)));
     for (;;) {
       try {
-        const parsed = parse(await this.requestOnce(path, { ...params, wait: String(wait) }, wait));
+        const raw = await this.requestOnce(path, { ...params, wait: String(wait) }, wait);
+        let parsed: T;
+        try {
+          parsed = parse(raw);
+        } catch (error) {
+          throw new RelayFailure('invalid', `relay sent an unreadable answer at ${baseUrl}: ${describe(error)}`);
+        }
         this.backoffMs = BACKOFF_START_MS;
         return parsed;
       } catch (error) {
         if (error instanceof RelayRequestError) {
           throw error;
         }
-        this.log(`gh-watcher: ERROR relay unreachable at ${baseUrl}`);
+        const failure = error instanceof RelayFailure ? error : new RelayFailure('connection', `relay connection failed at ${baseUrl}: ${connectionDetail(error)}`);
+        this.log(`gh-watcher: ERROR ${failure.message}`);
         const remaining = this.config.deadline - this.clock();
         if (remaining <= 0) {
-          throw new RelayUnreachableError(baseUrl, describe(error));
+          throw new RelayUnreachableError(baseUrl, failure.message, failure.kind);
         }
         const delay = Math.min(this.backoffMs, remaining);
         this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_MAX_MS);
         await this.sleep(delay);
         if (this.config.deadline - this.clock() <= 0) {
-          throw new RelayUnreachableError(baseUrl, describe(error));
+          throw new RelayUnreachableError(baseUrl, failure.message, failure.kind);
         }
       }
     }

@@ -38,7 +38,7 @@ gh-watcher: polling was removed; gh-watcher always uses the relay (drop --source
 | Situation | What gh-watcher does |
 | --- | --- |
 | Relay URL not set | Prints `gh-watcher: ERROR no relay configured (set GH_WATCHER_EVENTS_URL)` to stderr and exits `2` at once. With `--json` it also prints `{"error":"relay_not_configured",...}`. |
-| Relay set but not reachable (or HTTP 503) | Prints `gh-watcher: ERROR relay unreachable at <url>` to stderr. Retries only the relay, after 5 s, then 10 s, 20 s, 40 s and 60 s (the maximum). |
+| Relay set but the request fails (timeout, HTTP error, connection error) | Prints one line to stderr that names the real cause: `gh-watcher: ERROR relay timed out after <N> s at <url>` (the request timeout is the wait plus 10 s), `gh-watcher: ERROR relay answered HTTP <code> at <url>`, or `gh-watcher: ERROR relay connection failed at <url>: <errno or message>` (ECONNREFUSED, ENOTFOUND, ECONNRESET and so on). An answer that cannot be read prints `relay sent an unreadable answer at <url>: <detail>`. Retries only the relay, after 5 s, then 10 s, 20 s, 40 s and 60 s (the maximum). |
 | Still not reachable at `--timeout` | Exits `2`. With `--json` it prints `{"error":"relay_unreachable","url":"...","message":"..."}`. |
 | Relay answers HTTP 400 | Exits `2` at once. A retry cannot help. |
 | Relay sends `warning` | Prints it once to stderr, for example that the relay polls GitHub because no webhooks are installed. |
