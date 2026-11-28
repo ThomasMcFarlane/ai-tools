@@ -141,7 +141,7 @@ describe('wait through the relay', () => {
     expect(result.kind).toBe('terminal');
     expect(clock.delays).toEqual([5000, 10_000, 20_000, 40_000, BACKOFF_MAX_MS, BACKOFF_MAX_MS, BACKOFF_MAX_MS]);
     expect(logs).toHaveLength(7);
-    expect(logs[0]).toBe('gh-watcher: ERROR relay unreachable at http://relay.invalid');
+    expect(logs[0]).toBe('gh-watcher: ERROR relay connection failed at http://relay.invalid: connect ECONNREFUSED');
   });
 
   it('throws relay_unreachable when the relay stays down until the timeout', async () => {
@@ -150,15 +150,18 @@ describe('wait through the relay', () => {
     const error = await waitForTerminal({ ...options, timeoutMs: 30_000 }, { fetchFn: relay.fetchFn, now: clock.now, sleep: clock.sleep, log: (line) => logs.push(line) }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(RelayUnreachableError);
     expect((error as RelayUnreachableError).url).toBe('http://relay.invalid');
-    expect(logs.every((line) => line === 'gh-watcher: ERROR relay unreachable at http://relay.invalid')).toBe(true);
+    expect(logs.every((line) => line === 'gh-watcher: ERROR relay connection failed at http://relay.invalid: down')).toBe(true);
+    expect((error as RelayUnreachableError).message).toBe('relay connection failed at http://relay.invalid: down');
   });
 
-  it('treats an HTTP 503 from the relay as unreachable and retries', async () => {
+  it('retries an HTTP 503 from the relay and names the status', async () => {
     const { clock } = setup();
+    const logs: string[] = [];
     const relay = fakeRelay([{ status: 503 }, snapshot(1, [run(1, 'completed', 'success')])]);
-    const result = await waitForTerminal(options, { fetchFn: relay.fetchFn, now: clock.now, sleep: clock.sleep, log: () => undefined });
+    const result = await waitForTerminal(options, { fetchFn: relay.fetchFn, now: clock.now, sleep: clock.sleep, log: (line) => logs.push(line) });
     expect(result.kind).toBe('terminal');
     expect(clock.delays).toEqual([5000]);
+    expect(logs).toEqual(['gh-watcher: ERROR relay answered HTTP 503 at http://relay.invalid']);
   });
 
   it('stops at once on an HTTP 400 from the relay', async () => {
